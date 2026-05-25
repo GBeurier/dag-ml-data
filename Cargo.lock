@@ -160,6 +160,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dag-ml-data-core",
+ "serde",
  "serde_json",
 ]
 

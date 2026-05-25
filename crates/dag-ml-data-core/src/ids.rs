@@ -76,6 +76,8 @@ define_id!(TypeId);
 define_id!(ObservationId);
 define_id!(TargetId);
 define_id!(GroupId);
+define_id!(OriginId);
+define_id!(RepetitionId);
 
 #[cfg(test)]
 mod tests {

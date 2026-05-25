@@ -206,9 +206,23 @@ pub struct AdapterRegistry {
     adapters: BTreeMap<String, AdapterSpec>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdapterRegistrySpec {
+    #[serde(default)]
+    pub adapters: Vec<AdapterSpec>,
+}
+
 impl AdapterRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn from_spec(spec: AdapterRegistrySpec) -> Result<Self> {
+        let mut registry = Self::new();
+        for adapter in spec.adapters {
+            registry.register_adapter(adapter)?;
+        }
+        Ok(registry)
     }
 
     pub fn register_adapter(&mut self, adapter: AdapterSpec) -> Result<()> {

@@ -9,6 +9,8 @@
 | Schema | duplicate sample ids, duplicate sources, source validation |
 | Fingerprint | source-order independence, deterministic JSON hash |
 | Plans | unresolved choices, empty plans, declared output representation |
+| Planner | fixture schema/model-input/adapters produce expected data plan |
+| Relations | duplicate observations, group consistency, augmentation origin validity |
 | ABI | null pointer handling, invalid JSON, valid fingerprint |
 
 ## Conformance Tests

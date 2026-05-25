@@ -14,6 +14,7 @@ Directory: `examples/fixtures/oof_campaign/`
 | `model_input_tabular_numeric.json` | Model input accepting `tabular_numeric` features |
 | `adapter_registry_signal_to_tabular.json` | Deterministic adapter declarations |
 | `expected_data_plan_nir_to_tabular.json` | Auditable expected plan shape |
+| `sample_relations_grouped_augmented.json` | Group, repetition and augmentation-origin identity table |
 
 ## Assertions Owned By `dag-ml-data`
 
@@ -25,6 +26,7 @@ Directory: `examples/fixtures/oof_campaign/`
 - lossy adapters are refused unless policy allows them;
 - equivalent paths produce a `requires_user_choice` or ambiguity result;
 - `DataPlan` has explicit step inputs, outputs and adapter ids.
+- `SampleRelationTable` rejects duplicate observations and unknown augmentation origins.
 
 ## Boundary
 
