@@ -10,6 +10,8 @@ Use this as a validation map before development starts.
 | ABI | `docs/ABI.md` | Data provider ABI and ownership | Host buffers stay host-owned |
 | Rationale | `docs/RATIONALE.md` | Split from DAG-ML and design tradeoffs | Data scope is independently defensible |
 | MVP acceptance | `docs/MVP_ACCEPTANCE.md` | First data-contract target for UC6/UC11 | Data plans support stacking without owning OOF logic |
+| Capability matrix | `docs/CAPABILITY_MATRIX.md` | Full nirs4all replacement data surface | Data contracts expose identity without owning OOF |
+| OOF fixtures | `docs/OOF_FIXTURES.md` | Shared tiny campaign data contracts | DAG-ML can consume fixture identities without guessing |
 | Roadmap | `docs/ROADMAP.md` | Sequenced delivery phases | Every phase has an observable definition of done |
 | Status | `docs/STATUS.md` | Current scaffold state and next actions | No hidden implementation claims |
 | Test plan | `docs/TEST_PLAN.md` | Schema, planner and ABI tests | Fingerprints and path solving are covered |
