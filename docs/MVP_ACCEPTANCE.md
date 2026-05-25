@@ -58,4 +58,5 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p dag-ml-data-cli -- fingerprint-schema examples/minimal_schema.json
 cargo run -p dag-ml-data-cli -- plan-model-input --schema examples/fixtures/oof_campaign/schema_nir_6_samples.json --model-input examples/fixtures/oof_campaign/model_input_tabular_numeric.json --adapters examples/fixtures/oof_campaign/adapter_registry_signal_to_tabular.json --id nir-to-tabular --source nir
+cargo run -p dag-ml-data-cli -- fingerprint-plan examples/fixtures/oof_campaign/expected_data_plan_nir_to_tabular.json
 ```

@@ -2,6 +2,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::Result;
 use crate::model::DatasetSchema;
+use crate::plan::DataPlan;
 
 pub fn schema_fingerprint(schema: &DatasetSchema) -> Result<String> {
     let mut canonical = schema.clone();
@@ -12,6 +13,13 @@ pub fn schema_fingerprint(schema: &DatasetSchema) -> Result<String> {
         .sort_by(|left, right| left.id.cmp(&right.id));
 
     let json = serde_json::to_vec(&canonical)?;
+    let digest = Sha256::digest(json);
+    Ok(to_hex(&digest))
+}
+
+pub fn data_plan_fingerprint(plan: &DataPlan) -> Result<String> {
+    plan.validate()?;
+    let json = serde_json::to_vec(plan)?;
     let digest = Sha256::digest(json);
     Ok(to_hex(&digest))
 }
@@ -33,8 +41,9 @@ mod tests {
     use crate::model::{
         AxisKind, AxisSpec, DatasetSchema, RepresentationSpec, SourceDescriptor, SourceGranularity,
     };
+    use crate::plan::DataPlan;
 
-    use super::schema_fingerprint;
+    use super::{data_plan_fingerprint, schema_fingerprint};
 
     fn representation(id: &str) -> RepresentationSpec {
         RepresentationSpec {
@@ -102,6 +111,19 @@ mod tests {
         assert_ne!(
             schema_fingerprint(&left).unwrap(),
             schema_fingerprint(&right).unwrap()
+        );
+    }
+
+    #[test]
+    fn data_plan_fingerprint_is_stable() {
+        let plan: DataPlan = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/oof_campaign/expected_data_plan_nir_to_tabular.json"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            data_plan_fingerprint(&plan).unwrap(),
+            data_plan_fingerprint(&plan).unwrap()
         );
     }
 }

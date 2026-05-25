@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_data_core::{
-    plan_model_input, schema_fingerprint, AdapterRegistry, AdapterRegistrySpec, DataPlanRequest,
-    DatasetSchema, ModelInputSpec, SourceId,
+    data_plan_fingerprint, plan_model_input, schema_fingerprint, AdapterRegistry,
+    AdapterRegistrySpec, DataPlan, DataPlanRequest, DatasetSchema, ModelInputSpec, SourceId,
 };
 
 #[derive(Debug, Parser)]
@@ -17,6 +17,9 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     FingerprintSchema {
+        path: PathBuf,
+    },
+    FingerprintPlan {
         path: PathBuf,
     },
     PlanModelInput {
@@ -44,6 +47,12 @@ fn main() -> Result<()> {
                 .with_context(|| format!("failed to parse schema JSON at {}", path.display()))?;
             let fingerprint = schema_fingerprint(&schema)
                 .with_context(|| format!("invalid schema at {}", path.display()))?;
+            println!("{fingerprint}");
+        }
+        Command::FingerprintPlan { path } => {
+            let plan: DataPlan = read_json(&path, "data plan")?;
+            let fingerprint = data_plan_fingerprint(&plan)
+                .with_context(|| format!("invalid data plan at {}", path.display()))?;
             println!("{fingerprint}");
         }
         Command::PlanModelInput {

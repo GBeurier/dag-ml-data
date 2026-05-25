@@ -7,7 +7,7 @@
 | Identifiers | invalid chars, empty ids, max length |
 | Representations | missing sample axis, rank/axis mismatch, ragged rules |
 | Schema | duplicate sample ids, duplicate sources, source validation |
-| Fingerprint | source-order independence, deterministic JSON hash |
+| Fingerprint | source-order independence, schema hash, data-plan hash |
 | Plans | unresolved choices, empty plans, declared output representation |
 | Planner | fixture schema/model-input/adapters produce expected data plan |
 | Relations | duplicate observations, group consistency, augmentation origin validity |
