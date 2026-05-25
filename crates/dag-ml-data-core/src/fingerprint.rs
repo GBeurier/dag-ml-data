@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use crate::error::Result;
 use crate::model::DatasetSchema;
 use crate::plan::DataPlan;
+use crate::relation::SampleRelationTable;
 
 pub fn schema_fingerprint(schema: &DatasetSchema) -> Result<String> {
     let mut canonical = schema.clone();
@@ -20,6 +21,21 @@ pub fn schema_fingerprint(schema: &DatasetSchema) -> Result<String> {
 pub fn data_plan_fingerprint(plan: &DataPlan) -> Result<String> {
     plan.validate()?;
     let json = serde_json::to_vec(plan)?;
+    let digest = Sha256::digest(json);
+    Ok(to_hex(&digest))
+}
+
+pub fn sample_relation_fingerprint(relations: &SampleRelationTable) -> Result<String> {
+    let mut canonical = relations.clone();
+    canonical.validate()?;
+    canonical.rows.sort_by(|left, right| {
+        left.observation_id
+            .cmp(&right.observation_id)
+            .then_with(|| left.sample_id.cmp(&right.sample_id))
+            .then_with(|| left.source_id.cmp(&right.source_id))
+    });
+
+    let json = serde_json::to_vec(&canonical)?;
     let digest = Sha256::digest(json);
     Ok(to_hex(&digest))
 }
@@ -43,7 +59,7 @@ mod tests {
     };
     use crate::plan::DataPlan;
 
-    use super::{data_plan_fingerprint, schema_fingerprint};
+    use super::{data_plan_fingerprint, sample_relation_fingerprint, schema_fingerprint};
 
     fn representation(id: &str) -> RepresentationSpec {
         RepresentationSpec {
@@ -124,6 +140,19 @@ mod tests {
         assert_eq!(
             data_plan_fingerprint(&plan).unwrap(),
             data_plan_fingerprint(&plan).unwrap()
+        );
+    }
+
+    #[test]
+    fn sample_relation_fingerprint_is_stable() {
+        let relations: crate::relation::SampleRelationTable = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/oof_campaign/sample_relations_grouped_augmented.json"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            sample_relation_fingerprint(&relations).unwrap(),
+            sample_relation_fingerprint(&relations).unwrap()
         );
     }
 }

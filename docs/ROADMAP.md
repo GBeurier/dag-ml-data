@@ -19,6 +19,9 @@ Definition of done:
 - refusal and `requires_user_choice` reporting;
 - fixture tests for tabular, dense signal, image and time-series paths.
 
+Status: implemented for the current fixtures, including deterministic
+model-input planning and coordinator envelope export.
+
 ## Phase 2: Host Providers
 
 Definition of done:
@@ -27,6 +30,9 @@ Definition of done:
 - Python provider skeleton;
 - C ABI conformance around view creation and identity export;
 - Arrow identity table smoke tests.
+
+Next: materialize a validated coordinator envelope into opaque handles for
+`dag-ml` controller tasks.
 
 ## Phase 3: Alignment And Fusion
 

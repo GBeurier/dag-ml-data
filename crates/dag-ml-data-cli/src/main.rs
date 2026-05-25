@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_data_core::{
-    data_plan_fingerprint, plan_model_input, schema_fingerprint, AdapterRegistry,
-    AdapterRegistrySpec, DataPlan, DataPlanRequest, DatasetSchema, ModelInputSpec, SourceId,
+    data_plan_fingerprint, plan_model_input, sample_relation_fingerprint, schema_fingerprint,
+    AdapterRegistry, AdapterRegistrySpec, CoordinatorDataPlanEnvelope, DataPlan, DataPlanRequest,
+    DatasetSchema, ModelInputSpec, SampleRelationTable, SourceId,
 };
 
 #[derive(Debug, Parser)]
@@ -20,6 +21,20 @@ enum Command {
         path: PathBuf,
     },
     FingerprintPlan {
+        path: PathBuf,
+    },
+    FingerprintRelations {
+        path: PathBuf,
+    },
+    EnvelopePlan {
+        #[arg(long)]
+        schema: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        relations: Option<PathBuf>,
+    },
+    ValidateEnvelope {
         path: PathBuf,
     },
     PlanModelInput {
@@ -54,6 +69,44 @@ fn main() -> Result<()> {
             let fingerprint = data_plan_fingerprint(&plan)
                 .with_context(|| format!("invalid data plan at {}", path.display()))?;
             println!("{fingerprint}");
+        }
+        Command::FingerprintRelations { path } => {
+            let relations: SampleRelationTable = read_json(&path, "sample relations")?;
+            let fingerprint = sample_relation_fingerprint(&relations)
+                .with_context(|| format!("invalid sample relations at {}", path.display()))?;
+            println!("{fingerprint}");
+        }
+        Command::EnvelopePlan {
+            schema,
+            plan,
+            relations,
+        } => {
+            let schema: DatasetSchema = read_json(&schema, "schema")?;
+            let plan: DataPlan = read_json(&plan, "data plan")?;
+            let relations = relations
+                .as_ref()
+                .map(|path| read_json(path, "sample relations"))
+                .transpose()?;
+            let envelope =
+                CoordinatorDataPlanEnvelope::from_parts(&schema, plan, relations.as_ref())
+                    .context("failed to build coordinator data-plan envelope")?;
+            println!("{}", serde_json::to_string_pretty(&envelope)?);
+        }
+        Command::ValidateEnvelope { path } => {
+            let envelope: CoordinatorDataPlanEnvelope =
+                read_json(&path, "coordinator data-plan envelope")?;
+            envelope
+                .validate()
+                .with_context(|| format!("invalid data-plan envelope at {}", path.display()))?;
+            println!(
+                "valid data-plan envelope: plan_fingerprint={}, relations={}",
+                envelope.plan_fingerprint,
+                envelope
+                    .coordinator_relations
+                    .as_ref()
+                    .map(|relations| relations.records.len())
+                    .unwrap_or(0)
+            );
         }
         Command::PlanModelInput {
             schema,
