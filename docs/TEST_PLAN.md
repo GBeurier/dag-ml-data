@@ -11,7 +11,7 @@
 | Plans | unresolved choices, empty plans, declared output representation |
 | Planner | fixture schema/model-input/adapters produce expected data plan |
 | Relations | duplicate observations, group consistency, augmentation origin validity |
-| Coordinator envelope | explicit schema version, unsupported schema version refusal, schema/plan/relation fingerprint validation |
+| Coordinator envelope | explicit schema version, published envelope JSON Schema version, unsupported schema version refusal, schema/plan/relation fingerprint validation |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability |
 | Views/features/targets | sample/source/augmentation filtering, requested sample-order preservation, repetition-preserving identity, observation-level feature alignment, feature-column filtering, feature representation mismatch refusal, sample-level target de-duplication |
 | ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature Arrow exports, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
@@ -40,4 +40,5 @@ Current CLI smoke commands:
 ```bash
 cargo run -p dag-ml-data-cli -- validate-envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json
 cargo run -p dag-ml-data-cli -- materialize-envelope --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
+python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null
 ```

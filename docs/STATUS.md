@@ -18,6 +18,8 @@ Implemented:
   fingerprints;
 - explicit coordinator data-plan envelope schema version with unsupported
   version refusal;
+- published JSON Schema artifact for coordinator data-plan envelopes, with a
+  unit smoke that keeps its declared version aligned to the Rust contract;
 - conversion from `SampleRelationTable` to DAG-ML coordinator relation records;
 - coordinator materialization request and handle-record contracts for validated
   data handles;

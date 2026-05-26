@@ -24,6 +24,12 @@ memory while exposing deterministic descriptors and identity tables to the core.
   plus JSON feature tables used by binding conformance tests;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
 
+The coordinator envelope wire shape is versioned as
+`CoordinatorDataPlanEnvelope` v1 and published at
+`docs/contracts/coordinator_data_plan_envelope.schema.json`. Runtime validation
+continues to check the stronger semantic contract: schema/data-plan/relation
+fingerprints, identity consistency and materialization-request compatibility.
+
 ## Ownership Rules
 
 | Object | Owner | Release path |

@@ -20,7 +20,8 @@ Definition of done:
 - fixture tests for tabular, dense signal, image and time-series paths.
 
 Status: implemented for the current fixtures, including deterministic
-model-input planning and coordinator envelope export.
+model-input planning, coordinator envelope export, explicit envelope schema
+versioning and a published v1 JSON Schema artifact shared with `dag-ml`.
 
 ## Phase 2: Host Providers
 

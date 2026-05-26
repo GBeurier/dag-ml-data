@@ -270,4 +270,22 @@ mod tests {
 
         envelope.validate().unwrap();
     }
+
+    #[test]
+    fn published_envelope_schema_declares_current_version() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/coordinator_data_plan_envelope.schema.json"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            schema["properties"]["schema_version"]["const"].as_u64(),
+            Some(COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION as u64)
+        );
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("schema_version")));
+    }
 }
