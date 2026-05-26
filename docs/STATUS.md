@@ -1,7 +1,7 @@
 # Status
 
-Current state: foundation scaffold plus coordinator data-plan envelope and
-first handle materialization smoke.
+Current state: foundation scaffold plus coordinator data-plan envelope, first
+handle materialization smoke and minimal Arrow identity export.
 
 Implemented:
 
@@ -21,6 +21,8 @@ Implemented:
 - in-memory coordinator handle arena that materializes envelopes into opaque
   handle records with run/node/phase/variant/fold/fingerprint traceability;
 - CLI `materialize-envelope` smoke command;
+- Arrow C Data ABI structs, release helpers and coordinator identity-table
+  export from validated envelopes;
 - C ABI schema fingerprint entry point;
 - example schema fixture;
 - CI workflow.
@@ -28,12 +30,12 @@ Implemented:
 Not implemented yet:
 
 - production runtime data providers with real buffer/view lifecycles;
-- Arrow identity export;
+- full Arrow buffer/view provider implementation beyond identity-table smoke;
 - alignment and fusion execution;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
-Connect the handle arena to a buffer-backed provider and expose identity tables
-through Arrow C Data Interface smoke tests.
+Connect the handle arena to a buffer-backed provider that can export real view
+identity and target arrays through the data-provider vtable.

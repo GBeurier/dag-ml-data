@@ -12,14 +12,14 @@
 | Planner | fixture schema/model-input/adapters produce expected data plan |
 | Relations | duplicate observations, group consistency, augmentation origin validity |
 | Handles | materialization request/envelope fingerprint match, opaque handle record traceability |
-| ABI | null pointer handling, invalid JSON, valid fingerprint |
+| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity Arrow export |
 
 ## Conformance Tests
 
 Add after providers exist:
 
 - handle arena refuses schema/plan/relation mismatch and missing required relations;
-- Python and Rust providers return identical identity Arrow tables;
+- Python and Rust providers return identical provider-vtable identity Arrow tables;
 - path solver returns same plan independent of adapter registration order;
 - source alignment is stable for `inner`, `left` and `outer`;
 - schema fingerprint rejects incompatible predict-time schemas.

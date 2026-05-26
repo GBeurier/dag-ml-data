@@ -34,8 +34,9 @@ Definition of done:
 Status: first in-memory coordinator handle arena implemented. It validates a
 coordinator envelope plus materialization request, returns an opaque handle
 record, and records run/node/phase/variant/fold/fingerprint traceability for
-`dag-ml` controller tasks. Next: attach real buffer/view lifecycles and Arrow
-identity export.
+`dag-ml` controller tasks. A minimal Arrow C Data identity-table export exists
+for coordinator envelopes. Next: attach real buffer/view lifecycles and export
+identity/target arrays through the provider vtable.
 
 ## Phase 3: Alignment And Fusion
 
