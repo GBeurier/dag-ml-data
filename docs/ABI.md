@@ -39,7 +39,10 @@ memory while exposing deterministic descriptors and identity tables to the core.
   row-major f64 tensor export from provider-owned feature buffers;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
   The `feature_arrow` hook accepts either a plain feature-set id or a JSON
-  feature-fusion selector.
+  feature-fusion selector. The vtable uses the shared
+  `DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION` macro and guarded
+  `DagMlDataVTable` definition so `dag_ml_data.h` and `dag_ml.h` can be
+  included together by bindings.
 
 The coordinator envelope wire shape is versioned as
 `CoordinatorDataPlanEnvelope` v1 and published at
@@ -149,6 +152,9 @@ same vtable shape while keeping production data buffers host-owned.
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
 the provider vtable, materializes a view, exports identity, target and feature
 Arrow arrays, then releases all handles.
+The syntax smoke also includes the sibling `dag_ml.h` in both include orders
+when a `dag-ml` checkout is available, so shared data-provider vtable guards
+cannot drift silently.
 
 `tests/python_ctypes_smoke.rs` performs the same provider lifecycle from Python
 using only `ctypes`. It also runs `examples/python/provider_smoke.py`, which uses

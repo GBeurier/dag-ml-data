@@ -41,3 +41,11 @@ Runtime shape consumed by the in-memory provider `feature_arrow` hook:
 source maps a `source_id` to a provider-owned `feature_set_id` and optional
 column subset. This selector keeps the vtable ABI stable while making
 multi-source feature fusion explicit and conformance-testable.
+
+## Data Provider C ABI v2
+
+The shared provider surface is `DagMlDataVTable` guarded by
+`DAG_ML_DATA_VTABLE_DEFINED` and versioned by
+`DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION == 2`. `scripts/validate_contracts.py`
+and the C ABI tests verify that `dag_ml_data.h` and `dag_ml.h` can be included
+together in either order when the sibling checkout is available.

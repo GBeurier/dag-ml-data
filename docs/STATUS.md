@@ -71,6 +71,9 @@ Implemented:
   invalidating child view handles;
 - C header and linked C runtime smokes for the provider vtable and Arrow
   signatures;
+- `dag_ml_data.h` and `dag_ml.h` share a guarded data-provider vtable ABI
+  version macro and are compiled together in both include orders when the
+  sibling checkout is present;
 - Python `ctypes` smoke for the same provider lifecycle;
 - reusable stdlib-only Python provider wrapper and CLI smoke in
   `examples/python`;

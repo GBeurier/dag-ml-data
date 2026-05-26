@@ -14,6 +14,7 @@ use dag_ml_data_core::{
 use serde::Deserialize;
 
 pub type DagMlDataHandle = u64;
+pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1342,7 +1343,7 @@ fn parse_feature_tables(
 
 fn provider_vtable(user_data: *mut c_void) -> DagMlDataVTable {
     DagMlDataVTable {
-        abi_version: 2,
+        abi_version: DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
         user_data,
         materialize: Some(provider_materialize),
         make_view: Some(provider_make_view),
@@ -1356,7 +1357,7 @@ fn provider_vtable(user_data: *mut c_void) -> DagMlDataVTable {
 
 fn empty_vtable() -> DagMlDataVTable {
     DagMlDataVTable {
-        abi_version: 2,
+        abi_version: DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
         user_data: std::ptr::null_mut(),
         materialize: None,
         make_view: None,

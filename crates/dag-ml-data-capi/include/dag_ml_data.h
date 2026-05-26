@@ -99,6 +99,12 @@ typedef struct ArrowSchema {
 
 #endif
 
+#ifndef DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION
+#define DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION 2u
+#endif
+
+#ifndef DAG_ML_DATA_VTABLE_DEFINED
+#define DAG_ML_DATA_VTABLE_DEFINED
 typedef struct DagMlDataVTable {
     uint32_t abi_version;
     void *user_data;
@@ -110,6 +116,7 @@ typedef struct DagMlDataVTable {
     void (*release)(void *user_data, DagMlDataHandle handle);
     void (*destroy)(void *user_data);
 } DagMlDataVTable;
+#endif
 
 DagMlDataVersion dagmldata_version(void);
 void dagmldata_string_free(DagMlDataString value);
