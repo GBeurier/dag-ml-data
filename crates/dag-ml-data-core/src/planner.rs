@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::adapter::{AdapterPath, AdapterRegistry, PlanningPolicy};
+use crate::alignment::{alignment_metadata, alignment_mode_from_fusion};
 use crate::error::{DataError, Result};
 use crate::ids::{RepresentationId, SourceId};
 use crate::model::{DatasetSchema, SourceDescriptor};
@@ -48,6 +49,7 @@ pub fn plan_model_input(
     let mut steps = Vec::new();
     let mut output_representation = None;
     let mut adapt_idx = 0usize;
+    let mut align_idx = 0usize;
 
     for port in &model_input.ports {
         let resolved = candidate_sources
@@ -119,6 +121,28 @@ pub fn plan_model_input(
             }
             join_inputs.push(current_output);
         }
+
+        let join_inputs = if join_inputs.len() > 1 {
+            let align_output = format!("step:align:{align_idx}");
+            let align_input_representation = output_representation
+                .clone()
+                .unwrap_or_else(|| resolved_target_representation(&steps));
+            let alignment_mode = alignment_mode_from_fusion(model_input.default_fusion.as_ref())?;
+            steps.push(DataPlanStep {
+                kind: DataPlanStepKind::Align,
+                source_id: None,
+                adapter_id: None,
+                input_representation: Some(align_input_representation),
+                output_representation: Some(port_output_representation.clone()),
+                fit_scope: FitScope::Stateless,
+                requires_user_choice: false,
+                metadata: alignment_metadata(join_inputs, align_output.clone(), alignment_mode)?,
+            });
+            align_idx += 1;
+            vec![align_output]
+        } else {
+            join_inputs
+        };
 
         steps.push(DataPlanStep {
             kind: DataPlanStepKind::Join,
@@ -251,7 +275,7 @@ fn resolved_target_representation(steps: &[DataPlanStep]) -> RepresentationId {
 mod tests {
     use super::*;
     use crate::adapter::AdapterRegistrySpec;
-    use crate::ids::SourceId;
+    use crate::ids::{RepresentationId, SourceId, TypeId};
     use crate::plan::DataPlan;
 
     fn load_schema() -> DatasetSchema {
@@ -312,5 +336,53 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("unknown source"));
+    }
+
+    #[test]
+    fn planner_emits_alignment_step_for_multi_source_port() {
+        let mut schema = load_schema();
+        let mut chem = schema.sources[0].clone();
+        chem.id = SourceId::new("chem").unwrap();
+        chem.name = "Chemistry".to_string();
+        chem.type_id = TypeId::new("table").unwrap();
+        chem.native_representation.id = RepresentationId::new("tabular_numeric").unwrap();
+        chem.native_representation.type_id = TypeId::new("table").unwrap();
+        chem.native_representation.container = "dataframe".to_string();
+        schema.sources.push(chem);
+
+        let plan = plan_model_input(
+            &schema,
+            &load_model_input(),
+            &load_registry(),
+            &DataPlanRequest {
+                id: "nir-chem-to-tabular".to_string(),
+                source_ids: Some(vec![
+                    SourceId::new("nir").unwrap(),
+                    SourceId::new("chem").unwrap(),
+                ]),
+                planning_policy: PlanningPolicy::default(),
+            },
+        )
+        .unwrap();
+
+        let align = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == DataPlanStepKind::Align)
+            .expect("multi-source plan should expose an Align step");
+        assert_eq!(align.metadata["alignment"], serde_json::json!("left"));
+        assert_eq!(align.metadata["output"], serde_json::json!("step:align:0"));
+        assert_eq!(
+            align.metadata["inputs"].as_array().unwrap().len(),
+            2,
+            "alignment should receive both source feature streams"
+        );
+
+        let join = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == DataPlanStepKind::Join)
+            .unwrap();
+        assert_eq!(join.metadata["inputs"], serde_json::json!(["step:align:0"]));
     }
 }

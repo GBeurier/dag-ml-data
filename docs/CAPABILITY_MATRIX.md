@@ -9,7 +9,7 @@ enforce them.
 
 | Capability | Data contract support | Enforcement owner |
 |---|---|---|
-| Multisource | `DatasetSchema`, `SourceDescriptor`, alignment policy, presence masks | `dag-ml` decides phase and accepted fusion policy |
+| Multisource | `DatasetSchema`, `SourceDescriptor`, alignment policy, presence masks, planner-visible `Align` steps | `dag-ml` decides phase and accepted fusion policy |
 | Repetitions | `SampleRelation` with observation/sample/target/group/origin ids | `dag-ml` validates split unit and aggregation |
 | Grouped samples | group ids exposed through sample relations | `dag-ml` validates group-aware folds |
 | Augmentation | augmentation adapters declare output origin ids | `dag-ml` validates train-only use |
@@ -30,6 +30,7 @@ enforce them.
 2. Every representation carries semantic axes.
 3. Every conversion path is explicit, costed, versioned and deterministic.
 4. Lossy/stateful/supervised adapters are opt-in at planning time.
-5. Presence masks and alignment choices are serializable.
+5. Presence masks and alignment choices are serializable and planned before
+   multi-source joins.
 6. Schema fingerprints are stable under irrelevant ordering changes.
 7. No fold, OOF, prediction partition or leakage decision is made in this repo.

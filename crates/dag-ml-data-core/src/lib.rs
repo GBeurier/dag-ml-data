@@ -4,6 +4,7 @@
 //! does not execute ML phases and does not own heavy host buffers.
 
 pub mod adapter;
+pub mod alignment;
 pub mod coordinator;
 pub mod error;
 pub mod fingerprint;
@@ -15,6 +16,7 @@ pub mod planner;
 pub mod relation;
 
 pub use adapter::*;
+pub use alignment::*;
 pub use coordinator::*;
 pub use error::{DataError, Result};
 pub use fingerprint::*;

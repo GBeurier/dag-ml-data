@@ -12,6 +12,8 @@ Implemented:
 - schema validation and deterministic fingerprinting;
 - adapter registry and deterministic path solver;
 - model-input data-plan planner with fixtures;
+- sample alignment planner for `inner`, `left` and `outer` multi-source
+  policies, plus planner-visible `Align` steps before multi-source joins;
 - sample relation validation for groups, repetitions and augmentation origins;
 - sample relation fingerprints;
 - coordinator data-plan envelope export with schema, plan and relation
@@ -63,11 +65,11 @@ Not implemented yet:
 - production runtime data providers with real buffer/view lifecycles;
 - production Arrow feature-buffer provider implementation beyond the current
   in-memory typed numeric buffer conformance;
-- alignment and fusion execution;
+- full feature-fusion execution and late collation;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
-Replace the in-memory typed feature-buffer conformance with real provider-owned
-Arrow buffer lifecycles.
+Attach real production feature-buffer lifecycles and extend the current
+alignment plan into executable feature fusion.

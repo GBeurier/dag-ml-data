@@ -10,6 +10,7 @@
 | Fingerprint | source-order independence, schema hash, data-plan hash |
 | Plans | unresolved choices, empty plans, declared output representation |
 | Planner | fixture schema/model-input/adapters produce expected data plan |
+| Alignment | stable `inner`, `left`, `outer` sample order, duplicate source/sample refusal, multi-source planner emits explicit `Align` before `Join` |
 | Relations | duplicate observations, group consistency, augmentation origin validity |
 | Coordinator envelope | explicit schema version, published envelope JSON Schema version, unsupported schema version refusal, schema/plan/relation fingerprint validation |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability |
@@ -26,7 +27,6 @@ Add after providers exist:
 - Python and Rust providers return identical provider-vtable identity, feature
   and target Arrow tables;
 - path solver returns same plan independent of adapter registration order;
-- source alignment is stable for `inner`, `left` and `outer`;
 - schema fingerprint rejects incompatible predict-time schemas.
 
 ## Shared Fixtures With `dag-ml`

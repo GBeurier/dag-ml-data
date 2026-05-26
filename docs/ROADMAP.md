@@ -57,6 +57,11 @@ Definition of done:
 - feature joiner contracts;
 - late collation contracts for dense tensor models.
 
+Status: started. The core now has a deterministic sample-alignment planner for
+`inner`, `left` and `outer` policies, and model-input planning emits an explicit
+`Align` step before multi-source joins. Execution of feature fusion and late
+collation is still pending.
+
 ## Phase 4: nirs4all Connector
 
 Definition of done:
