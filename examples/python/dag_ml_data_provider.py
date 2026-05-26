@@ -20,6 +20,38 @@ class DagMlDataBytesView(ctypes.Structure):
     _fields_ = [("ptr", ctypes.POINTER(ctypes.c_uint8)), ("len", ctypes.c_size_t)]
 
 
+class DagMlDataStringArray(ctypes.Structure):
+    _fields_ = [("ptr", ctypes.POINTER(DagMlDataString)), ("len", ctypes.c_size_t)]
+
+
+class DagMlDataUSizeArray(ctypes.Structure):
+    _fields_ = [("ptr", ctypes.POINTER(ctypes.c_size_t)), ("len", ctypes.c_size_t)]
+
+
+class DagMlDataF64Array(ctypes.Structure):
+    _fields_ = [("ptr", ctypes.POINTER(ctypes.c_double)), ("len", ctypes.c_size_t)]
+
+
+class DagMlDataU8Array(ctypes.Structure):
+    _fields_ = [("ptr", ctypes.POINTER(ctypes.c_uint8)), ("len", ctypes.c_size_t)]
+
+
+class DagMlDataTensorF64(ctypes.Structure):
+    _fields_ = [
+        ("abi_version", ctypes.c_uint32),
+        ("block_id", DagMlDataString),
+        ("representation_id", DagMlDataString),
+        ("batch_container", DagMlDataString),
+        ("observation_ids", DagMlDataStringArray),
+        ("sample_ids", DagMlDataStringArray),
+        ("shape", DagMlDataUSizeArray),
+        ("values", DagMlDataF64Array),
+        ("presence_mask", DagMlDataU8Array),
+        ("validity_mask", DagMlDataU8Array),
+        ("feature_names", DagMlDataStringArray),
+    ]
+
+
 class ArrowArray(ctypes.Structure):
     pass
 
@@ -151,6 +183,59 @@ def _f64_values(array_ptr: ctypes.POINTER(ArrowArray)) -> list[float | None]:
     array = array_ptr.contents
     values = ctypes.cast(array.buffers[1], ctypes.POINTER(ctypes.c_double))
     return [values[idx] if _valid(array.buffers[0], idx) else None for idx in range(array.length)]
+
+
+def _owned_string_value(value: DagMlDataString) -> str:
+    if not value.ptr:
+        return ""
+    return ctypes.string_at(value.ptr, value.len).decode("utf-8")
+
+
+def _string_array_values(array: DagMlDataStringArray) -> list[str]:
+    if not array.ptr:
+        return []
+    return [_owned_string_value(array.ptr[idx]) for idx in range(array.len)]
+
+
+def _usize_array_values(array: DagMlDataUSizeArray) -> list[int]:
+    if not array.ptr:
+        return []
+    return [int(array.ptr[idx]) for idx in range(array.len)]
+
+
+def _f64_array_values(array: DagMlDataF64Array) -> list[float]:
+    if not array.ptr:
+        return []
+    return [float(array.ptr[idx]) for idx in range(array.len)]
+
+
+def _u8_array_values(array: DagMlDataU8Array) -> list[bool] | None:
+    if not array.ptr:
+        return None
+    return [bool(array.ptr[idx]) for idx in range(array.len)]
+
+
+def _tensor_to_dict(tensor: DagMlDataTensorF64) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "abi_version": int(tensor.abi_version),
+        "block_id": _owned_string_value(tensor.block_id),
+        "representation_id": _owned_string_value(tensor.representation_id),
+        "batch_container": _owned_string_value(tensor.batch_container),
+        "observation_ids": _string_array_values(tensor.observation_ids),
+        "sample_ids": _string_array_values(tensor.sample_ids),
+        "shape": _usize_array_values(tensor.shape),
+        "values": _f64_array_values(tensor.values),
+    }
+    presence_mask = _u8_array_values(tensor.presence_mask)
+    if presence_mask is not None:
+        result["presence_mask"] = presence_mask
+    validity_mask = _u8_array_values(tensor.validity_mask)
+    if validity_mask is not None:
+        result["validity_mask"] = validity_mask
+    feature_names = _string_array_values(tensor.feature_names)
+    if feature_names:
+        result["feature_names"] = feature_names
+    return result
 
 
 class InMemoryProvider:
@@ -337,22 +422,22 @@ class InMemoryProvider:
         payload = json.dumps(selector).encode("utf-8")
         buffer, view = _bytes_view(payload)
         self._buffers.append(buffer)
-        out = DagMlDataString()
+        tensor = DagMlDataTensorF64()
         error = DagMlDataString()
-        status = self._lib.dagmldata_inmemory_provider_feature_collation_json(
+        status = self._lib.dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
             ctypes.byref(self._vtable),
             view_handle,
             view,
-            ctypes.byref(out),
+            ctypes.byref(tensor),
             ctypes.byref(error),
         )
         if status != 0:
             message = self._consume_string(error) or f"status {status}"
             raise RuntimeError(f"feature collation failed: {message}")
-        payload = self._consume_string(out)
-        if payload is None:
-            raise RuntimeError("feature collation returned no JSON")
-        return json.loads(payload)
+        try:
+            return _tensor_to_dict(tensor)
+        finally:
+            self._lib.dagmldata_tensor_f64_free(tensor)
 
     def release(self, handle: int) -> None:
         self._vtable.release(self._vtable.user_data, handle)
@@ -396,10 +481,20 @@ class InMemoryProvider:
             ctypes.POINTER(DagMlDataString),
         ]
         self._lib.dagmldata_inmemory_provider_feature_collation_json.restype = ctypes.c_int
+        self._lib.dagmldata_inmemory_provider_feature_collation_tensor_f64_json.argtypes = [
+            ctypes.POINTER(DagMlDataVTable),
+            ctypes.c_uint64,
+            DagMlDataBytesView,
+            ctypes.POINTER(DagMlDataTensorF64),
+            ctypes.POINTER(DagMlDataString),
+        ]
+        self._lib.dagmldata_inmemory_provider_feature_collation_tensor_f64_json.restype = ctypes.c_int
         self._lib.dagmldata_inmemory_provider_destroy.argtypes = [ctypes.POINTER(DagMlDataVTable)]
         self._lib.dagmldata_inmemory_provider_destroy.restype = None
         self._lib.dagmldata_string_free.argtypes = [DagMlDataString]
         self._lib.dagmldata_string_free.restype = None
+        self._lib.dagmldata_tensor_f64_free.argtypes = [DagMlDataTensorF64]
+        self._lib.dagmldata_tensor_f64_free.restype = None
         self._lib.dagmldata_arrow_array_free.argtypes = [ctypes.POINTER(ArrowArray)]
         self._lib.dagmldata_arrow_array_free.restype = None
         self._lib.dagmldata_arrow_schema_free.argtypes = [ctypes.POINTER(ArrowSchema)]

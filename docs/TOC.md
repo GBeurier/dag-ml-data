@@ -20,7 +20,7 @@ Use this as a validation map before development starts.
 | Core crate | `crates/dag-ml-data-core` | Schema, representation and data-plan primitives | `cargo test -p dag-ml-data-core` passes |
 | C ABI crate | `crates/dag-ml-data-capi` | FFI-safe helpers and `DataVTable` shape | Header mirrors Rust ABI structs |
 | CLI crate | `crates/dag-ml-data-cli` | Local validation and fingerprinting | Example schema fingerprints |
-| Python ABI example | `examples/python` | Stdlib-only provider vtable smoke | Python can materialize, view, read identity/features/targets and release handles |
+| Python ABI example | `examples/python` | Stdlib-only provider vtable smoke | Python can materialize, view, read identity/features/targets/tensors and release handles |
 
 ## Validation Checklist
 

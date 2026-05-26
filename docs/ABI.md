@@ -7,9 +7,13 @@ memory while exposing deterministic descriptors and identity tables to the core.
 
 `crates/dag-ml-data-capi/include/dag_ml_data.h` exposes:
 
-- version and string-free helpers;
+- version, string-free and tensor-free helpers;
 - `dagmldata_schema_fingerprint_json`;
 - Arrow C Data `ArrowArray` and `ArrowSchema` structs plus release helpers;
+- `DagMlDataTensorF64`, an owned row-major f64 tensor descriptor with identity,
+  shape, values, optional masks and feature names;
+- `DAG_ML_DATA_TENSOR_F64_ABI_VERSION`, the C-visible ABI version expected in
+  each f64 tensor descriptor;
 - `dagmldata_coordinator_identity_arrow_json` for identity-table smoke tests
   from a validated coordinator envelope;
 - `dagmldata_coordinator_target_arrow_json` for numeric target-table smoke tests
@@ -22,6 +26,8 @@ memory while exposing deterministic descriptors and identity tables to the core.
   blocks;
 - `dagmldata_coordinator_feature_collation_json` for JSON row-major tensor
   collation smoke tests over coordinator feature blocks;
+- `dagmldata_coordinator_feature_collation_tensor_f64_json` for ABI-owned
+  row-major f64 tensor export over coordinator feature blocks;
 - `dagmldata_inmemory_provider_new_json` for a Rust-owned provider vtable that
   materializes data handles, creates view handles, exports view identity, exports
   numeric targets and supports release/destroy callbacks;
@@ -29,6 +35,8 @@ memory while exposing deterministic descriptors and identity tables to the core.
   plus JSON feature tables used by binding conformance tests;
 - `dagmldata_inmemory_provider_feature_collation_json` for JSON row-major
   tensor collation from feature buffers owned by the in-memory provider;
+- `dagmldata_inmemory_provider_feature_collation_tensor_f64_json` for ABI-owned
+  row-major f64 tensor export from provider-owned feature buffers;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
   The `feature_arrow` hook accepts either a plain feature-set id or a JSON
   feature-fusion selector.
@@ -47,6 +55,7 @@ fingerprints, identity consistency and materialization-request compatibility.
 | View handle | Host | `DagMlDataVTable.release` |
 | Fitted adapter handle | Host | future fitted-adapter release hook |
 | Rust error/fingerprint string | Rust allocation returned through ABI | `dagmldata_string_free` |
+| Rust-owned f64 tensor descriptor and nested arrays | Rust allocation returned through ABI | `dagmldata_tensor_f64_free` |
 | Arrow arrays/schemas returned by Rust helpers | Rust allocation returned through ABI | `dagmldata_arrow_array_free`, `dagmldata_arrow_schema_free` |
 | Arrow arrays produced by host vtables | Producer of the Arrow array | Arrow C Data Interface release callback |
 | Rust-owned in-memory provider vtable | Rust allocation behind `user_data` | `DagMlDataVTable.destroy` or `dagmldata_inmemory_provider_destroy` |
@@ -89,13 +98,22 @@ and returns a JSON `NumericTensorBlock` with observation/sample identity,
 row-major shape and values, optional presence mask and optional value-validity
 mask. It is a conformance helper, not a provider lifecycle.
 
-`dagmldata_inmemory_provider_feature_collation_json` exercises the same
-late-collation kernel against provider-owned typed numeric buffers. It accepts
-`{ feature_set_id, policy? }` for a single provider feature table or
-`{ fusion, policy? }` where `fusion` is the provider feature-fusion selector,
-and returns the same JSON `NumericTensorBlock`. This helper is specific to
-vtables created by `dagmldata_inmemory_provider_new_with_features_json`; it does
-not change the stable `DagMlDataVTable` layout.
+`dagmldata_coordinator_feature_collation_tensor_f64_json` exports the same
+result as an ABI-owned `DagMlDataTensorF64` instead of JSON. The tensor carries
+`abi_version`, block/representation/container strings, observation ids, sample
+ids, `shape`, contiguous row-major `values`, optional `presence_mask`, optional
+`validity_mask` and optional `feature_names`. Masks are byte arrays with values
+0 or 1. The caller must release the tensor with `dagmldata_tensor_f64_free`.
+
+`dagmldata_inmemory_provider_feature_collation_json` and
+`dagmldata_inmemory_provider_feature_collation_tensor_f64_json` exercise the
+same late-collation kernel against provider-owned typed numeric buffers. They
+accept `{ feature_set_id, policy? }` for a single provider feature table or
+`{ fusion, policy? }` where `fusion` is the provider feature-fusion selector.
+The JSON export is a conformance/debug path; the `DagMlDataTensorF64` export is
+the binding-oriented path. These helpers are specific to vtables created by
+`dagmldata_inmemory_provider_new_with_features_json`; they do not change the
+stable `DagMlDataVTable` layout.
 
 ## In-Memory Provider VTable
 
@@ -123,9 +141,9 @@ owned buffers, not per-call JSON numeric parsing. Fusion selectors reuse those
 typed buffers, filter each source by source identity in the view, and then call
 the same pure Rust fusion kernel used by the standalone ABI helper. Provider
 feature-collation selectors then collate either a single feature table or the
-fused block into a deterministic row-major tensor without reparsing feature
-values. Full provider implementations will use the same vtable shape while
-keeping production data buffers host-owned.
+fused block into deterministic row-major JSON or `DagMlDataTensorF64` tensors
+without reparsing feature values. Full provider implementations will use the
+same vtable shape while keeping production data buffers host-owned.
 
 `tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
@@ -152,5 +170,6 @@ identity export, target export, feature export, release and destroy.
    kernel.
 7. Route in-memory provider feature-collation selectors through provider-owned
    typed buffers.
-8. Replace in-memory typed fixture buffers with production feature-buffer
+8. Expose provider-backed collation as `DagMlDataTensorF64` for bindings.
+9. Replace in-memory typed fixture buffers with production feature-buffer
    lifecycles.

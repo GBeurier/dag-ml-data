@@ -33,6 +33,42 @@ typedef struct DagMlDataBytesView {
     size_t len;
 } DagMlDataBytesView;
 
+#define DAG_ML_DATA_TENSOR_F64_ABI_VERSION 1u
+
+typedef struct DagMlDataStringArray {
+    DagMlDataString *ptr;
+    size_t len;
+} DagMlDataStringArray;
+
+typedef struct DagMlDataUSizeArray {
+    size_t *ptr;
+    size_t len;
+} DagMlDataUSizeArray;
+
+typedef struct DagMlDataF64Array {
+    double *ptr;
+    size_t len;
+} DagMlDataF64Array;
+
+typedef struct DagMlDataU8Array {
+    uint8_t *ptr;
+    size_t len;
+} DagMlDataU8Array;
+
+typedef struct DagMlDataTensorF64 {
+    uint32_t abi_version;
+    DagMlDataString block_id;
+    DagMlDataString representation_id;
+    DagMlDataString batch_container;
+    DagMlDataStringArray observation_ids;
+    DagMlDataStringArray sample_ids;
+    DagMlDataUSizeArray shape;
+    DagMlDataF64Array values;
+    DagMlDataU8Array presence_mask;
+    DagMlDataU8Array validity_mask;
+    DagMlDataStringArray feature_names;
+} DagMlDataTensorF64;
+
 #ifndef ARROW_C_DATA_INTERFACE
 #define ARROW_C_DATA_INTERFACE
 
@@ -77,6 +113,7 @@ typedef struct DagMlDataVTable {
 
 DagMlDataVersion dagmldata_version(void);
 void dagmldata_string_free(DagMlDataString value);
+void dagmldata_tensor_f64_free(DagMlDataTensorF64 tensor);
 void dagmldata_arrow_array_free(ArrowArray *array);
 void dagmldata_arrow_schema_free(ArrowSchema *schema);
 DagMlDataStatusCode dagmldata_schema_fingerprint_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *fingerprint_out, DagMlDataString *error_out);
@@ -85,9 +122,11 @@ DagMlDataStatusCode dagmldata_coordinator_target_arrow_json(const uint8_t *json_
 DagMlDataStatusCode dagmldata_coordinator_feature_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_feature_fusion_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_feature_collation_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *out_json, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_coordinator_feature_collation_tensor_f64_json(const uint8_t *json_ptr, size_t json_len, DagMlDataTensorF64 *out_tensor, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_features_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *feature_tables_ptr, size_t feature_tables_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_collation_json(const DagMlDataVTable *vtable, DagMlDataHandle view, DagMlDataBytesView selector_json, DagMlDataString *out_json, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_feature_collation_tensor_f64_json(const DagMlDataVTable *vtable, DagMlDataHandle view, DagMlDataBytesView selector_json, DagMlDataTensorF64 *out_tensor, DagMlDataString *error_out);
 void dagmldata_inmemory_provider_destroy(DagMlDataVTable *vtable);
 
 #ifdef __cplusplus

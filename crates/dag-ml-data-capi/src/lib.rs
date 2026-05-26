@@ -7,8 +7,9 @@ use dag_ml_data_core::{
     collate_feature_block, fuse_feature_blocks, schema_fingerprint, CollationPolicy,
     CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock,
     CoordinatorFeatureTable, CoordinatorHandleArena, CoordinatorTargetBlock,
-    CoordinatorTargetTable, DataView, DatasetSchema, FeatureFusionPolicy, ObservationId,
-    RepresentationId, SampleAlignmentPlan, SampleId, SourceFeatureBlock, SourceId, TargetId,
+    CoordinatorTargetTable, DataView, DatasetSchema, FeatureFusionPolicy, NumericTensorBlock,
+    ObservationId, RepresentationId, SampleAlignmentPlan, SampleId, SourceFeatureBlock, SourceId,
+    TargetId,
 };
 use serde::Deserialize;
 
@@ -52,6 +53,106 @@ impl Default for DagMlDataString {
 pub struct DagMlDataBytesView {
     pub ptr: *const u8,
     pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataStringArray {
+    pub ptr: *mut DagMlDataString,
+    pub len: usize,
+}
+
+impl Default for DagMlDataStringArray {
+    fn default() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataUSizeArray {
+    pub ptr: *mut usize,
+    pub len: usize,
+}
+
+impl Default for DagMlDataUSizeArray {
+    fn default() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataF64Array {
+    pub ptr: *mut f64,
+    pub len: usize,
+}
+
+impl Default for DagMlDataF64Array {
+    fn default() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataU8Array {
+    pub ptr: *mut u8,
+    pub len: usize,
+}
+
+impl Default for DagMlDataU8Array {
+    fn default() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+        }
+    }
+}
+
+pub const DAG_ML_DATA_TENSOR_F64_ABI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataTensorF64 {
+    pub abi_version: u32,
+    pub block_id: DagMlDataString,
+    pub representation_id: DagMlDataString,
+    pub batch_container: DagMlDataString,
+    pub observation_ids: DagMlDataStringArray,
+    pub sample_ids: DagMlDataStringArray,
+    pub shape: DagMlDataUSizeArray,
+    pub values: DagMlDataF64Array,
+    pub presence_mask: DagMlDataU8Array,
+    pub validity_mask: DagMlDataU8Array,
+    pub feature_names: DagMlDataStringArray,
+}
+
+impl Default for DagMlDataTensorF64 {
+    fn default() -> Self {
+        Self {
+            abi_version: DAG_ML_DATA_TENSOR_F64_ABI_VERSION,
+            block_id: DagMlDataString::default(),
+            representation_id: DagMlDataString::default(),
+            batch_container: DagMlDataString::default(),
+            observation_ids: DagMlDataStringArray::default(),
+            sample_ids: DagMlDataStringArray::default(),
+            shape: DagMlDataUSizeArray::default(),
+            values: DagMlDataF64Array::default(),
+            presence_mask: DagMlDataU8Array::default(),
+            validity_mask: DagMlDataU8Array::default(),
+            feature_names: DagMlDataStringArray::default(),
+        }
+    }
 }
 
 #[repr(C)]
@@ -153,6 +254,28 @@ pub unsafe extern "C" fn dagmldata_string_free(value: DagMlDataString) {
     if !value.ptr.is_null() {
         drop(CString::from_raw(value.ptr));
     }
+}
+
+/// Releases a tensor allocated by DAG-ML-DATA.
+///
+/// # Safety
+///
+/// Every pointer inside `tensor` must either be null or come from a
+/// DAG-ML-DATA C ABI function returning `DagMlDataTensorF64`. Passing nested
+/// pointers from any other allocator, or freeing the same tensor twice, is
+/// undefined behavior.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_tensor_f64_free(tensor: DagMlDataTensorF64) {
+    dagmldata_string_free(tensor.block_id);
+    dagmldata_string_free(tensor.representation_id);
+    dagmldata_string_free(tensor.batch_container);
+    free_string_array(tensor.observation_ids);
+    free_string_array(tensor.sample_ids);
+    free_usize_array(tensor.shape);
+    free_f64_array(tensor.values);
+    free_u8_array(tensor.presence_mask);
+    free_u8_array(tensor.validity_mask);
+    free_string_array(tensor.feature_names);
 }
 
 /// Releases an `ArrowArray` allocated by DAG-ML-DATA.
@@ -508,6 +631,54 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_json(
     }
 }
 
+/// Builds an owned row-major f64 tensor from a coordinator feature block.
+///
+/// The request JSON shape is `{ feature_block, policy? }`. The returned tensor
+/// owns contiguous f64 values, shape, identity arrays and optional masks. It
+/// must be released with `dagmldata_tensor_f64_free`.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `out_tensor` must point to writable memory for one
+/// `DagMlDataTensorF64`. `error_out` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_tensor_f64_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_tensor: *mut DagMlDataTensorF64,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_tensor(out_tensor);
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_string(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_tensor.is_null() {
+        set_string(error_out, "tensor output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<CoordinatorFeatureCollationJsonRequest>(json) {
+        Ok(request) => match collate_feature_block(&request.feature_block, &request.policy) {
+            Ok(tensor) => {
+                *out_tensor = tensor_to_c(tensor);
+                DagMlDataStatusCode::Ok
+            }
+            Err(error) => {
+                set_string(error_out, error.to_string());
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Creates a Rust-owned in-memory provider and returns its C ABI vtable.
 ///
 /// `envelope_ptr/envelope_len` must encode a `CoordinatorDataPlanEnvelope`.
@@ -705,9 +876,73 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_json(
     }
 }
 
+/// Builds an owned row-major f64 tensor from feature buffers owned by the Rust
+/// in-memory provider.
+///
+/// The selector JSON shape is `{ feature_set_id, policy? }` for a single
+/// provider feature table, or `{ fusion, policy? }` where `fusion` is a feature
+/// fusion selector accepted by the provider. The returned tensor must be
+/// released with `dagmldata_tensor_f64_free`.
+///
+/// # Safety
+///
+/// `vtable` must point to a live vtable returned by
+/// `dagmldata_inmemory_provider_new_with_features_json`; `selector_json.ptr`
+/// must point to `selector_json.len` readable bytes. `out_tensor` must point to
+/// writable memory for one `DagMlDataTensorF64`. `error_out` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
+    vtable: *const DagMlDataVTable,
+    view: DagMlDataHandle,
+    selector_json: DagMlDataBytesView,
+    out_tensor: *mut DagMlDataTensorF64,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_tensor(out_tensor);
+    clear_string(error_out);
+    if vtable.is_null()
+        || (*vtable).user_data.is_null()
+        || selector_json.ptr.is_null()
+        || out_tensor.is_null()
+    {
+        set_string(
+            error_out,
+            "provider vtable, user_data, selector pointer or tensor output is null",
+        );
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    let selector = slice::from_raw_parts(selector_json.ptr, selector_json.len);
+    match serde_json::from_slice::<ProviderFeatureCollationJsonRequest>(selector) {
+        Ok(request) => match provider_feature_collation_block(provider, view, &request)
+            .and_then(|block| collate_feature_block(&block, &request.policy))
+        {
+            Ok(tensor) => {
+                *out_tensor = tensor_to_c(tensor);
+                DagMlDataStatusCode::Ok
+            }
+            Err(error) => {
+                set_string(error_out, error.to_string());
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 unsafe fn clear_string(out: *mut DagMlDataString) {
     if !out.is_null() {
         *out = DagMlDataString::default();
+    }
+}
+
+unsafe fn clear_tensor(out: *mut DagMlDataTensorF64) {
+    if !out.is_null() {
+        *out = DagMlDataTensorF64::default();
     }
 }
 
@@ -733,13 +968,115 @@ unsafe fn set_string(out: *mut DagMlDataString, value: impl Into<String>) {
     if out.is_null() {
         return;
     }
+    *out = owned_string(value);
+}
+
+fn owned_string(value: impl Into<String>) -> DagMlDataString {
     let sanitized = value.into().replace('\0', "\\0");
     let c_string = CString::new(sanitized).expect("nul bytes were sanitized");
     let len = c_string.as_bytes().len();
-    *out = DagMlDataString {
+    DagMlDataString {
         ptr: c_string.into_raw(),
         len,
+    }
+}
+
+fn tensor_to_c(tensor: NumericTensorBlock) -> DagMlDataTensorF64 {
+    DagMlDataTensorF64 {
+        abi_version: DAG_ML_DATA_TENSOR_F64_ABI_VERSION,
+        block_id: owned_string(tensor.block_id),
+        representation_id: owned_string(tensor.representation_id.as_str()),
+        batch_container: owned_string(tensor.batch_container),
+        observation_ids: owned_string_array(
+            tensor
+                .observation_ids
+                .iter()
+                .map(|observation_id| observation_id.as_str()),
+        ),
+        sample_ids: owned_string_array(
+            tensor.sample_ids.iter().map(|sample_id| sample_id.as_str()),
+        ),
+        shape: owned_usize_array(tensor.shape),
+        values: owned_f64_array(tensor.values),
+        presence_mask: owned_bool_array(tensor.presence_mask),
+        validity_mask: owned_bool_array(tensor.validity_mask),
+        feature_names: tensor
+            .feature_names
+            .map(owned_string_array)
+            .unwrap_or_default(),
+    }
+}
+
+fn owned_string_array<I, S>(values: I) -> DagMlDataStringArray
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let values = values.into_iter().map(owned_string).collect::<Vec<_>>();
+    let (ptr, len) = boxed_slice_parts(values);
+    DagMlDataStringArray { ptr, len }
+}
+
+fn owned_usize_array(values: Vec<usize>) -> DagMlDataUSizeArray {
+    let (ptr, len) = boxed_slice_parts(values);
+    DagMlDataUSizeArray { ptr, len }
+}
+
+fn owned_f64_array(values: Vec<f64>) -> DagMlDataF64Array {
+    let (ptr, len) = boxed_slice_parts(values);
+    DagMlDataF64Array { ptr, len }
+}
+
+fn owned_bool_array(values: Option<Vec<bool>>) -> DagMlDataU8Array {
+    let Some(values) = values else {
+        return DagMlDataU8Array::default();
     };
+    let values = values.into_iter().map(u8::from).collect::<Vec<_>>();
+    let (ptr, len) = boxed_slice_parts(values);
+    DagMlDataU8Array { ptr, len }
+}
+
+fn boxed_slice_parts<T>(values: Vec<T>) -> (*mut T, usize) {
+    if values.is_empty() {
+        return (std::ptr::null_mut(), 0);
+    }
+    let mut boxed = values.into_boxed_slice();
+    let ptr = boxed.as_mut_ptr();
+    let len = boxed.len();
+    std::mem::forget(boxed);
+    (ptr, len)
+}
+
+unsafe fn free_string_array(array: DagMlDataStringArray) {
+    if array.ptr.is_null() {
+        return;
+    }
+    for idx in 0..array.len {
+        let value = std::ptr::read(array.ptr.add(idx));
+        dagmldata_string_free(value);
+    }
+    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+        array.ptr, array.len,
+    )));
+}
+
+unsafe fn free_usize_array(array: DagMlDataUSizeArray) {
+    free_boxed_slice(array.ptr, array.len);
+}
+
+unsafe fn free_f64_array(array: DagMlDataF64Array) {
+    free_boxed_slice(array.ptr, array.len);
+}
+
+unsafe fn free_u8_array(array: DagMlDataU8Array) {
+    free_boxed_slice(array.ptr, array.len);
+}
+
+unsafe fn free_boxed_slice<T>(ptr: *mut T, len: usize) {
+    if ptr.is_null() {
+        return;
+    }
+    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
 }
 
 #[derive(Debug, Deserialize)]
@@ -2283,6 +2620,57 @@ mod tests {
     }
 
     #[test]
+    fn exports_coordinator_feature_collation_tensor_f64_over_abi() {
+        let request = serde_json::json!({
+            "feature_block": {
+                "feature_set_id": "x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["f0", "f1"],
+                "observation_ids": ["obs.S001", "obs.S002"],
+                "sample_ids": ["S001", "S002"],
+                "values": [[1.0, null], [3.0, 4.0]]
+            },
+            "policy": {
+                "emit_mask": true
+            }
+        });
+        let request = serde_json::to_vec(&request).unwrap();
+        let mut tensor = DagMlDataTensorF64::default();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_coordinator_feature_collation_tensor_f64_json(
+                request.as_ptr(),
+                request.len(),
+                &mut tensor,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        unsafe {
+            assert_eq!(tensor.abi_version, DAG_ML_DATA_TENSOR_F64_ABI_VERSION);
+            assert_eq!(borrowed_string(&tensor.block_id), "x");
+            assert_eq!(
+                borrowed_string(&tensor.representation_id),
+                "tabular_numeric"
+            );
+            assert_eq!(
+                string_array_values(tensor.observation_ids),
+                vec!["obs.S001", "obs.S002"]
+            );
+            assert_eq!(string_array_values(tensor.sample_ids), vec!["S001", "S002"]);
+            assert_eq!(usize_array_values(tensor.shape), vec![2, 2]);
+            assert_eq!(f64_array_values(tensor.values), vec![1.0, 0.0, 3.0, 4.0]);
+            assert_eq!(u8_array_values(tensor.presence_mask), vec![1, 1, 1, 1]);
+            assert_eq!(u8_array_values(tensor.validity_mask), vec![1, 0, 1, 1]);
+            assert_eq!(string_array_values(tensor.feature_names), vec!["f0", "f1"]);
+            dagmldata_tensor_f64_free(tensor);
+        }
+    }
+
+    #[test]
     fn inmemory_provider_feature_arrow_accepts_fusion_selector_json() {
         let (envelope, materialization_request) = multisource_provider_fixture();
         let target_tables = b"[]";
@@ -2570,6 +2958,43 @@ mod tests {
             tensor["presence_mask"],
             serde_json::json!([true, true, true, true, true, true])
         );
+
+        let mut tensor = DagMlDataTensorF64::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
+                &vtable,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: selector.as_ptr(),
+                    len: selector.len(),
+                },
+                &mut tensor,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        unsafe {
+            assert_eq!(usize_array_values(tensor.shape), vec![3, 2]);
+            assert_eq!(
+                string_array_values(tensor.observation_ids),
+                vec!["obs.S001.r1", "obs.S001.r2", "obs.S002.r1"]
+            );
+            assert_eq!(
+                f64_array_values(tensor.values),
+                vec![1.0, 10.0, 2.0, 10.0, 3.0, 20.0]
+            );
+            assert_eq!(
+                string_array_values(tensor.feature_names),
+                vec!["nir.n0", "chem.c0"]
+            );
+            assert_eq!(
+                u8_array_values(tensor.presence_mask),
+                vec![1, 1, 1, 1, 1, 1]
+            );
+            dagmldata_tensor_f64_free(tensor);
+        }
 
         unsafe {
             vtable.release.unwrap()(vtable.user_data, view_handle);
@@ -2956,6 +3381,43 @@ mod tests {
         let out = String::from_utf8(bytes.to_vec()).unwrap();
         dagmldata_string_free(value);
         out
+    }
+
+    unsafe fn borrowed_string(value: &DagMlDataString) -> String {
+        assert!(!value.ptr.is_null());
+        let bytes = slice::from_raw_parts(value.ptr.cast::<u8>(), value.len);
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    unsafe fn string_array_values(array: DagMlDataStringArray) -> Vec<String> {
+        if array.ptr.is_null() {
+            return Vec::new();
+        }
+        slice::from_raw_parts(array.ptr, array.len)
+            .iter()
+            .map(|value| borrowed_string(value))
+            .collect()
+    }
+
+    unsafe fn usize_array_values(array: DagMlDataUSizeArray) -> Vec<usize> {
+        if array.ptr.is_null() {
+            return Vec::new();
+        }
+        slice::from_raw_parts(array.ptr, array.len).to_vec()
+    }
+
+    unsafe fn f64_array_values(array: DagMlDataF64Array) -> Vec<f64> {
+        if array.ptr.is_null() {
+            return Vec::new();
+        }
+        slice::from_raw_parts(array.ptr, array.len).to_vec()
+    }
+
+    unsafe fn u8_array_values(array: DagMlDataU8Array) -> Vec<u8> {
+        if array.ptr.is_null() {
+            return Vec::new();
+        }
+        slice::from_raw_parts(array.ptr, array.len).to_vec()
     }
 
     fn multisource_provider_fixture() -> (Vec<u8>, Vec<u8>) {

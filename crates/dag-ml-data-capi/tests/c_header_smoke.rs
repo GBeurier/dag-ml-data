@@ -72,6 +72,7 @@ int main(void) {
     DagMlDataVTable table = {0};
     DagMlDataString error = {0};
     DagMlDataString out = {0};
+    DagMlDataTensorF64 tensor = {0};
     ArrowArray *array = NULL;
     ArrowSchema *schema = NULL;
 
@@ -85,11 +86,14 @@ int main(void) {
     (void)dagmldata_version();
     (void)dagmldata_coordinator_feature_fusion_arrow_json((const uint8_t*)"{}", 2, &array, &schema, &error);
     (void)dagmldata_coordinator_feature_collation_json((const uint8_t*)"{}", 2, &error, &error);
+    (void)dagmldata_coordinator_feature_collation_tensor_f64_json((const uint8_t*)"{}", 2, &tensor, &error);
     (void)dagmldata_inmemory_provider_new_json((const uint8_t*)"{}", 2, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_feature_collation_json(&table, 0, (DagMlDataBytesView){0}, &out, &error);
+    (void)dagmldata_inmemory_provider_feature_collation_tensor_f64_json(&table, 0, (DagMlDataBytesView){0}, &tensor, &error);
     dagmldata_arrow_array_free(array);
     dagmldata_arrow_schema_free(schema);
+    dagmldata_tensor_f64_free(tensor);
     dagmldata_inmemory_provider_destroy(&table);
     return 0;
 }
@@ -197,6 +201,7 @@ int main(int argc, char **argv) {
     const uint8_t view_json[] = "{\"sample_ids\":[\"S001\"],\"columns\":[\"f1\"],\"include_augmented\":false}";
     const uint8_t target_name[] = "y";
     const uint8_t feature_set_name[] = "x";
+    const uint8_t tensor_selector[] = "{\"feature_set_id\":\"x\",\"policy\":{\"emit_mask\":true}}";
     DagMlDataVTable vtable = {0};
     DagMlDataString error = {0};
     DagMlDataHandle data_handle = 0;
@@ -207,6 +212,7 @@ int main(int argc, char **argv) {
     ArrowSchema *target_schema = NULL;
     ArrowArray *feature_array = NULL;
     ArrowSchema *feature_schema = NULL;
+    DagMlDataTensorF64 tensor = {0};
     DagMlDataStatusCode status;
 
     if (argc != 3) {
@@ -279,6 +285,21 @@ int main(int argc, char **argv) {
     }
     dagmldata_arrow_array_free(feature_array);
     dagmldata_arrow_schema_free(feature_schema);
+
+    status = dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
+        &vtable,
+        view_handle,
+        (DagMlDataBytesView){tensor_selector, sizeof(tensor_selector) - 1},
+        &tensor,
+        &error
+    );
+    if (status != DAG_ML_DATA_STATUS_OK || tensor.abi_version != DAG_ML_DATA_TENSOR_F64_ABI_VERSION || tensor.shape.len != 2 || tensor.values.len != 2 || tensor.values.ptr[0] != 10.0 || tensor.values.ptr[1] != 20.0) {
+        return 16;
+    }
+    if (tensor.shape.ptr[0] != 2 || tensor.shape.ptr[1] != 1 || tensor.presence_mask.len != 2) {
+        return 17;
+    }
+    dagmldata_tensor_f64_free(tensor);
 
     vtable.release(vtable.user_data, view_handle);
     vtable.release(vtable.user_data, data_handle);

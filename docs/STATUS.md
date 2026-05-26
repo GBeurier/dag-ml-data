@@ -50,7 +50,8 @@ Implemented:
 - Arrow C Data numeric feature-table export through materialized view handles;
 - Arrow C Data numeric feature-fusion export for aligned multi-source feature
   blocks;
-- JSON numeric feature-collation export for row-major tensor conformance;
+- JSON and ABI-owned f64 numeric feature-collation exports for row-major tensor
+  conformance;
 - Rust-owned in-memory provider vtable with materialize, make-view,
   view-identity, target, feature, release and destroy callbacks;
 - in-memory provider feature tables are converted once at provider creation
@@ -64,7 +65,8 @@ Implemented:
   truncation, presence masks and value-validity masks;
 - provider-backed feature collation over in-memory provider typed buffers,
   including fusion selectors, returning deterministic JSON `NumericTensorBlock`
-  output without changing the provider vtable layout;
+  or ABI-owned `DagMlDataTensorF64` output without changing the provider vtable
+  layout;
 - provider vtable release conformance, including parent data-handle release
   invalidating child view handles;
 - C header and linked C runtime smokes for the provider vtable and Arrow
@@ -81,12 +83,13 @@ Not implemented yet:
 - production runtime data providers with real buffer/view lifecycles;
 - production Arrow feature-buffer provider implementation beyond the current
   in-memory typed numeric buffer conformance;
-- production provider lifecycles for fused feature exports and stable tensor
-  buffer export beyond the in-memory JSON tensor conformance;
+- production provider lifecycles for fused feature exports and production tensor
+  buffer export beyond the in-memory `DagMlDataTensorF64` conformance;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
 Attach real production feature-buffer lifecycles for single-source, fused and
-collated tensor exports, then define the stable non-JSON tensor-buffer ABI.
+collated tensor exports, then extend the tensor ABI beyond f64 row-major blocks
+as needed.

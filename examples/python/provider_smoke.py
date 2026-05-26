@@ -49,6 +49,7 @@ def main() -> None:
         identity = provider.view_identity(view_handle)
         targets = provider.target_values(view_handle, "y")
         features = provider.feature_values(view_handle, "x")
+        tensor = provider.feature_tensor(view_handle, {"feature_set_id": "x", "policy": {"emit_mask": True}})
 
         assert [row["observation_id"] for row in identity] == [
             "obs.S002.base",
@@ -76,6 +77,11 @@ def main() -> None:
                 "features": {"f1": 20.0},
             },
         ]
+        assert tensor["abi_version"] == 1
+        assert tensor["shape"] == [3, 1]
+        assert tensor["values"] == [40.0, 10.0, 20.0]
+        assert tensor["presence_mask"] == [True, True, True]
+        assert tensor["feature_names"] == ["f1"]
 
         provider.release(view_handle)
         provider.release(data_handle)
@@ -86,6 +92,7 @@ def main() -> None:
                 "identity_rows": len(identity),
                 "target_rows": len(targets),
                 "feature_rows": len(features),
+                "tensor_values": len(tensor["values"]),
                 "observations": [row["observation_id"] for row in identity],
             },
             sort_keys=True,

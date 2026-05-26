@@ -70,9 +70,9 @@ kernel using provider-owned typed feature buffers. A core numeric collation
 kernel now produces row-major tensor blocks with deterministic padding,
 truncation, presence masks and value-validity masks. The in-memory provider can
 now route feature-collation JSON selectors, including fused selectors, through
-provider-owned typed buffers and return deterministic `NumericTensorBlock`
-JSON. Production provider lifecycles and a stable non-JSON tensor-buffer ABI are
-still pending.
+provider-owned typed buffers and return deterministic `NumericTensorBlock` JSON
+or ABI-owned `DagMlDataTensorF64` buffers. Production provider lifecycles and
+non-f64 tensor-buffer variants are still pending.
 
 ## Phase 4: nirs4all Connector
 

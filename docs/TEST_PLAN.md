@@ -17,7 +17,7 @@
 | Coordinator envelope | explicit schema version, published envelope JSON Schema version, unsupported schema version refusal, schema/plan/relation fingerprint validation |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability |
 | Views/features/targets | sample/source/augmentation filtering, requested sample-order preservation, repetition-preserving identity, observation-level feature alignment, feature-column filtering, feature representation mismatch refusal, sample-level target de-duplication |
-| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature/fused-feature Arrow exports, feature-collation JSON export, in-memory typed feature-buffer creation, provider-backed feature fusion selector over `feature_arrow`, provider-backed feature-collation selector over typed buffers, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
+| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature/fused-feature Arrow exports, feature-collation JSON and `DagMlDataTensorF64` exports, in-memory typed feature-buffer creation, provider-backed feature fusion selector over `feature_arrow`, provider-backed feature-collation selector over typed buffers, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
 
 ## Conformance Tests
 
@@ -29,7 +29,8 @@ Add after providers exist:
 - provider-backed multi-source feature fusion matches the pure Rust fusion
   kernel for repeated reference rows, missing sources and outer joins;
 - provider-backed feature collation matches the pure Rust collation kernel for
-  single-source and fused feature blocks;
+  single-source and fused feature blocks, in both JSON and `DagMlDataTensorF64`
+  ABI-owned forms;
 - Python and Rust providers return identical provider-vtable identity, feature
   and target Arrow tables;
 - path solver returns same plan independent of adapter registration order;
