@@ -14,7 +14,7 @@
 | Feature fusion | singleton-source broadcast over reference repetitions, deterministic synthetic outer rows, duplicate unnamespaced column refusal, incoherent presence-mask refusal, ambiguous repeated non-reference source refusal |
 | Collation | rectangular feature blocks to row-major tensors, ragged row padding, truncation side rules, presence/value-validity masks, non-numeric feature refusal |
 | Relations | duplicate observations, group consistency, augmentation origin validity |
-| Coordinator envelope | explicit schema version, published envelope JSON Schema version, unsupported schema version refusal, schema/plan/relation fingerprint validation |
+| Coordinator envelope | explicit schema version, published envelope JSON Schema version, shared conformance-pack digests, unsupported schema version refusal, schema/plan/relation fingerprint validation |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability, requested source-id relation scoping |
 | Views/features/targets | sample/source/augmentation filtering, requested sample-order preservation, repetition-preserving identity, observation-level feature alignment, feature-column filtering, feature representation mismatch refusal, sample-level target de-duplication |
 | Feature buffers | typed numeric buffer projection, duplicate feature/observation/column refusal, row-major f64 matrix shape/mask validation, finite-value validation for valid entries, deterministic manifests and fingerprints, store-level duplicate feature-set refusal, core arena bind/project/release lifecycle, source/relation coverage bindings for materialized handles |
@@ -52,6 +52,7 @@ cargo run -p dag-ml-data-cli -- validate-envelope examples/fixtures/oof_campaign
 cargo run -p dag-ml-data-cli -- materialize-envelope --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
 python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null
 python3 -m json.tool docs/contracts/feature_fusion_selector.schema.json >/dev/null
+python3 -m json.tool docs/contracts/conformance_pack.v1.json >/dev/null
 DAG_ML_REPO=../dag-ml python3 scripts/validate_contracts.py
 ```
 

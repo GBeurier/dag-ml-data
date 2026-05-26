@@ -22,7 +22,9 @@ Definition of done:
 Status: implemented for the current fixtures, including deterministic
 model-input planning, coordinator envelope export, explicit envelope schema
 versioning and a published v1 JSON Schema artifact shared and compared with
-`dag-ml` in CI.
+`dag-ml` in CI. A shared conformance-pack manifest now pins the normalized
+schema digests, canonical fixture digests, C ABI requirements and required
+cross-repo checks.
 
 ## Phase 2: Host Providers
 
