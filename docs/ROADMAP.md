@@ -45,8 +45,9 @@ release/destroy callbacks. A stdlib-only Python example now exercises the same
 lifecycle through the public ABI. Native vtable conformance now checks
 materialize/view/export paths plus release behavior, including parent-handle
 release invalidating child views. Provider feature tables are converted once at
-provider construction into typed numeric buffers before Arrow export. Next:
-attach real production feature-buffer lifecycles.
+provider construction into reusable column-major `NumericFeatureBuffer` values
+from `dag-ml-data-core` before Arrow export. Next: attach real production
+feature-buffer lifecycles.
 
 ## Phase 3: Alignment, Fusion And Collation
 

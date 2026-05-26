@@ -138,15 +138,16 @@ observation-level feature tables, then implements:
 - `release` and `destroy`: release handles and provider state.
 
 The conformance provider still receives small JSON fixture feature tables at
-construction time, but it converts them once into typed numeric buffers owned by
-the provider state. `feature_arrow` exports are then view projections over those
-owned buffers, not per-call JSON numeric parsing. Fusion selectors reuse those
-typed buffers, filter each source by source identity in the view, and then call
-the same pure Rust fusion kernel used by the standalone ABI helper. Provider
-feature-collation selectors then collate either a single feature table or the
-fused block into deterministic row-major JSON or `DagMlDataTensorF64` tensors
-without reparsing feature values. Full provider implementations will use the
-same vtable shape while keeping production data buffers host-owned.
+construction time, but it converts them once into column-major
+`NumericFeatureBuffer` values owned by the provider state. `feature_arrow`
+exports are then view projections over those owned buffers, not per-call JSON
+numeric parsing. Fusion selectors reuse those typed buffers, filter each source
+by source identity in the view, and then call the same pure Rust fusion kernel
+used by the standalone ABI helper. Provider feature-collation selectors then
+collate either a single feature table or the fused block into deterministic
+row-major JSON or `DagMlDataTensorF64` tensors without reparsing feature
+values. Full provider implementations will use the same vtable shape while
+keeping production data buffers host-owned.
 
 `tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates

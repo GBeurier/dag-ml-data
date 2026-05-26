@@ -7,10 +7,11 @@ use dag_ml_data_core::{
     collate_feature_block, fuse_feature_blocks, schema_fingerprint, CollationPolicy,
     CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock,
     CoordinatorFeatureTable, CoordinatorHandleArena, CoordinatorTargetBlock,
-    CoordinatorTargetTable, DataView, DatasetSchema, FeatureFusionPolicy, NumericTensorBlock,
-    ObservationId, RepresentationId, SampleAlignmentPlan, SampleId, SourceFeatureBlock, SourceId,
-    TargetId,
+    CoordinatorTargetTable, DataView, DatasetSchema, FeatureFusionPolicy, NumericFeatureBuffer,
+    NumericTensorBlock, SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
 };
+#[cfg(test)]
+use dag_ml_data_core::{ObservationId, RepresentationId, SampleId};
 use serde::Deserialize;
 
 pub type DagMlDataHandle = u64;
@@ -1117,14 +1118,14 @@ struct InMemoryProvider {
     arena: CoordinatorHandleArena,
     envelope: CoordinatorDataPlanEnvelope,
     target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
-    feature_tables: BTreeMap<String, ProviderFeatureTable>,
+    feature_tables: BTreeMap<String, NumericFeatureBuffer>,
 }
 
 impl InMemoryProvider {
     fn new(
         envelope: CoordinatorDataPlanEnvelope,
         target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
-        feature_tables: BTreeMap<String, ProviderFeatureTable>,
+        feature_tables: BTreeMap<String, NumericFeatureBuffer>,
     ) -> dag_ml_data_core::Result<Self> {
         envelope.validate()?;
         Ok(Self {
@@ -1134,27 +1135,6 @@ impl InMemoryProvider {
             feature_tables,
         })
     }
-}
-
-struct ProviderFeatureRow {
-    observation_id: ObservationId,
-    values: Vec<Option<f64>>,
-}
-
-struct ProviderFeatureTable {
-    feature_set_id: String,
-    representation_id: RepresentationId,
-    feature_names: Vec<String>,
-    rows: Vec<ProviderFeatureRow>,
-}
-
-struct ProviderFeatureBlock {
-    feature_set_id: String,
-    representation_id: RepresentationId,
-    feature_names: Vec<String>,
-    observation_ids: Vec<ObservationId>,
-    sample_ids: Vec<SampleId>,
-    values: Vec<Vec<Option<f64>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1189,85 +1169,6 @@ struct ProviderFeatureFusionSource {
     feature_set_id: String,
     #[serde(default)]
     columns: Option<Vec<String>>,
-}
-
-impl ProviderFeatureTable {
-    fn from_json_table(table: CoordinatorFeatureTable) -> dag_ml_data_core::Result<Self> {
-        table.validate()?;
-        let mut rows = Vec::with_capacity(table.rows.len());
-        for row in table.rows {
-            let mut values = Vec::with_capacity(row.values.len());
-            for (feature_idx, value) in row.values.into_iter().enumerate() {
-                let feature_name = &table.feature_names[feature_idx];
-                values.push(numeric_feature_value(
-                    &table.feature_set_id,
-                    &row.observation_id,
-                    feature_name,
-                    value,
-                )?);
-            }
-            rows.push(ProviderFeatureRow {
-                observation_id: row.observation_id,
-                values,
-            });
-        }
-        Ok(Self {
-            feature_set_id: table.feature_set_id,
-            representation_id: table.representation_id,
-            feature_names: table.feature_names,
-            rows,
-        })
-    }
-
-    fn selected_indices(&self, columns: Option<&[String]>) -> dag_ml_data_core::Result<Vec<usize>> {
-        let index_by_name = self
-            .feature_names
-            .iter()
-            .enumerate()
-            .map(|(idx, name)| (name, idx))
-            .collect::<BTreeMap<_, _>>();
-        let indices = if let Some(columns) = columns {
-            columns
-                .iter()
-                .map(|column| {
-                    index_by_name.get(column).copied().ok_or_else(|| {
-                        dag_ml_data_core::DataError::Validation(format!(
-                            "feature table `{}` has no feature column `{}`",
-                            self.feature_set_id, column
-                        ))
-                    })
-                })
-                .collect::<dag_ml_data_core::Result<Vec<_>>>()?
-        } else {
-            (0..self.feature_names.len()).collect()
-        };
-        if indices.is_empty() {
-            return Err(dag_ml_data_core::DataError::Validation(format!(
-                "feature table `{}` selected no feature columns",
-                self.feature_set_id
-            )));
-        }
-        Ok(indices)
-    }
-}
-
-fn numeric_feature_value(
-    feature_set_id: &str,
-    observation_id: &ObservationId,
-    feature_name: &str,
-    value: serde_json::Value,
-) -> dag_ml_data_core::Result<Option<f64>> {
-    match value {
-        serde_json::Value::Null => Ok(None),
-        serde_json::Value::Number(number) => number.as_f64().map(Some).ok_or_else(|| {
-            dag_ml_data_core::DataError::Validation(format!(
-                "feature table `{feature_set_id}` row `{observation_id}` feature `{feature_name}` contains a non-f64 numeric value"
-            ))
-        }),
-        _ => Err(dag_ml_data_core::DataError::Validation(format!(
-            "feature table `{feature_set_id}` row `{observation_id}` feature `{feature_name}` must be numeric or null"
-        ))),
-    }
 }
 
 fn parse_target_tables(
@@ -1307,7 +1208,7 @@ fn parse_target_tables(
 fn parse_feature_tables(
     feature_tables_ptr: *const u8,
     feature_tables_len: usize,
-) -> dag_ml_data_core::Result<BTreeMap<String, ProviderFeatureTable>> {
+) -> dag_ml_data_core::Result<BTreeMap<String, NumericFeatureBuffer>> {
     if feature_tables_ptr.is_null() {
         if feature_tables_len != 0 {
             return Err(dag_ml_data_core::DataError::Validation(
@@ -1328,7 +1229,7 @@ fn parse_feature_tables(
     let mut by_feature_set = BTreeMap::new();
     for table in tables {
         let feature_set_id = table.feature_set_id.clone();
-        let table = ProviderFeatureTable::from_json_table(table)?;
+        let table = NumericFeatureBuffer::from_feature_table(table)?;
         if by_feature_set
             .insert(feature_set_id.clone(), table)
             .is_some()
@@ -1534,7 +1435,7 @@ unsafe extern "C" fn provider_feature_arrow(
             None => return DagMlDataStatusCode::ValidationError,
         };
         provider_feature_block(provider, view, feature_table)
-            .and_then(|features| build_provider_feature_arrow(&features))
+            .and_then(|features| build_feature_arrow(&features))
     };
     match result {
         Ok((array, schema)) => {
@@ -1675,18 +1576,18 @@ fn build_feature_block(
 fn provider_feature_block(
     provider: &InMemoryProvider,
     view_handle: u64,
-    feature_table: &ProviderFeatureTable,
-) -> dag_ml_data_core::Result<ProviderFeatureBlock> {
+    feature_table: &NumericFeatureBuffer,
+) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
     provider_feature_block_filtered(provider, view_handle, feature_table, None, None)
 }
 
 fn provider_feature_block_filtered(
     provider: &InMemoryProvider,
     view_handle: u64,
-    feature_table: &ProviderFeatureTable,
+    feature_table: &NumericFeatureBuffer,
     source_id: Option<&SourceId>,
     columns: Option<&[String]>,
-) -> dag_ml_data_core::Result<ProviderFeatureBlock> {
+) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
     let view_record = provider.arena.view_record(view_handle).ok_or_else(|| {
         dag_ml_data_core::DataError::Validation(format!("unknown view handle `{view_handle}`"))
     })?;
@@ -1713,48 +1614,7 @@ fn provider_feature_block_filtered(
     } else {
         columns.or(view_record.view.columns.as_deref())
     };
-    let selected_indices = feature_table.selected_indices(selected_columns)?;
-    let rows_by_observation = feature_table
-        .rows
-        .iter()
-        .map(|row| (&row.observation_id, row))
-        .collect::<BTreeMap<_, _>>();
-    let mut observation_ids = Vec::with_capacity(relations.records.len());
-    let mut sample_ids = Vec::with_capacity(relations.records.len());
-    let mut values = Vec::with_capacity(relations.records.len());
-    for relation in relations.records.iter().filter(|relation| {
-        source_id
-            .map(|source_id| relation.source_id.as_ref() == Some(source_id))
-            .unwrap_or(true)
-    }) {
-        let row = rows_by_observation
-            .get(&relation.observation_id)
-            .ok_or_else(|| {
-                dag_ml_data_core::DataError::Validation(format!(
-                    "feature table `{}` has no row for observation `{}`",
-                    feature_table.feature_set_id, relation.observation_id
-                ))
-            })?;
-        observation_ids.push(relation.observation_id.clone());
-        sample_ids.push(relation.sample_id.clone());
-        values.push(
-            selected_indices
-                .iter()
-                .map(|idx| row.values[*idx])
-                .collect(),
-        );
-    }
-    Ok(ProviderFeatureBlock {
-        feature_set_id: feature_table.feature_set_id.clone(),
-        representation_id: feature_table.representation_id.clone(),
-        feature_names: selected_indices
-            .iter()
-            .map(|idx| feature_table.feature_names[*idx].clone())
-            .collect(),
-        observation_ids,
-        sample_ids,
-        values,
-    })
+    feature_table.project_relations(&relations, source_id, selected_columns)
 }
 
 fn provider_feature_fusion_block(
@@ -1787,7 +1647,7 @@ fn provider_feature_fusion_block(
         )?;
         sources.push(SourceFeatureBlock {
             source_id: source.source_id.clone(),
-            block: provider_feature_block_to_coordinator(block),
+            block,
         });
     }
     fuse_feature_blocks(
@@ -1815,8 +1675,7 @@ fn provider_feature_collation_block(
                     "unknown feature table `{feature_set_id}` for collation"
                 ))
             })?;
-            let block = provider_feature_block(provider, view_handle, feature_table)?;
-            Ok(provider_feature_block_to_coordinator(block))
+            provider_feature_block(provider, view_handle, feature_table)
         }
         (None, Some(fusion)) => provider_feature_fusion_block(provider, view_handle, fusion),
         (Some(_), Some(_)) => Err(dag_ml_data_core::DataError::Validation(
@@ -1826,25 +1685,6 @@ fn provider_feature_collation_block(
         (None, None) => Err(dag_ml_data_core::DataError::Validation(
             "feature collation selector requires feature_set_id or fusion".to_string(),
         )),
-    }
-}
-
-fn provider_feature_block_to_coordinator(block: ProviderFeatureBlock) -> CoordinatorFeatureBlock {
-    CoordinatorFeatureBlock {
-        feature_set_id: block.feature_set_id,
-        representation_id: block.representation_id,
-        feature_names: block.feature_names,
-        observation_ids: block.observation_ids,
-        sample_ids: block.sample_ids,
-        values: block
-            .values
-            .into_iter()
-            .map(|row| {
-                row.into_iter()
-                    .map(|value| value.map_or(serde_json::Value::Null, serde_json::Value::from))
-                    .collect()
-            })
-            .collect(),
     }
 }
 
@@ -1931,43 +1771,6 @@ fn build_feature_arrow(
             .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
         child_arrays.push(Box::into_raw(Box::new(f64_array(
             numeric_values.into_iter(),
-        ))));
-        child_schemas.push(Box::into_raw(Box::new(field_schema(
-            feature_name,
-            "g",
-            true,
-        )?)));
-    }
-    Ok((
-        struct_array(features.observation_ids.len(), child_arrays),
-        struct_schema("coordinator_features", child_schemas)?,
-    ))
-}
-
-fn build_provider_feature_arrow(
-    features: &ProviderFeatureBlock,
-) -> dag_ml_data_core::Result<(ArrowArray, ArrowSchema)> {
-    let mut child_arrays = vec![
-        Box::into_raw(Box::new(string_array(
-            features
-                .observation_ids
-                .iter()
-                .map(|observation_id| Some(observation_id.as_str())),
-        )?)),
-        Box::into_raw(Box::new(string_array(
-            features
-                .sample_ids
-                .iter()
-                .map(|sample_id| Some(sample_id.as_str())),
-        )?)),
-    ];
-    let mut child_schemas = vec![
-        Box::into_raw(Box::new(field_schema("observation_id", "u", false)?)),
-        Box::into_raw(Box::new(field_schema("sample_id", "u", false)?)),
-    ];
-    for (feature_idx, feature_name) in features.feature_names.iter().enumerate() {
-        child_arrays.push(Box::into_raw(Box::new(f64_array(
-            features.values.iter().map(|row| row[feature_idx]),
         ))));
         child_schemas.push(Box::into_raw(Box::new(field_schema(
             feature_name,

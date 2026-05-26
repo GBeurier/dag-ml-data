@@ -57,6 +57,9 @@ Implemented:
 - in-memory provider feature tables are converted once at provider creation
   into typed numeric buffers, so provider exports no longer re-parse JSON values
   on every `feature_arrow` call;
+- typed numeric feature buffers now live in `dag-ml-data-core` as reusable
+  column-major `NumericFeatureBuffer` contracts with projection tests, rather
+  than being private C ABI fixture logic;
 - provider `feature_arrow` accepts JSON fusion selectors and routes
   source-filtered provider-owned feature buffers through the core feature-fusion
   kernel;
