@@ -34,6 +34,16 @@ pub struct NumericFeatureBufferManifest {
     pub buffer_fingerprint: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NumericFeatureBufferBinding {
+    pub feature_set_id: String,
+    pub representation_id: RepresentationId,
+    pub source_ids: Vec<SourceId>,
+    pub row_count: usize,
+    pub feature_count: usize,
+    pub buffer_fingerprint: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NumericFeatureBufferStore {
     buffers: BTreeMap<String, NumericFeatureBuffer>,
@@ -95,6 +105,10 @@ impl NumericFeatureBuffer {
 
     pub fn estimated_value_bytes(&self) -> usize {
         self.value_count() * std::mem::size_of::<f64>()
+    }
+
+    pub fn contains_observation(&self, observation_id: &ObservationId) -> bool {
+        self.row_index_by_observation.contains_key(observation_id)
     }
 
     pub fn fingerprint(&self) -> Result<String> {
@@ -223,6 +237,20 @@ impl NumericFeatureBuffer {
             values,
         })
     }
+
+    fn binding_for_sources(
+        &self,
+        source_ids: Vec<SourceId>,
+    ) -> Result<NumericFeatureBufferBinding> {
+        Ok(NumericFeatureBufferBinding {
+            feature_set_id: self.feature_set_id.clone(),
+            representation_id: self.representation_id.clone(),
+            source_ids,
+            row_count: self.row_count(),
+            feature_count: self.feature_count(),
+            buffer_fingerprint: self.fingerprint()?,
+        })
+    }
 }
 
 impl NumericFeatureBufferStore {
@@ -269,6 +297,53 @@ impl NumericFeatureBufferStore {
             .values()
             .map(NumericFeatureBuffer::manifest)
             .collect()
+    }
+
+    pub fn bindings_for_relations(
+        &self,
+        relations: &CoordinatorRelationSet,
+        representation_id: &RepresentationId,
+    ) -> Result<Vec<NumericFeatureBufferBinding>> {
+        relations.validate()?;
+        let source_ids = relations
+            .records
+            .iter()
+            .filter_map(|relation| relation.source_id.as_ref())
+            .collect::<BTreeSet<_>>();
+
+        let mut bindings = Vec::new();
+        for buffer in self.buffers.values() {
+            if &buffer.representation_id != representation_id {
+                continue;
+            }
+            let mut covered_sources = Vec::new();
+            if source_ids.is_empty() {
+                if relations
+                    .records
+                    .iter()
+                    .all(|relation| buffer.contains_observation(&relation.observation_id))
+                {
+                    bindings.push(buffer.binding_for_sources(Vec::new())?);
+                }
+                continue;
+            }
+            for source_id in &source_ids {
+                let source_records = relations
+                    .records
+                    .iter()
+                    .filter(|relation| relation.source_id.as_ref() == Some(*source_id));
+                if source_records
+                    .clone()
+                    .all(|relation| buffer.contains_observation(&relation.observation_id))
+                {
+                    covered_sources.push((*source_id).clone());
+                }
+            }
+            if !covered_sources.is_empty() {
+                bindings.push(buffer.binding_for_sources(covered_sources)?);
+            }
+        }
+        Ok(bindings)
     }
 
     pub fn project_relations(
@@ -452,6 +527,32 @@ mod tests {
             block.values,
             vec![vec![serde_json::json!(2.0), serde_json::json!(20.0)]]
         );
+    }
+
+    #[test]
+    fn store_derives_source_bindings_from_relation_coverage() {
+        let store = NumericFeatureBufferStore::from_feature_tables(vec![table()]).unwrap();
+        let bindings = store
+            .bindings_for_relations(
+                &relations(),
+                &RepresentationId::new("tabular_numeric").unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].feature_set_id, "x");
+        assert_eq!(bindings[0].source_ids, vec![source("chem"), source("nir")]);
+        assert_eq!(bindings[0].row_count, 3);
+        assert_eq!(bindings[0].feature_count, 2);
+        assert_eq!(bindings[0].buffer_fingerprint.len(), 64);
+
+        let wrong_representation = store
+            .bindings_for_relations(
+                &relations(),
+                &RepresentationId::new("dense_signal").unwrap(),
+            )
+            .unwrap();
+        assert!(wrong_representation.is_empty());
     }
 
     #[test]

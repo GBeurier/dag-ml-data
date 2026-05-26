@@ -35,6 +35,8 @@ memory while exposing deterministic descriptors and identity tables to the core.
   plus JSON feature tables used by binding conformance tests;
 - `dagmldata_inmemory_provider_feature_buffer_manifest_json` for deterministic
   JSON manifests of provider-owned numeric feature buffers;
+- `dagmldata_inmemory_provider_data_feature_buffer_manifest_json` for
+  data-handle-scoped feature-buffer bindings;
 - `dagmldata_inmemory_provider_feature_collation_json` for JSON row-major
   tensor collation from feature buffers owned by the in-memory provider;
 - `dagmldata_inmemory_provider_feature_collation_tensor_f64_json` for ABI-owned
@@ -127,6 +129,13 @@ ids, row/feature/value counts, estimated f64 storage bytes and a deterministic
 buffer fingerprint. Bindings can use this before creating feature views or
 tensors to verify that the provider loaded the expected data buffers.
 
+`dagmldata_inmemory_provider_data_feature_buffer_manifest_json` returns
+`NumericFeatureBufferBinding` values for one live materialized data handle. A
+binding is created during `materialize` only when a provider buffer has the same
+output representation as the data handle and covers the handle's scoped
+coordinator observations for one or more source ids. The binding export refuses
+unknown or released data handles.
+
 ## In-Memory Provider VTable
 
 The in-memory provider is the current ABI conformance target. It accepts one
@@ -150,14 +159,17 @@ observation-level feature tables, then implements:
 The conformance provider still receives small JSON fixture feature tables at
 construction time, but it converts them once into column-major
 `NumericFeatureBuffer` values grouped by `NumericFeatureBufferStore` in the
-provider state. `feature_arrow` exports are then view projections over those
-owned buffers, not per-call JSON numeric parsing. Fusion selectors reuse those
-typed buffers, filter each source by source identity in the view, and then call
-the same pure Rust fusion kernel used by the standalone ABI helper. Provider
-feature-collation selectors then collate either a single feature table or the
-fused block into deterministic row-major JSON or `DagMlDataTensorF64` tensors
-without reparsing feature values. Full provider implementations will use the
-same vtable shape while keeping production data buffers host-owned.
+provider state. At `materialize`, the provider computes data-handle-scoped
+buffer bindings from the scoped coordinator relations and materialized output
+representation. `feature_arrow` exports are then view projections over bound
+buffers, not per-call JSON numeric parsing. Fusion selectors reuse those typed
+buffers, filter each source by source identity in the view, validate that each
+source buffer is bound to the parent data handle, and then call the same pure
+Rust fusion kernel used by the standalone ABI helper. Provider feature-collation
+selectors then collate either a single feature table or the fused block into
+deterministic row-major JSON or `DagMlDataTensorF64` tensors without reparsing
+feature values. Full provider implementations will use the same vtable shape
+while keeping production data buffers host-owned.
 
 `tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
@@ -189,5 +201,7 @@ identity export, target export, feature export, release and destroy.
    typed buffers.
 8. Expose provider-backed collation as `DagMlDataTensorF64` for bindings.
 9. Expose provider-owned feature-buffer manifests for binding conformance.
-10. Replace in-memory typed fixture buffers with production feature-buffer
+10. Bind compatible feature buffers to live materialized data handles and
+    validate those bindings before Arrow/tensor export.
+11. Replace in-memory typed fixture buffers with production feature-buffer
    lifecycles.

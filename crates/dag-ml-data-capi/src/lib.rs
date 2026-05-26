@@ -1,13 +1,15 @@
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::slice;
 
 use dag_ml_data_core::{
     collate_feature_block, fuse_feature_blocks, schema_fingerprint, CollationPolicy,
-    CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock,
-    CoordinatorFeatureTable, CoordinatorHandleArena, CoordinatorTargetBlock,
-    CoordinatorTargetTable, DataView, DatasetSchema, FeatureFusionPolicy, NumericFeatureBuffer,
+    CoordinatorDataHandleRecord, CoordinatorDataMaterializationRequest,
+    CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
+    CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
+    DatasetSchema, FeatureFusionPolicy, NumericFeatureBuffer, NumericFeatureBufferBinding,
     NumericFeatureBufferStore, NumericTensorBlock, SampleAlignmentPlan, SourceFeatureBlock,
     SourceId, TargetId,
 };
@@ -869,6 +871,46 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_buffer_manifest_jso
     }
 }
 
+/// Returns feature-buffer bindings for one live materialized data handle.
+///
+/// Unlike the provider-wide manifest export, this reports only buffers whose
+/// representation and observation coverage are compatible with the scoped
+/// coordinator relations owned by `data_handle`.
+///
+/// # Safety
+///
+/// `vtable` must point to a live vtable returned by
+/// `dagmldata_inmemory_provider_new_with_features_json`. Returned strings must
+/// be released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
+    vtable: *const DagMlDataVTable,
+    data_handle: DagMlDataHandle,
+    out_json: *mut DagMlDataString,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(out_json);
+    clear_string(error_out);
+    if vtable.is_null() || (*vtable).user_data.is_null() {
+        set_string(error_out, "provider vtable or user_data is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    match data_feature_bindings(provider, data_handle)
+        .and_then(|bindings| serde_json::to_string(&bindings).map_err(Into::into))
+    {
+        Ok(json) => {
+            set_string(out_json, json);
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Builds a JSON row-major tensor from feature buffers owned by the Rust
 /// in-memory provider.
 ///
@@ -1165,6 +1207,8 @@ struct InMemoryProvider {
     envelope: CoordinatorDataPlanEnvelope,
     target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
     feature_store: NumericFeatureBufferStore,
+    data_feature_bindings:
+        RefCell<BTreeMap<DagMlDataHandle, BTreeMap<String, NumericFeatureBufferBinding>>>,
 }
 
 impl InMemoryProvider {
@@ -1179,6 +1223,7 @@ impl InMemoryProvider {
             envelope,
             target_tables,
             feature_store,
+            data_feature_bindings: RefCell::new(BTreeMap::new()),
         })
     }
 }
@@ -1320,7 +1365,13 @@ unsafe extern "C" fn provider_materialize(
         Ok(request) => request,
         Err(_) => return DagMlDataStatusCode::ValidationError,
     };
-    match provider.arena.materialize(&provider.envelope, &request) {
+    match provider
+        .arena
+        .materialize(&provider.envelope, &request)
+        .and_then(|record| {
+            bind_data_feature_buffers(provider, &record)?;
+            Ok(record)
+        }) {
         Ok(record) => {
             *out_handle = record.handle.handle;
             DagMlDataStatusCode::Ok
@@ -1486,6 +1537,7 @@ unsafe extern "C" fn provider_release(user_data: *mut c_void, handle: DagMlDataH
     }
     let provider = &*(user_data.cast::<InMemoryProvider>());
     provider.arena.release_handle(handle);
+    provider.data_feature_bindings.borrow_mut().remove(&handle);
 }
 
 unsafe extern "C" fn provider_destroy(user_data: *mut c_void) {
@@ -1606,6 +1658,42 @@ fn build_feature_block(
     arena.feature_values(view.handle.handle, &request.feature_table)
 }
 
+fn bind_data_feature_buffers(
+    provider: &InMemoryProvider,
+    record: &CoordinatorDataHandleRecord,
+) -> dag_ml_data_core::Result<()> {
+    let bindings = match provider.arena.data_identity(record.handle.handle) {
+        Ok(relations) => provider
+            .feature_store
+            .bindings_for_relations(&relations, &record.output_representation)?,
+        Err(_) => Vec::new(),
+    };
+    provider.data_feature_bindings.borrow_mut().insert(
+        record.handle.handle,
+        bindings
+            .into_iter()
+            .map(|binding| (binding.feature_set_id.clone(), binding))
+            .collect(),
+    );
+    Ok(())
+}
+
+fn data_feature_bindings(
+    provider: &InMemoryProvider,
+    data_handle: DagMlDataHandle,
+) -> dag_ml_data_core::Result<Vec<NumericFeatureBufferBinding>> {
+    provider.arena.handle_record(data_handle).ok_or_else(|| {
+        dag_ml_data_core::DataError::Validation(format!("unknown data handle `{data_handle}`"))
+    })?;
+    let bindings = provider.data_feature_bindings.borrow();
+    let bindings = bindings.get(&data_handle).ok_or_else(|| {
+        dag_ml_data_core::DataError::Validation(format!(
+            "data handle `{data_handle}` has no feature buffer bindings"
+        ))
+    })?;
+    Ok(bindings.values().cloned().collect())
+}
+
 fn provider_feature_block(
     provider: &InMemoryProvider,
     view_handle: u64,
@@ -1633,6 +1721,14 @@ fn provider_feature_block_filtered(
                 view_record.parent_handle.handle
             ))
         })?;
+    let relations = provider.arena.view_identity(view_handle)?;
+    validate_bound_feature_buffer(
+        provider,
+        &parent_record,
+        &relations,
+        feature_table,
+        source_id,
+    )?;
     if feature_table.representation_id != parent_record.output_representation {
         return Err(dag_ml_data_core::DataError::Validation(format!(
             "feature table `{}` representation `{}` does not match materialized output representation `{}`",
@@ -1641,13 +1737,63 @@ fn provider_feature_block_filtered(
             parent_record.output_representation
         )));
     }
-    let relations = provider.arena.view_identity(view_handle)?;
     let selected_columns = if source_id.is_some() {
         columns
     } else {
         columns.or(view_record.view.columns.as_deref())
     };
     feature_table.project_relations(&relations, source_id, selected_columns)
+}
+
+fn validate_bound_feature_buffer(
+    provider: &InMemoryProvider,
+    parent_record: &CoordinatorDataHandleRecord,
+    relations: &dag_ml_data_core::CoordinatorRelationSet,
+    feature_table: &NumericFeatureBuffer,
+    source_id: Option<&SourceId>,
+) -> dag_ml_data_core::Result<()> {
+    let bindings = provider.data_feature_bindings.borrow();
+    let binding = bindings
+        .get(&parent_record.handle.handle)
+        .and_then(|bindings| bindings.get(&feature_table.feature_set_id))
+        .ok_or_else(|| {
+            dag_ml_data_core::DataError::Validation(format!(
+                "feature buffer `{}` is not bound to data handle `{}`",
+                feature_table.feature_set_id, parent_record.handle.handle
+            ))
+        })?;
+    if binding.representation_id != parent_record.output_representation {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "feature buffer `{}` binding representation `{}` does not match materialized output representation `{}`",
+            binding.feature_set_id, binding.representation_id, parent_record.output_representation
+        )));
+    }
+    let relation_source_ids = relations
+        .records
+        .iter()
+        .filter_map(|relation| relation.source_id.as_ref())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let required_source_ids = if let Some(source_id) = source_id {
+        if relation_source_ids.is_empty() || !relation_source_ids.contains(source_id) {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "feature buffer `{}` source `{}` is not present in view for data handle `{}`",
+                feature_table.feature_set_id, source_id, parent_record.handle.handle
+            )));
+        }
+        vec![source_id.clone()]
+    } else {
+        relation_source_ids.into_iter().collect::<Vec<_>>()
+    };
+    for source_id in &required_source_ids {
+        if !binding.source_ids.contains(source_id) {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "feature buffer `{}` is not bound to source `{}` for data handle `{}`",
+                feature_table.feature_set_id, source_id, parent_record.handle.handle
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn provider_feature_fusion_block(
@@ -2841,6 +2987,187 @@ mod tests {
     }
 
     #[test]
+    fn inmemory_provider_refuses_unbound_feature_buffers_for_source_scoped_handle() {
+        let (envelope, materialization_request) = multisource_provider_fixture();
+        let mut materialization_request: serde_json::Value =
+            serde_json::from_slice(&materialization_request).unwrap();
+        materialization_request["source_ids"] = serde_json::json!(["nir"]);
+        let materialization_request = serde_json::to_vec(&materialization_request).unwrap();
+        let target_tables = b"[]";
+        let feature_tables = serde_json::to_vec(&serde_json::json!([
+            {
+                "feature_set_id": "nir_x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["n0"],
+                "rows": [
+                    {"observation_id": "obs.S001.r1", "values": [1.0]},
+                    {"observation_id": "obs.S001.r2", "values": [2.0]},
+                    {"observation_id": "obs.S002.r1", "values": [3.0]}
+                ]
+            },
+            {
+                "feature_set_id": "chem_x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["c0"],
+                "rows": [
+                    {"observation_id": "chem.S001", "values": [10.0]},
+                    {"observation_id": "chem.S002", "values": [20.0]}
+                ]
+            }
+        ]))
+        .unwrap();
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_features_json(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                feature_tables.as_ptr(),
+                feature_tables.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut data_manifest_json = DagMlDataString::default();
+        let mut data_manifest_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
+                &vtable,
+                data_handle,
+                &mut data_manifest_json,
+                &mut data_manifest_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(data_manifest_error.ptr.is_null());
+        let manifests: serde_json::Value =
+            serde_json::from_str(&unsafe { string_value(data_manifest_json) }).unwrap();
+        assert_eq!(manifests.as_array().unwrap().len(), 1);
+        assert_eq!(manifests[0]["feature_set_id"], serde_json::json!("nir_x"));
+        assert_eq!(manifests[0]["source_ids"], serde_json::json!(["nir"]));
+
+        let view_json = serde_json::to_vec(&serde_json::json!({
+            "sample_ids": ["S001", "S002"],
+            "include_augmented": false
+        }))
+        .unwrap();
+        let mut view_handle = 0;
+        let status = unsafe {
+            vtable.make_view.unwrap()(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: view_json.as_ptr(),
+                    len: view_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut chem_array = std::ptr::null_mut();
+        let mut chem_schema = std::ptr::null_mut();
+        let feature_set_name = b"chem_x";
+        let status = unsafe {
+            vtable.feature_arrow.unwrap()(
+                vtable.user_data,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: feature_set_name.as_ptr(),
+                    len: feature_set_name.len(),
+                },
+                &mut chem_array,
+                &mut chem_schema,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(chem_array.is_null());
+        assert!(chem_schema.is_null());
+
+        let selector = serde_json::to_vec(&serde_json::json!({
+            "fusion": {
+                "schema_version": 1,
+                "feature_set_id": "bad_fused",
+                "sources": [
+                    {"source_id": "chem", "feature_set_id": "chem_x"}
+                ],
+                "alignment": {
+                    "mode": "inner",
+                    "sample_ids": ["S001", "S002"],
+                    "masks": [
+                        {"source_id": "chem", "sample_ids": ["S001", "S002"], "present": [true, true]}
+                    ]
+                }
+            },
+            "policy": {
+                "emit_mask": true
+            }
+        }))
+        .unwrap();
+        let mut out_json = DagMlDataString::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_collation_json(
+                &vtable,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: selector.as_ptr(),
+                    len: selector.len(),
+                },
+                &mut out_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(out_json.ptr.is_null());
+        unsafe {
+            dagmldata_string_free(error);
+        }
+
+        let mut tensor = DagMlDataTensorF64::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
+                &vtable,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: selector.as_ptr(),
+                    len: selector.len(),
+                },
+                &mut tensor,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(tensor.values.ptr.is_null());
+        unsafe {
+            dagmldata_string_free(error);
+            vtable.release.unwrap()(vtable.user_data, view_handle);
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    #[test]
     fn inmemory_provider_vtable_materializes_views_identity_targets_and_features() {
         let envelope = include_bytes!(
             "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
@@ -2942,6 +3269,23 @@ mod tests {
         };
         assert_eq!(status, DagMlDataStatusCode::Ok);
         assert_eq!(data_handle, 1);
+        let mut data_manifest_json = DagMlDataString::default();
+        let mut data_manifest_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
+                &vtable,
+                data_handle,
+                &mut data_manifest_json,
+                &mut data_manifest_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(data_manifest_error.ptr.is_null());
+        let data_manifests: serde_json::Value =
+            serde_json::from_str(&unsafe { string_value(data_manifest_json) }).unwrap();
+        assert_eq!(data_manifests.as_array().unwrap().len(), 1);
+        assert_eq!(data_manifests[0]["feature_set_id"], serde_json::json!("x"));
+        assert_eq!(data_manifests[0]["source_ids"], serde_json::json!(["nir"]));
 
         let view_json = serde_json::to_vec(
             &serde_json::json!({"sample_ids": ["S001"], "columns": ["f1"], "include_augmented": false}),
@@ -3078,6 +3422,53 @@ mod tests {
         assert!(bad_feature_array.is_null());
         assert!(bad_feature_schema.is_null());
 
+        let bad_selector = serde_json::to_vec(&serde_json::json!({
+            "feature_set_id": "x_bad_representation",
+            "policy": {
+                "emit_mask": true
+            }
+        }))
+        .unwrap();
+        let mut bad_tensor_json = DagMlDataString::default();
+        let mut bad_tensor_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_collation_json(
+                &vtable,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: bad_selector.as_ptr(),
+                    len: bad_selector.len(),
+                },
+                &mut bad_tensor_json,
+                &mut bad_tensor_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(bad_tensor_json.ptr.is_null());
+        unsafe {
+            dagmldata_string_free(bad_tensor_error);
+        }
+
+        let mut bad_tensor = DagMlDataTensorF64::default();
+        let mut bad_tensor_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
+                &vtable,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: bad_selector.as_ptr(),
+                    len: bad_selector.len(),
+                },
+                &mut bad_tensor,
+                &mut bad_tensor_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(bad_tensor.values.ptr.is_null());
+        unsafe {
+            dagmldata_string_free(bad_tensor_error);
+        }
+
         unsafe {
             vtable.release.unwrap()(vtable.user_data, view_handle);
         }
@@ -3112,6 +3503,21 @@ mod tests {
         unsafe {
             vtable.release.unwrap()(vtable.user_data, data_handle);
         }
+        let mut stale_manifest_json = DagMlDataString::default();
+        let mut stale_manifest_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
+                &vtable,
+                data_handle,
+                &mut stale_manifest_json,
+                &mut stale_manifest_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(stale_manifest_json.ptr.is_null());
+        unsafe {
+            dagmldata_string_free(stale_manifest_error);
+        }
         let mut child_array = std::ptr::null_mut();
         let mut child_schema = std::ptr::null_mut();
         let status = unsafe {
@@ -3125,6 +3531,71 @@ mod tests {
         assert_eq!(status, DagMlDataStatusCode::ValidationError);
         assert!(child_array.is_null());
         assert!(child_schema.is_null());
+
+        let mut stale_feature_array = std::ptr::null_mut();
+        let mut stale_feature_schema = std::ptr::null_mut();
+        let status = unsafe {
+            feature_arrow(
+                vtable.user_data,
+                child_view_handle,
+                DagMlDataBytesView {
+                    ptr: feature_set_name.as_ptr(),
+                    len: feature_set_name.len(),
+                },
+                &mut stale_feature_array,
+                &mut stale_feature_schema,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(stale_feature_array.is_null());
+        assert!(stale_feature_schema.is_null());
+
+        let selector = serde_json::to_vec(&serde_json::json!({
+            "feature_set_id": "x",
+            "policy": {
+                "emit_mask": true
+            }
+        }))
+        .unwrap();
+        let mut stale_tensor_json = DagMlDataString::default();
+        let mut stale_tensor_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_collation_json(
+                &vtable,
+                child_view_handle,
+                DagMlDataBytesView {
+                    ptr: selector.as_ptr(),
+                    len: selector.len(),
+                },
+                &mut stale_tensor_json,
+                &mut stale_tensor_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(stale_tensor_json.ptr.is_null());
+        unsafe {
+            dagmldata_string_free(stale_tensor_error);
+        }
+
+        let mut stale_tensor = DagMlDataTensorF64::default();
+        let mut stale_tensor_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
+                &vtable,
+                child_view_handle,
+                DagMlDataBytesView {
+                    ptr: selector.as_ptr(),
+                    len: selector.len(),
+                },
+                &mut stale_tensor,
+                &mut stale_tensor_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(stale_tensor.values.ptr.is_null());
+        unsafe {
+            dagmldata_string_free(stale_tensor_error);
+        }
 
         let mut orphan_view_handle = 0;
         let status = unsafe {

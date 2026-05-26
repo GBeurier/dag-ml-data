@@ -49,8 +49,12 @@ provider construction into reusable column-major `NumericFeatureBuffer` values
 from `dag-ml-data-core`, grouped in a `NumericFeatureBufferStore`, and exposed
 through deterministic feature-buffer manifests before Arrow export. Materialized
 data handles now scope coordinator relations to requested source ids before any
-view is created. Next: replace the in-memory fixture store with production
-buffer arenas using the same manifest/projection contract.
+view is created, and each materialized data handle receives deterministic
+feature-buffer bindings for buffers whose representation and observation
+coverage match the handle's scoped relations. Provider feature/fusion/collation
+exports validate those bindings before exporting Arrow or tensors. Next:
+replace the in-memory fixture store with production buffer arenas using the same
+manifest/binding/projection contract.
 
 ## Phase 3: Alignment, Fusion And Collation
 

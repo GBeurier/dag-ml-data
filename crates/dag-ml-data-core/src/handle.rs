@@ -359,6 +359,14 @@ impl CoordinatorHandleArena {
             .ok_or_else(|| DataError::Validation(format!("unknown view handle `{handle}`")))
     }
 
+    pub fn data_identity(&self, handle: u64) -> Result<CoordinatorRelationSet> {
+        self.data_relations
+            .borrow()
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| DataError::Validation(format!("unknown data handle `{handle}`")))
+    }
+
     pub fn release_handle(&self, handle: u64) -> bool {
         if self.view_records.borrow_mut().remove(&handle).is_some() {
             self.view_relations.borrow_mut().remove(&handle);
@@ -839,6 +847,14 @@ mod tests {
         let identity = arena.view_identity(view.handle.handle).unwrap();
 
         assert_eq!(data.relation_record_count, Some(4));
+        assert_eq!(
+            arena
+                .data_identity(data.handle.handle)
+                .unwrap()
+                .records
+                .len(),
+            4
+        );
         assert!(identity
             .records
             .iter()

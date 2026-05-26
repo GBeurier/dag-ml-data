@@ -133,6 +133,7 @@ DagMlDataStatusCode dagmldata_coordinator_feature_collation_tensor_f64_json(cons
 DagMlDataStatusCode dagmldata_inmemory_provider_new_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_features_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *feature_tables_ptr, size_t feature_tables_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_buffer_manifest_json(const DagMlDataVTable *vtable, DagMlDataString *out_json, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_data_feature_buffer_manifest_json(const DagMlDataVTable *vtable, DagMlDataHandle data_handle, DagMlDataString *out_json, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_collation_json(const DagMlDataVTable *vtable, DagMlDataHandle view, DagMlDataBytesView selector_json, DagMlDataString *out_json, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_collation_tensor_f64_json(const DagMlDataVTable *vtable, DagMlDataHandle view, DagMlDataBytesView selector_json, DagMlDataTensorF64 *out_tensor, DagMlDataString *error_out);
 void dagmldata_inmemory_provider_destroy(DagMlDataVTable *vtable);

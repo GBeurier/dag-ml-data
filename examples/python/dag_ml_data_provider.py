@@ -432,6 +432,21 @@ class InMemoryProvider:
         payload = self._consume_string(out) or "[]"
         return json.loads(payload)
 
+    def data_feature_buffer_manifests(self, data_handle: int) -> list[dict[str, Any]]:
+        out = DagMlDataString()
+        error = DagMlDataString()
+        status = self._lib.dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
+            ctypes.byref(self._vtable),
+            data_handle,
+            ctypes.byref(out),
+            ctypes.byref(error),
+        )
+        if status != 0:
+            message = self._consume_string(error) or f"status {status}"
+            raise RuntimeError(f"data feature buffer manifest export failed: {message}")
+        payload = self._consume_string(out) or "[]"
+        return json.loads(payload)
+
     def feature_tensor(self, view_handle: int, selector: dict[str, Any]) -> dict[str, Any]:
         payload = json.dumps(selector).encode("utf-8")
         buffer, view = _bytes_view(payload)
@@ -493,6 +508,13 @@ class InMemoryProvider:
             ctypes.POINTER(DagMlDataString),
         ]
         self._lib.dagmldata_inmemory_provider_feature_buffer_manifest_json.restype = ctypes.c_int
+        self._lib.dagmldata_inmemory_provider_data_feature_buffer_manifest_json.argtypes = [
+            ctypes.POINTER(DagMlDataVTable),
+            ctypes.c_uint64,
+            ctypes.POINTER(DagMlDataString),
+            ctypes.POINTER(DagMlDataString),
+        ]
+        self._lib.dagmldata_inmemory_provider_data_feature_buffer_manifest_json.restype = ctypes.c_int
         self._lib.dagmldata_inmemory_provider_feature_collation_json.argtypes = [
             ctypes.POINTER(DagMlDataVTable),
             ctypes.c_uint64,

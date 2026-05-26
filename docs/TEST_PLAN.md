@@ -17,8 +17,8 @@
 | Coordinator envelope | explicit schema version, published envelope JSON Schema version, unsupported schema version refusal, schema/plan/relation fingerprint validation |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability, requested source-id relation scoping |
 | Views/features/targets | sample/source/augmentation filtering, requested sample-order preservation, repetition-preserving identity, observation-level feature alignment, feature-column filtering, feature representation mismatch refusal, sample-level target de-duplication |
-| Feature buffers | typed numeric buffer projection, duplicate feature/observation/column refusal, deterministic manifests and fingerprints, store-level duplicate feature-set refusal |
-| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature/fused-feature Arrow exports, feature-collation JSON and `DagMlDataTensorF64` exports, in-memory typed feature-buffer creation, provider feature-buffer manifest JSON, provider-backed feature fusion selector over `feature_arrow`, provider-backed feature-collation selector over typed buffers, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, cross-header syntax with `dag_ml.h` in both include orders, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
+| Feature buffers | typed numeric buffer projection, duplicate feature/observation/column refusal, deterministic manifests and fingerprints, store-level duplicate feature-set refusal, source/relation coverage bindings for materialized handles |
+| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature/fused-feature Arrow exports, feature-collation JSON and `DagMlDataTensorF64` exports, in-memory typed feature-buffer creation, provider feature-buffer manifest JSON, data-handle feature-buffer binding JSON, provider-backed feature fusion selector over `feature_arrow`, provider-backed feature-collation selector over typed buffers, stale parent handle refusal for feature/tensor exports, wrong-source/wrong-representation buffer refusal, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, cross-header syntax with `dag_ml.h` in both include orders, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
 
 ## Conformance Tests
 
@@ -32,6 +32,8 @@ Add after providers exist:
 - provider-backed feature collation matches the pure Rust collation kernel for
   single-source and fused feature blocks, in both JSON and `DagMlDataTensorF64`
   ABI-owned forms;
+- production provider buffer arenas expose the same data-handle binding
+  manifests as the in-memory conformance provider;
 - Python and Rust providers return identical provider-vtable identity, feature
   and target Arrow tables;
 - path solver returns same plan independent of adapter registration order;

@@ -43,6 +43,7 @@ def main() -> None:
     ) as provider:
         manifests = provider.feature_buffer_manifests()
         data_handle = provider.materialize_file(args.request)
+        data_manifests = provider.data_feature_buffer_manifests(data_handle)
         view_handle = provider.make_view(
             data_handle,
             {"sample_ids": ["S002", "S001"], "columns": ["f1"], "include_augmented": False},
@@ -87,6 +88,8 @@ def main() -> None:
         assert manifests[0]["row_count"] == 4
         assert manifests[0]["feature_count"] == 2
         assert len(manifests[0]["buffer_fingerprint"]) == 64
+        assert data_manifests[0]["feature_set_id"] == "x"
+        assert data_manifests[0]["source_ids"] == ["nir"]
 
         provider.release(view_handle)
         provider.release(data_handle)
@@ -98,6 +101,7 @@ def main() -> None:
                 "target_rows": len(targets),
                 "feature_rows": len(features),
                 "feature_buffers": len(manifests),
+                "data_feature_buffers": len(data_manifests),
                 "tensor_values": len(tensor["values"]),
                 "observations": [row["observation_id"] for row in identity],
             },

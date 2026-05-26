@@ -66,9 +66,15 @@ Implemented:
 - typed numeric feature buffers are grouped behind a core
   `NumericFeatureBufferStore` with deterministic manifests, row/feature/value
   counts, estimated value bytes and stable buffer fingerprints;
+- materialized data handles now receive deterministic `NumericFeatureBufferBinding`
+  records for the feature buffers whose representation and observation coverage
+  match that handle's scoped coordinator relations;
 - provider `feature_arrow` accepts JSON fusion selectors and routes
   source-filtered provider-owned feature buffers through the core feature-fusion
   kernel;
+- provider feature, fusion and collation exports validate that the selected
+  buffer is bound to the parent data handle and requested source scope before
+  exporting Arrow, JSON tensors or ABI-owned tensors;
 - executable numeric late-collation kernel for feature blocks and ragged numeric
   rows, producing row-major tensor blocks with deterministic padding,
   truncation, presence masks and value-validity masks;
@@ -78,6 +84,8 @@ Implemented:
   layout;
 - provider-owned feature-buffer manifests are exported as JSON through the C ABI
   for binding conformance and lifecycle validation;
+- data-handle-scoped feature-buffer bindings are exported as JSON through the C
+  ABI and become invalid when the parent data handle is released;
 - provider vtable release conformance, including parent data-handle release
   invalidating child view handles;
 - C header and linked C runtime smokes for the provider vtable and Arrow
@@ -96,14 +104,14 @@ Not implemented yet:
 
 - production runtime data providers backed by non-fixture buffer arenas;
 - production Arrow feature-buffer provider implementation beyond the current
-  in-memory typed numeric buffer store conformance;
-- production provider lifecycles for fused feature exports and production tensor
+  in-memory typed numeric buffer store and handle-binding conformance;
+- production provider arenas for fused feature exports and production tensor
   buffer export beyond the in-memory `DagMlDataTensorF64` conformance;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
-Attach real production feature-buffer lifecycles for single-source, fused and
-collated tensor exports, then extend the tensor ABI beyond f64 row-major blocks
-as needed.
+Replace the current in-memory fixture buffer store with non-fixture production
+buffer arenas using the same data-handle binding contract, then extend the
+tensor ABI beyond f64 row-major blocks as needed.
