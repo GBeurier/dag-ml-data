@@ -49,6 +49,12 @@ pub struct NumericFeatureBufferStore {
     buffers: BTreeMap<String, NumericFeatureBuffer>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NumericFeatureBufferArena {
+    store: NumericFeatureBufferStore,
+    data_bindings: BTreeMap<u64, BTreeMap<String, NumericFeatureBufferBinding>>,
+}
+
 impl NumericFeatureBuffer {
     pub fn from_feature_table(table: CoordinatorFeatureTable) -> Result<Self> {
         table.validate()?;
@@ -360,6 +366,111 @@ impl NumericFeatureBufferStore {
     }
 }
 
+impl NumericFeatureBufferArena {
+    pub fn new(store: NumericFeatureBufferStore) -> Self {
+        Self {
+            store,
+            data_bindings: BTreeMap::new(),
+        }
+    }
+
+    pub fn manifests(&self) -> Result<Vec<NumericFeatureBufferManifest>> {
+        self.store.manifests()
+    }
+
+    pub fn bind_data_handle(
+        &mut self,
+        data_handle: u64,
+        relations: &CoordinatorRelationSet,
+        representation_id: &RepresentationId,
+    ) -> Result<Vec<NumericFeatureBufferBinding>> {
+        let bindings = self
+            .store
+            .bindings_for_relations(relations, representation_id)?;
+        self.data_bindings.insert(
+            data_handle,
+            bindings
+                .iter()
+                .cloned()
+                .map(|binding| (binding.feature_set_id.clone(), binding))
+                .collect(),
+        );
+        Ok(bindings)
+    }
+
+    pub fn release_data_handle(&mut self, data_handle: u64) -> bool {
+        self.data_bindings.remove(&data_handle).is_some()
+    }
+
+    pub fn bindings_for_data_handle(
+        &self,
+        data_handle: u64,
+    ) -> Result<Vec<NumericFeatureBufferBinding>> {
+        let bindings = self.data_bindings.get(&data_handle).ok_or_else(|| {
+            DataError::Validation(format!(
+                "data handle `{data_handle}` has no feature buffer bindings"
+            ))
+        })?;
+        Ok(bindings.values().cloned().collect())
+    }
+
+    pub fn project_bound_relations(
+        &self,
+        data_handle: u64,
+        feature_set_id: &str,
+        relations: &CoordinatorRelationSet,
+        source_id: Option<&SourceId>,
+        columns: Option<&[String]>,
+    ) -> Result<CoordinatorFeatureBlock> {
+        self.validate_bound_sources(data_handle, feature_set_id, relations, source_id)?;
+        self.store
+            .project_relations(feature_set_id, relations, source_id, columns)
+    }
+
+    fn validate_bound_sources(
+        &self,
+        data_handle: u64,
+        feature_set_id: &str,
+        relations: &CoordinatorRelationSet,
+        source_id: Option<&SourceId>,
+    ) -> Result<()> {
+        relations.validate()?;
+        let binding = self
+            .data_bindings
+            .get(&data_handle)
+            .and_then(|bindings| bindings.get(feature_set_id))
+            .ok_or_else(|| {
+                DataError::Validation(format!(
+                    "feature buffer `{feature_set_id}` is not bound to data handle `{data_handle}`"
+                ))
+            })?;
+        let relation_source_ids = relations
+            .records
+            .iter()
+            .filter_map(|relation| relation.source_id.as_ref())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let required_source_ids = if let Some(source_id) = source_id {
+            if relation_source_ids.is_empty() || !relation_source_ids.contains(source_id) {
+                return Err(DataError::Validation(format!(
+                    "feature buffer `{feature_set_id}` source `{source_id}` is not present in view for data handle `{data_handle}`"
+                )));
+            }
+            vec![source_id.clone()]
+        } else {
+            relation_source_ids.into_iter().collect::<Vec<_>>()
+        };
+        for source_id in &required_source_ids {
+            if !binding.source_ids.contains(source_id) {
+                return Err(DataError::Validation(format!(
+                    "feature buffer `{feature_set_id}` is not bound to source `{source_id}` for data handle `{data_handle}`"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 fn numeric_feature_value(
     feature_set_id: &str,
     observation_id: &ObservationId,
@@ -553,6 +664,39 @@ mod tests {
             )
             .unwrap();
         assert!(wrong_representation.is_empty());
+    }
+
+    #[test]
+    fn arena_binds_projects_and_releases_data_handle_buffers() {
+        let store = NumericFeatureBufferStore::from_feature_tables(vec![table()]).unwrap();
+        let mut arena = NumericFeatureBufferArena::new(store);
+        let bindings = arena
+            .bind_data_handle(
+                7,
+                &relations(),
+                &RepresentationId::new("tabular_numeric").unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(arena.bindings_for_data_handle(7).unwrap(), bindings);
+
+        let block = arena
+            .project_bound_relations(7, "x", &relations(), Some(&source("nir")), None)
+            .unwrap();
+        assert_eq!(
+            block.observation_ids,
+            vec![oid("obs.s2.nir"), oid("obs.s1.nir")]
+        );
+
+        let error = arena
+            .project_bound_relations(8, "x", &relations(), Some(&source("nir")), None)
+            .unwrap_err();
+        assert!(format!("{error}").contains("not bound to data handle"));
+
+        assert!(arena.release_data_handle(7));
+        let error = arena.bindings_for_data_handle(7).unwrap_err();
+        assert!(format!("{error}").contains("no feature buffer bindings"));
     }
 
     #[test]

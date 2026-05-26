@@ -35,7 +35,7 @@ DatasetSchema + ModelInputSpec + policy
 ```
 
 The current scaffold reaches validated handles/views, source-scoped
-materialization relations, typed numeric feature-buffer stores with manifests,
+materialization relations, a typed numeric feature-buffer arena with manifests,
 data-handle-scoped feature-buffer bindings, and Arrow C Data smokes for
 identity, sample-level targets and observation-level features. Runtime adapters
 and production host buffer arenas are still outside the scaffold.

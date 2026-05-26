@@ -46,14 +46,12 @@ lifecycle through the public ABI. Native vtable conformance now checks
 materialize/view/export paths plus release behavior, including parent-handle
 release invalidating child views. Provider feature tables are converted once at
 provider construction into reusable column-major `NumericFeatureBuffer` values
-from `dag-ml-data-core`, grouped in a `NumericFeatureBufferStore`, and exposed
-through deterministic feature-buffer manifests before Arrow export. Materialized
-data handles now scope coordinator relations to requested source ids before any
-view is created, and each materialized data handle receives deterministic
-feature-buffer bindings for buffers whose representation and observation
-coverage match the handle's scoped relations. Provider feature/fusion/collation
-exports validate those bindings before exporting Arrow or tensors. Next:
-replace the in-memory fixture store with production buffer arenas using the same
+from `dag-ml-data-core`, grouped in a `NumericFeatureBufferArena`, and exposed
+through deterministic feature-buffer manifests before Arrow export. The arena
+binds compatible buffers to each materialized data handle after source-scoped
+relations are known, and provider feature/fusion/collation exports validate
+those bindings before exporting Arrow or tensors. Next: replace the in-memory
+fixture input path with production buffer sources using the same
 manifest/binding/projection contract.
 
 ## Phase 3: Alignment, Fusion And Collation

@@ -69,6 +69,10 @@ Implemented:
 - materialized data handles now receive deterministic `NumericFeatureBufferBinding`
   records for the feature buffers whose representation and observation coverage
   match that handle's scoped coordinator relations;
+- the store and binding lifecycle now live behind the reusable core
+  `NumericFeatureBufferArena`, so production providers can share the same
+  manifest, bind, project and release contract instead of reimplementing it in
+  the C ABI layer;
 - provider `feature_arrow` accepts JSON fusion selectors and routes
   source-filtered provider-owned feature buffers through the core feature-fusion
   kernel;
@@ -104,7 +108,7 @@ Not implemented yet:
 
 - production runtime data providers backed by non-fixture buffer arenas;
 - production Arrow feature-buffer provider implementation beyond the current
-  in-memory typed numeric buffer store and handle-binding conformance;
+  in-memory typed numeric buffer arena conformance;
 - production provider arenas for fused feature exports and production tensor
   buffer export beyond the in-memory `DagMlDataTensorF64` conformance;
 - fitted adapter serialization;
@@ -113,5 +117,5 @@ Not implemented yet:
 Next recommended task:
 
 Replace the current in-memory fixture buffer store with non-fixture production
-buffer arenas using the same data-handle binding contract, then extend the
+buffer sources using the same data-handle binding contract, then extend the
 tensor ABI beyond f64 row-major blocks as needed.

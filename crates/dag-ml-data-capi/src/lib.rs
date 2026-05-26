@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::slice;
@@ -9,9 +9,8 @@ use dag_ml_data_core::{
     CoordinatorDataHandleRecord, CoordinatorDataMaterializationRequest,
     CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
     CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
-    DatasetSchema, FeatureFusionPolicy, NumericFeatureBuffer, NumericFeatureBufferBinding,
-    NumericFeatureBufferStore, NumericTensorBlock, SampleAlignmentPlan, SourceFeatureBlock,
-    SourceId, TargetId,
+    DatasetSchema, FeatureFusionPolicy, NumericFeatureBufferArena, NumericFeatureBufferStore,
+    NumericTensorBlock, SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
 };
 #[cfg(test)]
 use dag_ml_data_core::{ObservationId, RepresentationId, SampleId};
@@ -856,7 +855,8 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_buffer_manifest_jso
 
     let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
     match provider
-        .feature_store
+        .feature_arena
+        .borrow()
         .manifests()
         .and_then(|manifests| serde_json::to_string(&manifests).map_err(Into::into))
     {
@@ -897,7 +897,10 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_data_feature_buffer_manifes
     }
 
     let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
-    match data_feature_bindings(provider, data_handle)
+    match provider
+        .feature_arena
+        .borrow()
+        .bindings_for_data_handle(data_handle)
         .and_then(|bindings| serde_json::to_string(&bindings).map_err(Into::into))
     {
         Ok(json) => {
@@ -1206,9 +1209,7 @@ struct InMemoryProvider {
     arena: CoordinatorHandleArena,
     envelope: CoordinatorDataPlanEnvelope,
     target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
-    feature_store: NumericFeatureBufferStore,
-    data_feature_bindings:
-        RefCell<BTreeMap<DagMlDataHandle, BTreeMap<String, NumericFeatureBufferBinding>>>,
+    feature_arena: RefCell<NumericFeatureBufferArena>,
 }
 
 impl InMemoryProvider {
@@ -1222,8 +1223,7 @@ impl InMemoryProvider {
             arena: CoordinatorHandleArena::new(default_owner_controller())?,
             envelope,
             target_tables,
-            feature_store,
-            data_feature_bindings: RefCell::new(BTreeMap::new()),
+            feature_arena: RefCell::new(NumericFeatureBufferArena::new(feature_store)),
         })
     }
 }
@@ -1514,11 +1514,7 @@ unsafe extern "C" fn provider_feature_arrow(
         if feature_set_name.trim().is_empty() {
             return DagMlDataStatusCode::ValidationError;
         }
-        let feature_table = match provider.feature_store.get(feature_set_name) {
-            Some(feature_table) => feature_table,
-            None => return DagMlDataStatusCode::ValidationError,
-        };
-        provider_feature_block(provider, view, feature_table)
+        provider_feature_block(provider, view, feature_set_name)
             .and_then(|features| build_feature_arrow(&features))
     };
     match result {
@@ -1537,7 +1533,10 @@ unsafe extern "C" fn provider_release(user_data: *mut c_void, handle: DagMlDataH
     }
     let provider = &*(user_data.cast::<InMemoryProvider>());
     provider.arena.release_handle(handle);
-    provider.data_feature_bindings.borrow_mut().remove(&handle);
+    provider
+        .feature_arena
+        .borrow_mut()
+        .release_data_handle(handle);
 }
 
 unsafe extern "C" fn provider_destroy(user_data: *mut c_void) {
@@ -1662,50 +1661,28 @@ fn bind_data_feature_buffers(
     provider: &InMemoryProvider,
     record: &CoordinatorDataHandleRecord,
 ) -> dag_ml_data_core::Result<()> {
-    let bindings = match provider.arena.data_identity(record.handle.handle) {
-        Ok(relations) => provider
-            .feature_store
-            .bindings_for_relations(&relations, &record.output_representation)?,
-        Err(_) => Vec::new(),
-    };
-    provider.data_feature_bindings.borrow_mut().insert(
-        record.handle.handle,
-        bindings
-            .into_iter()
-            .map(|binding| (binding.feature_set_id.clone(), binding))
-            .collect(),
-    );
+    if let Ok(relations) = provider.arena.data_identity(record.handle.handle) {
+        provider.feature_arena.borrow_mut().bind_data_handle(
+            record.handle.handle,
+            &relations,
+            &record.output_representation,
+        )?;
+    }
     Ok(())
-}
-
-fn data_feature_bindings(
-    provider: &InMemoryProvider,
-    data_handle: DagMlDataHandle,
-) -> dag_ml_data_core::Result<Vec<NumericFeatureBufferBinding>> {
-    provider.arena.handle_record(data_handle).ok_or_else(|| {
-        dag_ml_data_core::DataError::Validation(format!("unknown data handle `{data_handle}`"))
-    })?;
-    let bindings = provider.data_feature_bindings.borrow();
-    let bindings = bindings.get(&data_handle).ok_or_else(|| {
-        dag_ml_data_core::DataError::Validation(format!(
-            "data handle `{data_handle}` has no feature buffer bindings"
-        ))
-    })?;
-    Ok(bindings.values().cloned().collect())
 }
 
 fn provider_feature_block(
     provider: &InMemoryProvider,
     view_handle: u64,
-    feature_table: &NumericFeatureBuffer,
+    feature_set_id: &str,
 ) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
-    provider_feature_block_filtered(provider, view_handle, feature_table, None, None)
+    provider_feature_block_filtered(provider, view_handle, feature_set_id, None, None)
 }
 
 fn provider_feature_block_filtered(
     provider: &InMemoryProvider,
     view_handle: u64,
-    feature_table: &NumericFeatureBuffer,
+    feature_set_id: &str,
     source_id: Option<&SourceId>,
     columns: Option<&[String]>,
 ) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
@@ -1722,78 +1699,18 @@ fn provider_feature_block_filtered(
             ))
         })?;
     let relations = provider.arena.view_identity(view_handle)?;
-    validate_bound_feature_buffer(
-        provider,
-        &parent_record,
-        &relations,
-        feature_table,
-        source_id,
-    )?;
-    if feature_table.representation_id != parent_record.output_representation {
-        return Err(dag_ml_data_core::DataError::Validation(format!(
-            "feature table `{}` representation `{}` does not match materialized output representation `{}`",
-            feature_table.feature_set_id,
-            feature_table.representation_id,
-            parent_record.output_representation
-        )));
-    }
     let selected_columns = if source_id.is_some() {
         columns
     } else {
         columns.or(view_record.view.columns.as_deref())
     };
-    feature_table.project_relations(&relations, source_id, selected_columns)
-}
-
-fn validate_bound_feature_buffer(
-    provider: &InMemoryProvider,
-    parent_record: &CoordinatorDataHandleRecord,
-    relations: &dag_ml_data_core::CoordinatorRelationSet,
-    feature_table: &NumericFeatureBuffer,
-    source_id: Option<&SourceId>,
-) -> dag_ml_data_core::Result<()> {
-    let bindings = provider.data_feature_bindings.borrow();
-    let binding = bindings
-        .get(&parent_record.handle.handle)
-        .and_then(|bindings| bindings.get(&feature_table.feature_set_id))
-        .ok_or_else(|| {
-            dag_ml_data_core::DataError::Validation(format!(
-                "feature buffer `{}` is not bound to data handle `{}`",
-                feature_table.feature_set_id, parent_record.handle.handle
-            ))
-        })?;
-    if binding.representation_id != parent_record.output_representation {
-        return Err(dag_ml_data_core::DataError::Validation(format!(
-            "feature buffer `{}` binding representation `{}` does not match materialized output representation `{}`",
-            binding.feature_set_id, binding.representation_id, parent_record.output_representation
-        )));
-    }
-    let relation_source_ids = relations
-        .records
-        .iter()
-        .filter_map(|relation| relation.source_id.as_ref())
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let required_source_ids = if let Some(source_id) = source_id {
-        if relation_source_ids.is_empty() || !relation_source_ids.contains(source_id) {
-            return Err(dag_ml_data_core::DataError::Validation(format!(
-                "feature buffer `{}` source `{}` is not present in view for data handle `{}`",
-                feature_table.feature_set_id, source_id, parent_record.handle.handle
-            )));
-        }
-        vec![source_id.clone()]
-    } else {
-        relation_source_ids.into_iter().collect::<Vec<_>>()
-    };
-    for source_id in &required_source_ids {
-        if !binding.source_ids.contains(source_id) {
-            return Err(dag_ml_data_core::DataError::Validation(format!(
-                "feature buffer `{}` is not bound to source `{}` for data handle `{}`",
-                feature_table.feature_set_id, source_id, parent_record.handle.handle
-            )));
-        }
-    }
-    Ok(())
+    provider.feature_arena.borrow().project_bound_relations(
+        parent_record.handle.handle,
+        feature_set_id,
+        &relations,
+        source_id,
+        selected_columns,
+    )
 }
 
 fn provider_feature_fusion_block(
@@ -1808,19 +1725,10 @@ fn provider_feature_fusion_block(
     }
     let mut sources = Vec::with_capacity(selector.sources.len());
     for source in &selector.sources {
-        let feature_table = provider
-            .feature_store
-            .get(&source.feature_set_id)
-            .ok_or_else(|| {
-                dag_ml_data_core::DataError::Validation(format!(
-                    "unknown feature table `{}` for fusion source `{}`",
-                    source.feature_set_id, source.source_id
-                ))
-            })?;
         let block = provider_feature_block_filtered(
             provider,
             view_handle,
-            feature_table,
+            &source.feature_set_id,
             Some(&source.source_id),
             source.columns.as_deref(),
         )?;
@@ -1849,12 +1757,7 @@ fn provider_feature_collation_block(
                     "feature collation selector feature_set_id is empty".to_string(),
                 ));
             }
-            let feature_table = provider.feature_store.get(feature_set_id).ok_or_else(|| {
-                dag_ml_data_core::DataError::Validation(format!(
-                    "unknown feature table `{feature_set_id}` for collation"
-                ))
-            })?;
-            provider_feature_block(provider, view_handle, feature_table)
+            provider_feature_block(provider, view_handle, feature_set_id)
         }
         (None, Some(fusion)) => provider_feature_fusion_block(provider, view_handle, fusion),
         (Some(_), Some(_)) => Err(dag_ml_data_core::DataError::Validation(

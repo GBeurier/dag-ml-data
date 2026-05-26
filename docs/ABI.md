@@ -131,10 +131,10 @@ tensors to verify that the provider loaded the expected data buffers.
 
 `dagmldata_inmemory_provider_data_feature_buffer_manifest_json` returns
 `NumericFeatureBufferBinding` values for one live materialized data handle. A
-binding is created during `materialize` only when a provider buffer has the same
-output representation as the data handle and covers the handle's scoped
-coordinator observations for one or more source ids. The binding export refuses
-unknown or released data handles.
+binding is created by the core `NumericFeatureBufferArena` during `materialize`
+only when a provider buffer has the same output representation as the data
+handle and covers the handle's scoped coordinator observations for one or more
+source ids. The binding export refuses unknown or released data handles.
 
 ## In-Memory Provider VTable
 
@@ -158,18 +158,18 @@ observation-level feature tables, then implements:
 
 The conformance provider still receives small JSON fixture feature tables at
 construction time, but it converts them once into column-major
-`NumericFeatureBuffer` values grouped by `NumericFeatureBufferStore` in the
-provider state. At `materialize`, the provider computes data-handle-scoped
-buffer bindings from the scoped coordinator relations and materialized output
+`NumericFeatureBuffer` values grouped by `NumericFeatureBufferArena` in the
+provider state. At `materialize`, the arena computes data-handle-scoped buffer
+bindings from the scoped coordinator relations and materialized output
 representation. `feature_arrow` exports are then view projections over bound
 buffers, not per-call JSON numeric parsing. Fusion selectors reuse those typed
 buffers, filter each source by source identity in the view, validate that each
-source buffer is bound to the parent data handle, and then call the same pure
-Rust fusion kernel used by the standalone ABI helper. Provider feature-collation
-selectors then collate either a single feature table or the fused block into
-deterministic row-major JSON or `DagMlDataTensorF64` tensors without reparsing
-feature values. Full provider implementations will use the same vtable shape
-while keeping production data buffers host-owned.
+source buffer is bound to the parent data handle through the arena, and then
+call the same pure Rust fusion kernel used by the standalone ABI helper.
+Provider feature-collation selectors then collate either a single feature table
+or the fused block into deterministic row-major JSON or `DagMlDataTensorF64`
+tensors without reparsing feature values. Full provider implementations will
+use the same vtable shape while keeping production data buffers host-owned.
 
 `tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
