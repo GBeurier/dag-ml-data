@@ -72,10 +72,14 @@ use the same vtable shape while keeping data buffers host-owned.
 the provider vtable, materializes a view, exports identity/target Arrow arrays
 and releases all handles.
 
+`tests/python_ctypes_smoke.rs` performs the same provider lifecycle from Python
+using only `ctypes`, validating that the ABI is binding-friendly before a richer
+Python package exists.
+
 ## ABI Roadmap
 
 1. Freeze byte/string/status conventions.
 2. Add C smoke test for schema fingerprinting.
 3. Add path-solving and data-plan validation over canonical JSON.
-4. Add Python and native host provider conformance against the in-memory
-   provider's identity/target behavior.
+4. Add native host provider conformance and a reusable Python provider package
+   against the in-memory provider's identity/target behavior.

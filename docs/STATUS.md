@@ -33,6 +33,7 @@ Implemented:
   view-identity, target, release and destroy callbacks;
 - C header and linked C runtime smokes for the provider vtable and Arrow
   signatures;
+- Python `ctypes` smoke for the same provider lifecycle;
 - C ABI schema fingerprint entry point;
 - example schema fixture;
 - CI workflow.
@@ -48,5 +49,5 @@ Not implemented yet:
 
 Next recommended task:
 
-Add Python and native provider conformance tests against the in-memory provider
-vtable, then attach feature-buffer lifecycles.
+Add native provider conformance and a reusable Python provider package against
+the in-memory provider vtable, then attach feature-buffer lifecycles.
