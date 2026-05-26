@@ -93,6 +93,9 @@ Implemented:
   for binding conformance and lifecycle validation;
 - provider construction accepts typed f64 feature matrices through the C ABI as
   the preferred conformance path for numeric feature buffers;
+- provider construction also accepts borrowed C `DagMlDataFeatureMatrixF64View`
+  descriptors, copying them into Rust-owned feature buffers during the
+  constructor call so bindings can avoid JSON numeric value transport;
 - data-handle-scoped feature-buffer bindings are exported as JSON through the C
   ABI and become invalid when the parent data handle is released;
 - provider vtable release conformance, including parent data-handle release

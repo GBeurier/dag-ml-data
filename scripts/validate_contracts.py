@@ -314,6 +314,14 @@ def validate_dag_ml_data_tensor_header(header: str, label: str) -> None:
         f"{label} header must expose typed f64 feature provider construction",
     )
     require(
+        "DagMlDataFeatureMatrixF64View" in header,
+        f"{label} header must expose borrowed f64 feature matrix views",
+    )
+    require(
+        "dagmldata_inmemory_provider_new_with_f64_feature_views" in header,
+        f"{label} header must expose borrowed f64 feature matrix provider construction",
+    )
+    require(
         "dagmldata_inmemory_provider_data_feature_buffer_manifest_json" in header,
         f"{label} header must expose data-handle feature-buffer manifests",
     )

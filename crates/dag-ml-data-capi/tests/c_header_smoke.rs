@@ -73,6 +73,7 @@ int main(void) {
     DagMlDataString error = {0};
     DagMlDataString out = {0};
     DagMlDataTensorF64 tensor = {0};
+    DagMlDataFeatureMatrixF64View matrix = {0};
     ArrowArray *array = NULL;
     ArrowSchema *schema = NULL;
 
@@ -89,6 +90,8 @@ int main(void) {
     (void)dagmldata_coordinator_feature_collation_tensor_f64_json((const uint8_t*)"{}", 2, &tensor, &error);
     (void)dagmldata_inmemory_provider_new_json((const uint8_t*)"{}", 2, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
+    (void)dagmldata_inmemory_provider_new_with_f64_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
+    (void)dagmldata_inmemory_provider_new_with_f64_feature_views((const uint8_t*)"{}", 2, NULL, 0, &matrix, 1, &table, &error);
     (void)dagmldata_inmemory_provider_feature_collation_json(&table, 0, (DagMlDataBytesView){0}, &out, &error);
     (void)dagmldata_inmemory_provider_feature_collation_tensor_f64_json(&table, 0, (DagMlDataBytesView){0}, &tensor, &error);
     dagmldata_arrow_array_free(array);
@@ -283,7 +286,29 @@ int main(int argc, char **argv) {
     Bytes envelope = {0};
     Bytes request = {0};
     const uint8_t target_tables[] = "[{\"target_id\":\"y\",\"values\":[{\"sample_id\":\"S001\",\"value\":42.0},{\"sample_id\":\"S002\",\"value\":7.0}]}]";
-    const uint8_t feature_tables[] = "[{\"feature_set_id\":\"x\",\"representation_id\":\"tabular_numeric\",\"feature_names\":[\"f0\",\"f1\"],\"rows\":[{\"observation_id\":\"obs.S001.base\",\"values\":[1.0,10.0]},{\"observation_id\":\"obs.S001.rep1\",\"values\":[2.0,20.0]},{\"observation_id\":\"obs.S001.aug0\",\"values\":[3.0,30.0]},{\"observation_id\":\"obs.S002.base\",\"values\":[4.0,40.0]}]}]";
+    const DagMlDataBytesView feature_names[] = {
+        {(const uint8_t *)"f0", sizeof("f0") - 1},
+        {(const uint8_t *)"f1", sizeof("f1") - 1},
+    };
+    const DagMlDataBytesView observation_ids[] = {
+        {(const uint8_t *)"obs.S001.base", sizeof("obs.S001.base") - 1},
+        {(const uint8_t *)"obs.S001.rep1", sizeof("obs.S001.rep1") - 1},
+        {(const uint8_t *)"obs.S001.aug0", sizeof("obs.S001.aug0") - 1},
+        {(const uint8_t *)"obs.S002.base", sizeof("obs.S002.base") - 1},
+    };
+    const double feature_values[] = {1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0};
+    const DagMlDataFeatureMatrixF64View feature_matrices[] = {{
+        {(const uint8_t *)"x", sizeof("x") - 1},
+        {(const uint8_t *)"tabular_numeric", sizeof("tabular_numeric") - 1},
+        feature_names,
+        2,
+        observation_ids,
+        4,
+        feature_values,
+        8,
+        NULL,
+        0,
+    }};
     const uint8_t view_json[] = "{\"sample_ids\":[\"S001\"],\"columns\":[\"f1\"],\"include_augmented\":false}";
     const uint8_t target_name[] = "y";
     const uint8_t feature_set_name[] = "x";
@@ -308,13 +333,13 @@ int main(int argc, char **argv) {
         return 3;
     }
 
-    status = dagmldata_inmemory_provider_new_with_features_json(
+    status = dagmldata_inmemory_provider_new_with_f64_feature_views(
         envelope.ptr,
         envelope.len,
         target_tables,
         sizeof(target_tables) - 1,
-        feature_tables,
-        sizeof(feature_tables) - 1,
+        feature_matrices,
+        1,
         &vtable,
         &error
     );

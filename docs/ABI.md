@@ -14,6 +14,8 @@ memory while exposing deterministic descriptors and identity tables to the core.
   shape, values, optional masks and feature names;
 - `DAG_ML_DATA_TENSOR_F64_ABI_VERSION`, the C-visible ABI version expected in
   each f64 tensor descriptor;
+- `DagMlDataFeatureMatrixF64View`, a borrowed C view over one row-major f64
+  feature matrix;
 - `dagmldata_coordinator_identity_arrow_json` for identity-table smoke tests
   from a validated coordinator envelope;
 - `dagmldata_coordinator_target_arrow_json` for numeric target-table smoke tests
@@ -35,6 +37,9 @@ memory while exposing deterministic descriptors and identity tables to the core.
   plus JSON feature tables used by binding conformance tests;
 - `dagmldata_inmemory_provider_new_with_f64_features_json` for the same provider
   plus typed row-major f64 feature matrices with an optional validity mask;
+- `dagmldata_inmemory_provider_new_with_f64_feature_views` for the same provider
+  plus borrowed C `DagMlDataFeatureMatrixF64View` descriptors, avoiding JSON
+  value transport for numeric feature matrices;
 - `dagmldata_inmemory_provider_feature_buffer_manifest_json` for deterministic
   JSON manifests of provider-owned numeric feature buffers;
 - `dagmldata_inmemory_provider_data_feature_buffer_manifest_json` for
@@ -68,6 +73,7 @@ fingerprints, identity consistency and materialization-request compatibility.
 | Arrow arrays/schemas returned by Rust helpers | Rust allocation returned through ABI | `dagmldata_arrow_array_free`, `dagmldata_arrow_schema_free` |
 | Arrow arrays produced by host vtables | Producer of the Arrow array | Arrow C Data Interface release callback |
 | Rust-owned in-memory provider vtable | Rust allocation behind `user_data` | `DagMlDataVTable.destroy` or `dagmldata_inmemory_provider_destroy` |
+| Borrowed `DagMlDataFeatureMatrixF64View` inputs | Caller | copied during constructor call; caller may release after return |
 
 ## Coordinator Identity Export
 
@@ -159,9 +165,12 @@ observation-level feature tables, then implements:
 - `release` and `destroy`: release handles and provider state.
 
 The conformance provider can still receive small JSON fixture feature tables at
-construction time, but the preferred numeric path is now typed row-major
-`NumericFeatureMatrixF64` input with optional validity masks. Both construction
-paths convert once into column-major `NumericFeatureBuffer` values grouped by
+construction time, but the preferred numeric paths are typed row-major
+`NumericFeatureMatrixF64` input with optional validity masks and direct borrowed
+C `DagMlDataFeatureMatrixF64View` descriptors. The borrowed descriptors are
+copied into Rust-owned buffers during construction; after the constructor
+returns, callers may release their input arrays. All construction paths convert
+once into column-major `NumericFeatureBuffer` values grouped by
 `NumericFeatureBufferArena` in the provider state. At `materialize`, the arena
 computes data-handle-scoped buffer bindings from the scoped coordinator
 relations and materialized output representation. `feature_arrow` exports are
@@ -207,7 +216,7 @@ identity export, target export, feature export, release and destroy.
 9. Expose provider-owned feature-buffer manifests for binding conformance.
 10. Bind compatible feature buffers to live materialized data handles and
     validate those bindings before Arrow/tensor export.
-11. Add typed f64 matrix provider construction, avoiding per-cell JSON values on
-    the numeric conformance path.
+11. Add typed f64 matrix provider construction, including borrowed C matrix
+    views, avoiding per-cell JSON values on the numeric conformance path.
 12. Replace in-memory typed fixture buffers with production feature-buffer
    lifecycles.

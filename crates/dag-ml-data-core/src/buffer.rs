@@ -334,6 +334,19 @@ impl NumericFeatureMatrixF64 {
                 )));
             }
         }
+        for (idx, value) in self.values.iter().enumerate() {
+            let is_valid = self
+                .validity_mask
+                .as_ref()
+                .map(|mask| mask[idx])
+                .unwrap_or(true);
+            if is_valid && !value.is_finite() {
+                return Err(DataError::Validation(format!(
+                    "f64 feature matrix `{}` value {} is not finite",
+                    self.feature_set_id, idx
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -799,6 +812,15 @@ mod tests {
         matrix.validity_mask = Some(vec![true]);
         let error = NumericFeatureBuffer::from_f64_matrix(matrix).unwrap_err();
         assert!(format!("{error}").contains("validity_mask has 1 values"));
+
+        let mut matrix = f64_matrix();
+        matrix.values[0] = f64::NAN;
+        let error = NumericFeatureBuffer::from_f64_matrix(matrix).unwrap_err();
+        assert!(format!("{error}").contains("value 0 is not finite"));
+
+        let mut matrix = f64_matrix();
+        matrix.values[5] = f64::NAN;
+        assert!(NumericFeatureBuffer::from_f64_matrix(matrix).is_ok());
     }
 
     #[test]

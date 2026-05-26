@@ -48,9 +48,10 @@ release invalidating child views. Provider feature inputs are converted once at
 provider construction into reusable column-major `NumericFeatureBuffer` values
 from `dag-ml-data-core`, grouped in a `NumericFeatureBufferArena`, and exposed
 through deterministic feature-buffer manifests before Arrow export. The
-preferred numeric conformance input is now typed row-major
-`NumericFeatureMatrixF64` with optional validity masks, avoiding per-cell JSON
-values. The arena binds compatible buffers to each materialized data handle
+preferred numeric conformance inputs are typed row-major
+`NumericFeatureMatrixF64` values and borrowed C `DagMlDataFeatureMatrixF64View`
+descriptors with optional validity masks, avoiding per-cell JSON numeric value
+transport. The arena binds compatible buffers to each materialized data handle
 after source-scoped relations are known, and provider feature/fusion/collation
 exports validate those bindings before exporting Arrow or tensors. Next:
 replace the in-memory typed input path with production buffer sources using the
