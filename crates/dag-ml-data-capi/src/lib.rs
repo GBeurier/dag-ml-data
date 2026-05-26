@@ -8,7 +8,7 @@ use dag_ml_data_core::{
     CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
     CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
     DatasetSchema, FeatureFusionPolicy, ObservationId, RepresentationId, SampleAlignmentPlan,
-    SampleId, SourceFeatureBlock, TargetId,
+    SampleId, SourceFeatureBlock, SourceId, TargetId,
 };
 use serde::Deserialize;
 
@@ -707,10 +707,29 @@ struct ProviderFeatureTable {
 }
 
 struct ProviderFeatureBlock {
+    feature_set_id: String,
+    representation_id: RepresentationId,
     feature_names: Vec<String>,
     observation_ids: Vec<ObservationId>,
     sample_ids: Vec<SampleId>,
     values: Vec<Vec<Option<f64>>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderFeatureFusionSelector {
+    feature_set_id: String,
+    sources: Vec<ProviderFeatureFusionSource>,
+    alignment: SampleAlignmentPlan,
+    #[serde(default)]
+    policy: FeatureFusionPolicy,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderFeatureFusionSource {
+    source_id: SourceId,
+    feature_set_id: String,
+    #[serde(default)]
+    columns: Option<Vec<String>>,
 }
 
 impl ProviderFeatureTable {
@@ -741,14 +760,14 @@ impl ProviderFeatureTable {
         })
     }
 
-    fn selected_indices(&self, view: &DataView) -> dag_ml_data_core::Result<Vec<usize>> {
+    fn selected_indices(&self, columns: Option<&[String]>) -> dag_ml_data_core::Result<Vec<usize>> {
         let index_by_name = self
             .feature_names
             .iter()
             .enumerate()
             .map(|(idx, name)| (name, idx))
             .collect::<BTreeMap<_, _>>();
-        let indices = if let Some(columns) = &view.columns {
+        let indices = if let Some(columns) = columns {
             columns
                 .iter()
                 .map(|column| {
@@ -1035,16 +1054,30 @@ unsafe extern "C" fn provider_feature_arrow(
         feature_set_name.ptr,
         feature_set_name.len,
     )) {
-        Ok(feature_set_name) if !feature_set_name.trim().is_empty() => feature_set_name,
-        _ => return DagMlDataStatusCode::ValidationError,
+        Ok(feature_set_name) => feature_set_name,
+        Err(_) => return DagMlDataStatusCode::ValidationError,
     };
-    let feature_table = match provider.feature_tables.get(feature_set_name) {
-        Some(feature_table) => feature_table,
-        None => return DagMlDataStatusCode::ValidationError,
+    let result = if feature_set_name.trim_start().starts_with('{') {
+        serde_json::from_str::<ProviderFeatureFusionSelector>(feature_set_name)
+            .map_err(|error| {
+                dag_ml_data_core::DataError::Validation(format!(
+                    "failed to parse feature fusion selector JSON: {error}"
+                ))
+            })
+            .and_then(|selector| provider_feature_fusion_block(provider, view, &selector))
+            .and_then(|features| build_feature_arrow(&features))
+    } else {
+        if feature_set_name.trim().is_empty() {
+            return DagMlDataStatusCode::ValidationError;
+        }
+        let feature_table = match provider.feature_tables.get(feature_set_name) {
+            Some(feature_table) => feature_table,
+            None => return DagMlDataStatusCode::ValidationError,
+        };
+        provider_feature_block(provider, view, feature_table)
+            .and_then(|features| build_provider_feature_arrow(&features))
     };
-    match provider_feature_block(provider, view, feature_table)
-        .and_then(|features| build_provider_feature_arrow(&features))
-    {
+    match result {
         Ok((array, schema)) => {
             *out_arrow_array = Box::into_raw(Box::new(array));
             *out_arrow_schema = Box::into_raw(Box::new(schema));
@@ -1185,6 +1218,16 @@ fn provider_feature_block(
     view_handle: u64,
     feature_table: &ProviderFeatureTable,
 ) -> dag_ml_data_core::Result<ProviderFeatureBlock> {
+    provider_feature_block_filtered(provider, view_handle, feature_table, None, None)
+}
+
+fn provider_feature_block_filtered(
+    provider: &InMemoryProvider,
+    view_handle: u64,
+    feature_table: &ProviderFeatureTable,
+    source_id: Option<&SourceId>,
+    columns: Option<&[String]>,
+) -> dag_ml_data_core::Result<ProviderFeatureBlock> {
     let view_record = provider.arena.view_record(view_handle).ok_or_else(|| {
         dag_ml_data_core::DataError::Validation(format!("unknown view handle `{view_handle}`"))
     })?;
@@ -1206,7 +1249,12 @@ fn provider_feature_block(
         )));
     }
     let relations = provider.arena.view_identity(view_handle)?;
-    let selected_indices = feature_table.selected_indices(&view_record.view)?;
+    let selected_columns = if source_id.is_some() {
+        columns
+    } else {
+        columns.or(view_record.view.columns.as_deref())
+    };
+    let selected_indices = feature_table.selected_indices(selected_columns)?;
     let rows_by_observation = feature_table
         .rows
         .iter()
@@ -1215,7 +1263,11 @@ fn provider_feature_block(
     let mut observation_ids = Vec::with_capacity(relations.records.len());
     let mut sample_ids = Vec::with_capacity(relations.records.len());
     let mut values = Vec::with_capacity(relations.records.len());
-    for relation in &relations.records {
+    for relation in relations.records.iter().filter(|relation| {
+        source_id
+            .map(|source_id| relation.source_id.as_ref() == Some(source_id))
+            .unwrap_or(true)
+    }) {
         let row = rows_by_observation
             .get(&relation.observation_id)
             .ok_or_else(|| {
@@ -1234,6 +1286,8 @@ fn provider_feature_block(
         );
     }
     Ok(ProviderFeatureBlock {
+        feature_set_id: feature_table.feature_set_id.clone(),
+        representation_id: feature_table.representation_id.clone(),
         feature_names: selected_indices
             .iter()
             .map(|idx| feature_table.feature_names[*idx].clone())
@@ -1242,6 +1296,66 @@ fn provider_feature_block(
         sample_ids,
         values,
     })
+}
+
+fn provider_feature_fusion_block(
+    provider: &InMemoryProvider,
+    view_handle: u64,
+    selector: &ProviderFeatureFusionSelector,
+) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
+    if selector.sources.is_empty() {
+        return Err(dag_ml_data_core::DataError::Validation(
+            "feature fusion selector requires at least one source".to_string(),
+        ));
+    }
+    let mut sources = Vec::with_capacity(selector.sources.len());
+    for source in &selector.sources {
+        let feature_table = provider
+            .feature_tables
+            .get(&source.feature_set_id)
+            .ok_or_else(|| {
+                dag_ml_data_core::DataError::Validation(format!(
+                    "unknown feature table `{}` for fusion source `{}`",
+                    source.feature_set_id, source.source_id
+                ))
+            })?;
+        let block = provider_feature_block_filtered(
+            provider,
+            view_handle,
+            feature_table,
+            Some(&source.source_id),
+            source.columns.as_deref(),
+        )?;
+        sources.push(SourceFeatureBlock {
+            source_id: source.source_id.clone(),
+            block: provider_feature_block_to_coordinator(block),
+        });
+    }
+    fuse_feature_blocks(
+        selector.feature_set_id.clone(),
+        &sources,
+        &selector.alignment,
+        &selector.policy,
+    )
+}
+
+fn provider_feature_block_to_coordinator(block: ProviderFeatureBlock) -> CoordinatorFeatureBlock {
+    CoordinatorFeatureBlock {
+        feature_set_id: block.feature_set_id,
+        representation_id: block.representation_id,
+        feature_names: block.feature_names,
+        observation_ids: block.observation_ids,
+        sample_ids: block.sample_ids,
+        values: block
+            .values
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|value| value.map_or(serde_json::Value::Null, serde_json::Value::from))
+                    .collect()
+            })
+            .collect(),
+    }
 }
 
 fn build_target_arrow(
@@ -1971,6 +2085,159 @@ mod tests {
     }
 
     #[test]
+    fn inmemory_provider_feature_arrow_accepts_fusion_selector_json() {
+        let (envelope, materialization_request) = multisource_provider_fixture();
+        let target_tables = b"[]";
+        let feature_tables = serde_json::to_vec(&serde_json::json!([
+            {
+                "feature_set_id": "nir_x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["n0"],
+                "rows": [
+                    {"observation_id": "obs.S001.r1", "values": [1.0]},
+                    {"observation_id": "obs.S001.r2", "values": [2.0]},
+                    {"observation_id": "obs.S002.r1", "values": [3.0]}
+                ]
+            },
+            {
+                "feature_set_id": "chem_x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["c0"],
+                "rows": [
+                    {"observation_id": "chem.S001", "values": [10.0]},
+                    {"observation_id": "chem.S002", "values": [20.0]}
+                ]
+            }
+        ]))
+        .unwrap();
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_features_json(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                feature_tables.as_ptr(),
+                feature_tables.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let materialize = vtable.materialize.unwrap();
+        let status = unsafe {
+            materialize(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let view_json = serde_json::to_vec(&serde_json::json!({
+            "sample_ids": ["S001", "S002"],
+            "include_augmented": false
+        }))
+        .unwrap();
+        let mut view_handle = 0;
+        let make_view = vtable.make_view.unwrap();
+        let status = unsafe {
+            make_view(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: view_json.as_ptr(),
+                    len: view_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let fusion_selector = serde_json::to_vec(&serde_json::json!({
+            "feature_set_id": "fused",
+            "sources": [
+                {"source_id": "nir", "feature_set_id": "nir_x"},
+                {"source_id": "chem", "feature_set_id": "chem_x"}
+            ],
+            "alignment": {
+                "mode": "inner",
+                "sample_ids": ["S001", "S002"],
+                "masks": [
+                    {"source_id": "nir", "sample_ids": ["S001", "S002"], "present": [true, true]},
+                    {"source_id": "chem", "sample_ids": ["S001", "S002"], "present": [true, true]}
+                ]
+            }
+        }))
+        .unwrap();
+        let mut feature_array = std::ptr::null_mut();
+        let mut feature_schema = std::ptr::null_mut();
+        let feature_arrow = vtable.feature_arrow.unwrap();
+        let status = unsafe {
+            feature_arrow(
+                vtable.user_data,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: fusion_selector.as_ptr(),
+                    len: fusion_selector.len(),
+                },
+                &mut feature_array,
+                &mut feature_schema,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        unsafe {
+            assert_eq!((*feature_array).length, 3);
+            assert_eq!((*feature_array).n_children, 4);
+            let array_children = slice::from_raw_parts(
+                (*feature_array).children,
+                (*feature_array).n_children as usize,
+            );
+            let schema_children = slice::from_raw_parts(
+                (*feature_schema).children,
+                (*feature_schema).n_children as usize,
+            );
+            assert_eq!(
+                utf8_values(array_children[0]),
+                vec![
+                    Some("obs.S001.r1".to_string()),
+                    Some("obs.S001.r2".to_string()),
+                    Some("obs.S002.r1".to_string()),
+                ]
+            );
+            assert_eq!(
+                CStr::from_ptr((*schema_children[2]).name).to_str().unwrap(),
+                "nir.n0"
+            );
+            assert_eq!(
+                CStr::from_ptr((*schema_children[3]).name).to_str().unwrap(),
+                "chem.c0"
+            );
+            assert_eq!(
+                f64_values(array_children[2]),
+                vec![Some(1.0), Some(2.0), Some(3.0)]
+            );
+            assert_eq!(
+                f64_values(array_children[3]),
+                vec![Some(10.0), Some(10.0), Some(20.0)]
+            );
+            dagmldata_arrow_array_free(feature_array);
+            dagmldata_arrow_schema_free(feature_schema);
+            vtable.release.unwrap()(vtable.user_data, view_handle);
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    #[test]
     fn inmemory_provider_vtable_materializes_views_identity_targets_and_features() {
         let envelope = include_bytes!(
             "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
@@ -2341,5 +2608,144 @@ mod tests {
         }
         let byte = *bitmap.cast::<u8>().add(idx / 8);
         byte & (1 << (idx % 8)) != 0
+    }
+
+    fn multisource_provider_fixture() -> (Vec<u8>, Vec<u8>) {
+        use std::collections::BTreeMap;
+
+        use dag_ml_data_core::{
+            data_plan_fingerprint, CoordinatorDataMaterializationRequest,
+            CoordinatorDataPlanEnvelope, CoordinatorRelation, CoordinatorRelationSet, DataPlan,
+            DataPlanStep, DataPlanStepKind, FitScope,
+        };
+
+        let tabular = RepresentationId::new("tabular_numeric").unwrap();
+        let plan = DataPlan {
+            id: "nir-chem-tabular".to_string(),
+            steps: vec![
+                DataPlanStep {
+                    kind: DataPlanStepKind::Materialize,
+                    source_id: Some(SourceId::new("nir").unwrap()),
+                    adapter_id: None,
+                    input_representation: None,
+                    output_representation: Some(tabular.clone()),
+                    fit_scope: FitScope::Stateless,
+                    requires_user_choice: false,
+                    metadata: BTreeMap::new(),
+                },
+                DataPlanStep {
+                    kind: DataPlanStepKind::Materialize,
+                    source_id: Some(SourceId::new("chem").unwrap()),
+                    adapter_id: None,
+                    input_representation: None,
+                    output_representation: Some(tabular.clone()),
+                    fit_scope: FitScope::Stateless,
+                    requires_user_choice: false,
+                    metadata: BTreeMap::new(),
+                },
+                DataPlanStep {
+                    kind: DataPlanStepKind::Align,
+                    source_id: None,
+                    adapter_id: None,
+                    input_representation: Some(tabular.clone()),
+                    output_representation: Some(tabular.clone()),
+                    fit_scope: FitScope::Stateless,
+                    requires_user_choice: false,
+                    metadata: BTreeMap::new(),
+                },
+                DataPlanStep {
+                    kind: DataPlanStepKind::Join,
+                    source_id: None,
+                    adapter_id: None,
+                    input_representation: Some(tabular.clone()),
+                    output_representation: Some(tabular.clone()),
+                    fit_scope: FitScope::Stateless,
+                    requires_user_choice: false,
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            output_representation: tabular.clone(),
+            issues: Vec::new(),
+        };
+        let plan_fingerprint = data_plan_fingerprint(&plan).unwrap();
+        let schema_fingerprint = "a".repeat(64);
+        let envelope = CoordinatorDataPlanEnvelope {
+            schema_version: dag_ml_data_core::COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
+            schema_fingerprint: schema_fingerprint.clone(),
+            plan_fingerprint: plan_fingerprint.clone(),
+            relation_fingerprint: None,
+            plan,
+            coordinator_relations: Some(CoordinatorRelationSet {
+                records: vec![
+                    CoordinatorRelation {
+                        observation_id: ObservationId::new("obs.S001.r1").unwrap(),
+                        sample_id: SampleId::new("S001").unwrap(),
+                        target_id: None,
+                        group_id: None,
+                        origin_sample_id: None,
+                        source_id: Some(SourceId::new("nir").unwrap()),
+                        is_augmented: false,
+                    },
+                    CoordinatorRelation {
+                        observation_id: ObservationId::new("obs.S001.r2").unwrap(),
+                        sample_id: SampleId::new("S001").unwrap(),
+                        target_id: None,
+                        group_id: None,
+                        origin_sample_id: None,
+                        source_id: Some(SourceId::new("nir").unwrap()),
+                        is_augmented: false,
+                    },
+                    CoordinatorRelation {
+                        observation_id: ObservationId::new("obs.S002.r1").unwrap(),
+                        sample_id: SampleId::new("S002").unwrap(),
+                        target_id: None,
+                        group_id: None,
+                        origin_sample_id: None,
+                        source_id: Some(SourceId::new("nir").unwrap()),
+                        is_augmented: false,
+                    },
+                    CoordinatorRelation {
+                        observation_id: ObservationId::new("chem.S001").unwrap(),
+                        sample_id: SampleId::new("S001").unwrap(),
+                        target_id: None,
+                        group_id: None,
+                        origin_sample_id: None,
+                        source_id: Some(SourceId::new("chem").unwrap()),
+                        is_augmented: false,
+                    },
+                    CoordinatorRelation {
+                        observation_id: ObservationId::new("chem.S002").unwrap(),
+                        sample_id: SampleId::new("S002").unwrap(),
+                        target_id: None,
+                        group_id: None,
+                        origin_sample_id: None,
+                        source_id: Some(SourceId::new("chem").unwrap()),
+                        is_augmented: false,
+                    },
+                ],
+            }),
+            metadata: BTreeMap::new(),
+        };
+        envelope.validate().unwrap();
+        let request = CoordinatorDataMaterializationRequest {
+            run_id: "run:test".to_string(),
+            node_id: "node:model".to_string(),
+            input_name: "X".to_string(),
+            phase: "fit".to_string(),
+            variant_id: None,
+            fold_id: None,
+            request_id: "req:test".to_string(),
+            schema_fingerprint,
+            plan_fingerprint,
+            relation_fingerprint: None,
+            output_representation: tabular,
+            source_ids: Vec::new(),
+            require_relations: false,
+        };
+        request.validate().unwrap();
+        (
+            serde_json::to_vec(&envelope).unwrap(),
+            serde_json::to_vec(&request).unwrap(),
+        )
     }
 }

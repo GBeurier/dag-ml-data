@@ -326,6 +326,13 @@ class InMemoryProvider:
             self._lib.dagmldata_arrow_array_free(array)
             self._lib.dagmldata_arrow_schema_free(schema)
 
+    def feature_fusion_values(
+        self,
+        view_handle: int,
+        selector: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return self.feature_values(view_handle, json.dumps(selector))
+
     def release(self, handle: int) -> None:
         self._vtable.release(self._vtable.user_data, handle)
 

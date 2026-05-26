@@ -55,6 +55,9 @@ Implemented:
 - in-memory provider feature tables are converted once at provider creation
   into typed numeric buffers, so provider exports no longer re-parse JSON values
   on every `feature_arrow` call;
+- provider `feature_arrow` accepts JSON fusion selectors and routes
+  source-filtered provider-owned feature buffers through the core feature-fusion
+  kernel;
 - provider vtable release conformance, including parent data-handle release
   invalidating child view handles;
 - C header and linked C runtime smokes for the provider vtable and Arrow
@@ -71,11 +74,11 @@ Not implemented yet:
 - production runtime data providers with real buffer/view lifecycles;
 - production Arrow feature-buffer provider implementation beyond the current
   in-memory typed numeric buffer conformance;
-- provider-vtable wiring for fused feature exports and late collation;
+- production provider lifecycles for fused feature exports and late collation;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
-Attach real production feature-buffer lifecycles and wire fused feature exports
-into provider-backed execution.
+Attach real production feature-buffer lifecycles for single-source and fused
+feature exports, then add late collation.

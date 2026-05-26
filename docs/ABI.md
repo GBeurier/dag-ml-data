@@ -26,6 +26,8 @@ memory while exposing deterministic descriptors and identity tables to the core.
 - `dagmldata_inmemory_provider_new_with_features_json` for the same provider
   plus JSON feature tables used by binding conformance tests;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
+  The `feature_arrow` hook accepts either a plain feature-set id or a JSON
+  feature-fusion selector.
 
 The coordinator envelope wire shape is versioned as
 `CoordinatorDataPlanEnvelope` v1 and published at
@@ -90,14 +92,20 @@ observation-level feature tables, then implements:
 - `view_identity`: returns the filtered relation table as Arrow C Data;
 - `target_arrow`: returns sample-level numeric targets aligned to the view;
 - `feature_arrow`: returns observation-level numeric features aligned to the
-  view and filtered by `DataView.columns`;
+  view and filtered by `DataView.columns` when passed a plain feature-set id;
+  when passed `{ feature_set_id, sources, alignment, policy? }` JSON, where
+  each source is `{ source_id, feature_set_id, columns? }`, it fuses
+  provider-owned source feature buffers through the core feature-fusion kernel;
 - `release` and `destroy`: release handles and provider state.
 
 The conformance provider still receives small JSON fixture feature tables at
 construction time, but it converts them once into typed numeric buffers owned by
 the provider state. `feature_arrow` exports are then view projections over those
-owned buffers, not per-call JSON numeric parsing. Full provider implementations
-will use the same vtable shape while keeping production data buffers host-owned.
+owned buffers, not per-call JSON numeric parsing. Fusion selectors reuse those
+typed buffers, filter each source by source identity in the view, and then call
+the same pure Rust fusion kernel used by the standalone ABI helper. Full
+provider implementations will use the same vtable shape while keeping
+production data buffers host-owned.
 
 `tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
@@ -119,5 +127,7 @@ identity export, target export, feature export, release and destroy.
 4. Add native host provider conformance against the current
    identity/target/feature behavior.
 5. Add ABI conformance for the core multi-source feature-fusion kernel.
-6. Replace in-memory typed fixture buffers with production feature-buffer
+6. Route in-memory provider `feature_arrow` fusion selectors through the same
+   kernel.
+7. Replace in-memory typed fixture buffers with production feature-buffer
    lifecycles.
