@@ -622,15 +622,18 @@ fn filter_relations(
         .source_ids
         .as_ref()
         .map(|source_ids| source_ids.iter().collect::<BTreeSet<_>>());
-    let filtered = relations
+    let mut filtered = relations
         .iter()
+        .enumerate()
         .filter(|relation| {
+            let relation = relation.1;
             sample_filter
                 .as_ref()
                 .map(|samples| samples.contains(&relation.sample_id))
                 .unwrap_or(true)
         })
         .filter(|relation| {
+            let relation = relation.1;
             source_filter
                 .as_ref()
                 .map(|sources| {
@@ -642,15 +645,31 @@ fn filter_relations(
                 })
                 .unwrap_or(true)
         })
-        .filter(|relation| view.include_augmented || !relation.is_augmented)
-        .cloned()
+        .filter(|relation| view.include_augmented || !relation.1.is_augmented)
+        .map(|(idx, relation)| (idx, relation.clone()))
         .collect::<Vec<_>>();
     if filtered.is_empty() {
         return Err(DataError::Validation(
             "data view selected no coordinator relations".to_string(),
         ));
     }
-    Ok(filtered)
+    if let Some(sample_ids) = &view.sample_ids {
+        let sample_order = sample_ids
+            .iter()
+            .enumerate()
+            .map(|(idx, sample_id)| (sample_id, idx))
+            .collect::<BTreeMap<_, _>>();
+        filtered.sort_by_key(|(idx, relation)| {
+            (
+                sample_order
+                    .get(&relation.sample_id)
+                    .copied()
+                    .unwrap_or(usize::MAX),
+                *idx,
+            )
+        });
+    }
+    Ok(filtered.into_iter().map(|(_, relation)| relation).collect())
 }
 
 fn unique_sample_count(relations: &[CoordinatorRelation]) -> usize {
@@ -859,6 +878,95 @@ mod tests {
         assert!(arena
             .feature_values(view_record.handle.handle, &wrong_representation)
             .is_err());
+    }
+
+    #[test]
+    fn view_honors_requested_sample_order_for_identity_targets_and_features() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view = DataView {
+            sample_ids: Some(vec![
+                SampleId::new("S002").unwrap(),
+                SampleId::new("S001").unwrap(),
+            ]),
+            include_augmented: false,
+            ..Default::default()
+        };
+        let view_record = arena.make_view(data.handle.handle, &view).unwrap();
+
+        let identity = arena.view_identity(view_record.handle.handle).unwrap();
+        assert_eq!(
+            identity
+                .records
+                .iter()
+                .map(|relation| relation.observation_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["obs.S002.base", "obs.S001.base", "obs.S001.rep1"]
+        );
+
+        let target_table = CoordinatorTargetTable {
+            target_id: TargetId::new("y").unwrap(),
+            values: vec![
+                CoordinatorTargetValue {
+                    sample_id: SampleId::new("S001").unwrap(),
+                    value: json!(42.0),
+                },
+                CoordinatorTargetValue {
+                    sample_id: SampleId::new("S002").unwrap(),
+                    value: json!(7.0),
+                },
+            ],
+        };
+        let target = arena
+            .target_values(view_record.handle.handle, &target_table)
+            .unwrap();
+        assert_eq!(
+            target.sample_ids,
+            vec![
+                SampleId::new("S002").unwrap(),
+                SampleId::new("S001").unwrap()
+            ]
+        );
+        assert_eq!(target.values, vec![json!(7.0), json!(42.0)]);
+
+        let feature_table = CoordinatorFeatureTable {
+            feature_set_id: "x".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            feature_names: vec!["f0".to_string(), "f1".to_string()],
+            rows: vec![
+                CoordinatorFeatureRow {
+                    observation_id: ObservationId::new("obs.S001.base").unwrap(),
+                    values: vec![json!(1.0), json!(10.0)],
+                },
+                CoordinatorFeatureRow {
+                    observation_id: ObservationId::new("obs.S001.rep1").unwrap(),
+                    values: vec![json!(2.0), json!(20.0)],
+                },
+                CoordinatorFeatureRow {
+                    observation_id: ObservationId::new("obs.S002.base").unwrap(),
+                    values: vec![json!(4.0), json!(40.0)],
+                },
+            ],
+        };
+        let features = arena
+            .feature_values(view_record.handle.handle, &feature_table)
+            .unwrap();
+        assert_eq!(
+            features.observation_ids,
+            vec![
+                ObservationId::new("obs.S002.base").unwrap(),
+                ObservationId::new("obs.S001.base").unwrap(),
+                ObservationId::new("obs.S001.rep1").unwrap(),
+            ]
+        );
+        assert_eq!(
+            features.values,
+            vec![
+                vec![json!(4.0), json!(40.0)],
+                vec![json!(1.0), json!(10.0)],
+                vec![json!(2.0), json!(20.0)],
+            ]
+        );
     }
 
     #[test]

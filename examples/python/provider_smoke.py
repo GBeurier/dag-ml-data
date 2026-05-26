@@ -44,18 +44,27 @@ def main() -> None:
         data_handle = provider.materialize_file(args.request)
         view_handle = provider.make_view(
             data_handle,
-            {"sample_ids": ["S001"], "columns": ["f1"], "include_augmented": False},
+            {"sample_ids": ["S002", "S001"], "columns": ["f1"], "include_augmented": False},
         )
         identity = provider.view_identity(view_handle)
         targets = provider.target_values(view_handle, "y")
         features = provider.feature_values(view_handle, "x")
 
         assert [row["observation_id"] for row in identity] == [
+            "obs.S002.base",
             "obs.S001.base",
             "obs.S001.rep1",
         ]
-        assert targets == [{"sample_id": "S001", "target_id": "y", "value": 42.0}]
+        assert targets == [
+            {"sample_id": "S002", "target_id": "y", "value": 7.0},
+            {"sample_id": "S001", "target_id": "y", "value": 42.0},
+        ]
         assert features == [
+            {
+                "observation_id": "obs.S002.base",
+                "sample_id": "S002",
+                "features": {"f1": 40.0},
+            },
             {
                 "observation_id": "obs.S001.base",
                 "sample_id": "S001",

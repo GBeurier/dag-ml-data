@@ -22,11 +22,13 @@ Implemented:
 - in-memory coordinator handle arena that materializes envelopes into opaque
   handle records with run/node/phase/variant/fold/fingerprint traceability;
 - identity-filtered view handles from `DataView`, preserving repeated
-  observations while allowing sample/source/augmentation selection;
+  observations while allowing sample/source/augmentation selection and honoring
+  explicit requested sample order;
 - sample-level target value alignment for view handles with deterministic
-  de-duplication across repeated observations;
+  de-duplication across repeated observations in view sample order;
 - observation-level feature table alignment for view handles, preserving
-  repeated observations and applying `DataView.columns`;
+  repeated observations, applying `DataView.columns` and keeping view sample
+  order;
 - feature exports now validate that the feature table representation matches
   the materialized data-plan output representation for the parent view handle;
 - CLI `materialize-envelope` smoke command;

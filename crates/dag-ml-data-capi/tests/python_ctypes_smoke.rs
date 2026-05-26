@@ -332,7 +332,11 @@ fn python_example_provider_smoke_runs_against_c_abi() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""identity_rows": 2"#), "{stdout}");
-    assert!(stdout.contains(r#""target_rows": 1"#), "{stdout}");
-    assert!(stdout.contains(r#""feature_rows": 2"#), "{stdout}");
+    assert!(stdout.contains(r#""identity_rows": 3"#), "{stdout}");
+    assert!(stdout.contains(r#""target_rows": 2"#), "{stdout}");
+    assert!(stdout.contains(r#""feature_rows": 3"#), "{stdout}");
+    assert!(
+        stdout.contains(r#""observations": ["obs.S002.base", "obs.S001.base", "obs.S001.rep1"]"#),
+        "{stdout}"
+    );
 }
