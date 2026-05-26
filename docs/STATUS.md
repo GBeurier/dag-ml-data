@@ -28,6 +28,7 @@ Implemented:
 - CLI `materialize-envelope` smoke command;
 - Arrow C Data ABI structs, release helpers and coordinator identity-table
   export from validated envelopes;
+- Arrow C Data numeric target-table export through materialized view handles;
 - C ABI schema fingerprint entry point;
 - example schema fixture;
 - CI workflow.
@@ -36,7 +37,6 @@ Not implemented yet:
 
 - production runtime data providers with real buffer/view lifecycles;
 - full Arrow buffer/view provider implementation beyond identity-table smoke;
-- Arrow target export;
 - alignment and fusion execution;
 - fitted adapter serialization;
 - nirs4all connector.

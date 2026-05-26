@@ -12,6 +12,9 @@ memory while exposing deterministic descriptors and identity tables to the core.
 - Arrow C Data `ArrowArray` and `ArrowSchema` structs plus release helpers;
 - `dagmldata_coordinator_identity_arrow_json` for identity-table smoke tests
   from a validated coordinator envelope;
+- `dagmldata_coordinator_target_arrow_json` for numeric target-table smoke tests
+  from a validated envelope, materialization request, `DataView` and target
+  table;
 - `DagMlDataVTable` with materialize/view/identity/target/release hooks.
 
 ## Ownership Rules
@@ -36,6 +39,12 @@ exports one Arrow struct row per coordinator relation with:
 
 This is enough for ABI consumers to verify sample/repetition/group/augmentation
 identity transfer before full buffer-backed provider lifecycles exist.
+
+`dagmldata_coordinator_target_arrow_json` extends the smoke path to
+sample-level targets. It materializes the envelope, creates a `DataView`, aligns
+target values to the selected samples and emits `sample_id`, `target_id` and
+numeric `value` columns. Repeated observations are intentionally de-duplicated
+to one target value per sample.
 
 ## ABI Roadmap
 

@@ -2,7 +2,12 @@ use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::slice;
 
-use dag_ml_data_core::{schema_fingerprint, CoordinatorDataPlanEnvelope, DatasetSchema};
+use dag_ml_data_core::{
+    schema_fingerprint, CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope,
+    CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
+    DatasetSchema,
+};
+use serde::Deserialize;
 
 pub type DagMlDataHandle = u64;
 
@@ -267,6 +272,62 @@ pub unsafe extern "C" fn dagmldata_coordinator_identity_arrow_json(
     }
 }
 
+/// Builds an Arrow C Data target table from a coordinator envelope, data view
+/// and sample-level target table.
+///
+/// The request JSON shape is `{ envelope, materialization_request, view,
+/// target_table, owner_controller? }`. The returned table has `sample_id`,
+/// `target_id` and numeric `value` columns. Repeated observations in the view
+/// are de-duplicated to one target row per sample.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `out_arrow_array`, `out_arrow_schema` and
+/// `error_out` may be null. Returned Arrow pointers must be released with
+/// `dagmldata_arrow_array_free` and `dagmldata_arrow_schema_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_coordinator_target_arrow_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_arrow_array: *mut *mut ArrowArray,
+    out_arrow_schema: *mut *mut ArrowSchema,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_arrow_array(out_arrow_array);
+    clear_arrow_schema(out_arrow_schema);
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_string(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_arrow_array.is_null() || out_arrow_schema.is_null() {
+        set_string(error_out, "arrow output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<CoordinatorTargetArrowRequest>(json) {
+        Ok(request) => {
+            match build_target_block(&request).and_then(|block| build_target_arrow(&block)) {
+                Ok((array, schema)) => {
+                    *out_arrow_array = Box::into_raw(Box::new(array));
+                    *out_arrow_schema = Box::into_raw(Box::new(schema));
+                    DagMlDataStatusCode::Ok
+                }
+                Err(error) => {
+                    set_string(error_out, error.to_string());
+                    DagMlDataStatusCode::ValidationError
+                }
+            }
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 unsafe fn clear_string(out: *mut DagMlDataString) {
     if !out.is_null() {
         *out = DagMlDataString::default();
@@ -298,6 +359,20 @@ unsafe fn set_string(out: *mut DagMlDataString, value: impl Into<String>) {
     };
 }
 
+#[derive(Debug, Deserialize)]
+struct CoordinatorTargetArrowRequest {
+    envelope: CoordinatorDataPlanEnvelope,
+    materialization_request: CoordinatorDataMaterializationRequest,
+    view: DataView,
+    target_table: CoordinatorTargetTable,
+    #[serde(default = "default_owner_controller")]
+    owner_controller: String,
+}
+
+fn default_owner_controller() -> String {
+    "controller:data.provider".to_string()
+}
+
 #[allow(dead_code)]
 struct StringArrayPrivate {
     validity: Option<Vec<u8>>,
@@ -309,6 +384,13 @@ struct StringArrayPrivate {
 #[allow(dead_code)]
 struct BoolArrayPrivate {
     values: Vec<u8>,
+    buffers: Box<[*const c_void]>,
+}
+
+#[allow(dead_code)]
+struct F64ArrayPrivate {
+    validity: Option<Vec<u8>>,
+    values: Vec<f64>,
     buffers: Box<[*const c_void]>,
 }
 
@@ -377,6 +459,57 @@ fn build_identity_arrow(
     ))
 }
 
+fn build_target_block(
+    request: &CoordinatorTargetArrowRequest,
+) -> dag_ml_data_core::Result<CoordinatorTargetBlock> {
+    let arena = CoordinatorHandleArena::new(&request.owner_controller)?;
+    let data = arena.materialize(&request.envelope, &request.materialization_request)?;
+    let view = arena.make_view(data.handle.handle, &request.view)?;
+    arena.target_values(view.handle.handle, &request.target_table)
+}
+
+fn build_target_arrow(
+    target: &CoordinatorTargetBlock,
+) -> dag_ml_data_core::Result<(ArrowArray, ArrowSchema)> {
+    let target_ids = std::iter::repeat_n(Some(target.target_id.as_str()), target.sample_ids.len());
+    let numeric_values = target
+        .values
+        .iter()
+        .map(|value| match value {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::Number(number) => number.as_f64().map(Some).ok_or_else(|| {
+                dag_ml_data_core::DataError::Validation(format!(
+                    "target `{}` contains a non-f64 numeric value",
+                    target.target_id
+                ))
+            }),
+            _ => Err(dag_ml_data_core::DataError::Validation(format!(
+                "target `{}` Arrow smoke only supports numeric or null values",
+                target.target_id
+            ))),
+        })
+        .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
+    let child_arrays = vec![
+        Box::into_raw(Box::new(string_array(
+            target
+                .sample_ids
+                .iter()
+                .map(|sample_id| Some(sample_id.as_str())),
+        )?)),
+        Box::into_raw(Box::new(string_array(target_ids)?)),
+        Box::into_raw(Box::new(f64_array(numeric_values.into_iter()))),
+    ];
+    let child_schemas = vec![
+        Box::into_raw(Box::new(field_schema("sample_id", "u", false)?)),
+        Box::into_raw(Box::new(field_schema("target_id", "u", false)?)),
+        Box::into_raw(Box::new(field_schema("value", "g", true)?)),
+    ];
+    Ok((
+        struct_array(target.sample_ids.len(), child_arrays),
+        struct_schema("coordinator_target", child_schemas)?,
+    ))
+}
+
 fn string_array<'a>(
     values: impl Iterator<Item = Option<&'a str>>,
 ) -> dag_ml_data_core::Result<ArrowArray> {
@@ -430,6 +563,50 @@ fn string_array<'a>(
         release: Some(release_string_array),
         private_data: Box::into_raw(private).cast::<c_void>(),
     })
+}
+
+fn f64_array(values: impl Iterator<Item = Option<f64>>) -> ArrowArray {
+    let values = values.collect::<Vec<_>>();
+    let mut validity = Vec::new();
+    let mut data = Vec::with_capacity(values.len());
+    let mut null_count = 0i64;
+    for (idx, value) in values.iter().enumerate() {
+        if let Some(value) = value {
+            set_bitmap(&mut validity, idx, true);
+            data.push(*value);
+        } else {
+            set_bitmap(&mut validity, idx, false);
+            data.push(0.0);
+            null_count += 1;
+        }
+    }
+    let validity = (null_count > 0).then_some(validity);
+    let buffers = vec![
+        validity
+            .as_ref()
+            .map(|buffer| buffer.as_ptr().cast::<c_void>())
+            .unwrap_or(std::ptr::null()),
+        data.as_ptr().cast::<c_void>(),
+    ]
+    .into_boxed_slice();
+    let private = Box::new(F64ArrayPrivate {
+        validity,
+        values: data,
+        buffers,
+    });
+    let buffers = private.buffers.as_ptr() as *mut *const c_void;
+    ArrowArray {
+        length: values.len() as i64,
+        null_count,
+        offset: 0,
+        n_buffers: 2,
+        n_children: 0,
+        buffers,
+        children: std::ptr::null_mut(),
+        dictionary: std::ptr::null_mut(),
+        release: Some(release_f64_array),
+        private_data: Box::into_raw(private).cast::<c_void>(),
+    }
 }
 
 fn bool_array(values: impl Iterator<Item = bool>) -> ArrowArray {
@@ -553,6 +730,19 @@ unsafe extern "C" fn release_bool_array(array: *mut ArrowArray) {
     (*array).release = None;
     if !(*array).private_data.is_null() {
         let private = Box::from_raw((*array).private_data.cast::<BoolArrayPrivate>());
+        drop(private);
+    }
+    (*array).private_data = std::ptr::null_mut();
+    (*array).buffers = std::ptr::null_mut();
+}
+
+unsafe extern "C" fn release_f64_array(array: *mut ArrowArray) {
+    if array.is_null() || (*array).release.is_none() {
+        return;
+    }
+    (*array).release = None;
+    if !(*array).private_data.is_null() {
+        let private = Box::from_raw((*array).private_data.cast::<F64ArrayPrivate>());
         drop(private);
     }
     (*array).private_data = std::ptr::null_mut();
@@ -694,6 +884,64 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exports_coordinator_target_arrow_over_abi() {
+        let envelope: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        let materialization_request: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        ))
+        .unwrap();
+        let request = serde_json::json!({
+            "envelope": envelope,
+            "materialization_request": materialization_request,
+            "view": {
+                "sample_ids": ["S001"],
+                "include_augmented": false
+            },
+            "target_table": {
+                "target_id": "y",
+                "values": [
+                    {"sample_id": "S001", "value": 42.0},
+                    {"sample_id": "S002", "value": 7.0}
+                ]
+            }
+        });
+        let request = serde_json::to_vec(&request).unwrap();
+        let mut array = std::ptr::null_mut();
+        let mut schema = std::ptr::null_mut();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_coordinator_target_arrow_json(
+                request.as_ptr(),
+                request.len(),
+                &mut array,
+                &mut schema,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        unsafe {
+            assert_eq!((*array).length, 1);
+            assert_eq!((*array).n_children, 3);
+            assert_eq!(CStr::from_ptr((*schema).format).to_str().unwrap(), "+s");
+            let array_children =
+                slice::from_raw_parts((*array).children, (*array).n_children as usize);
+            assert_eq!(
+                utf8_values(array_children[0]),
+                vec![Some("S001".to_string())]
+            );
+            assert_eq!(f64_values(array_children[2]), vec![Some(42.0)]);
+            dagmldata_arrow_array_free(array);
+            dagmldata_arrow_schema_free(schema);
+        }
+    }
+
     unsafe fn utf8_values(array: *const ArrowArray) -> Vec<Option<String>> {
         assert!(!array.is_null());
         let buffers = slice::from_raw_parts((*array).buffers, (*array).n_buffers as usize);
@@ -715,6 +963,16 @@ mod tests {
                 let end = usize::try_from(offsets[idx + 1]).unwrap();
                 Some(String::from_utf8(values[start..end].to_vec()).unwrap())
             })
+            .collect()
+    }
+
+    unsafe fn f64_values(array: *const ArrowArray) -> Vec<Option<f64>> {
+        assert!(!array.is_null());
+        let buffers = slice::from_raw_parts((*array).buffers, (*array).n_buffers as usize);
+        assert_eq!(buffers.len(), 2);
+        let values = slice::from_raw_parts(buffers[1].cast::<f64>(), (*array).length as usize);
+        (0..usize::try_from((*array).length).unwrap())
+            .map(|idx| is_valid(buffers[0], idx).then_some(values[idx]))
             .collect()
     }
 
