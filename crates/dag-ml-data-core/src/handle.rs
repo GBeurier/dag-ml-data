@@ -438,6 +438,25 @@ impl CoordinatorHandleArena {
             .get(&view_handle)
             .cloned()
             .ok_or_else(|| DataError::Validation(format!("unknown view handle `{view_handle}`")))?;
+        let parent_record = self
+            .records
+            .borrow()
+            .get(&view_record.parent_handle.handle)
+            .cloned()
+            .ok_or_else(|| {
+                DataError::Validation(format!(
+                    "view `{view_handle}` parent data handle `{}` is not live",
+                    view_record.parent_handle.handle
+                ))
+            })?;
+        if feature_table.representation_id != parent_record.output_representation {
+            return Err(DataError::Validation(format!(
+                "feature table `{}` representation `{}` does not match materialized output representation `{}`",
+                feature_table.feature_set_id,
+                feature_table.representation_id,
+                parent_record.output_representation
+            )));
+        }
         let relations = self.view_identity(view_handle)?;
         let selected_indices = selected_feature_indices(feature_table, &view_record.view)?;
         let rows_by_observation = feature_table
@@ -818,6 +837,7 @@ mod tests {
 
         assert_eq!(features.feature_set_id, "x");
         assert_eq!(features.feature_names, vec!["f1".to_string()]);
+        assert_eq!(features.representation_id.as_str(), "tabular_numeric");
         assert_eq!(
             features.observation_ids,
             vec![
@@ -833,6 +853,12 @@ mod tests {
             ]
         );
         assert_eq!(features.values, vec![vec![json!(10.0)], vec![json!(20.0)]]);
+
+        let mut wrong_representation = feature_table;
+        wrong_representation.representation_id = RepresentationId::new("dense_signal").unwrap();
+        assert!(arena
+            .feature_values(view_record.handle.handle, &wrong_representation)
+            .is_err());
     }
 
     #[test]

@@ -27,6 +27,8 @@ Implemented:
   de-duplication across repeated observations;
 - observation-level feature table alignment for view handles, preserving
   repeated observations and applying `DataView.columns`;
+- feature exports now validate that the feature table representation matches
+  the materialized data-plan output representation for the parent view handle;
 - CLI `materialize-envelope` smoke command;
 - Arrow C Data ABI structs, release helpers and coordinator identity-table
   export from validated envelopes;

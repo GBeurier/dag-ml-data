@@ -1639,6 +1639,17 @@ mod tests {
                     {"observation_id": "obs.S001.aug0", "values": [3.0, 30.0]},
                     {"observation_id": "obs.S002.base", "values": [4.0, 40.0]}
                 ]
+            },
+            {
+                "feature_set_id": "x_bad_representation",
+                "representation_id": "dense_signal",
+                "feature_names": ["f0"],
+                "rows": [
+                    {"observation_id": "obs.S001.base", "values": [1.0]},
+                    {"observation_id": "obs.S001.rep1", "values": [2.0]},
+                    {"observation_id": "obs.S001.aug0", "values": [3.0]},
+                    {"observation_id": "obs.S002.base", "values": [4.0]}
+                ]
             }
         ]))
         .unwrap();
@@ -1793,6 +1804,24 @@ mod tests {
             dagmldata_arrow_array_free(feature_array);
             dagmldata_arrow_schema_free(feature_schema);
         }
+        let bad_feature_set_name = b"x_bad_representation";
+        let mut bad_feature_array = std::ptr::null_mut();
+        let mut bad_feature_schema = std::ptr::null_mut();
+        let status = unsafe {
+            feature_arrow(
+                vtable.user_data,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: bad_feature_set_name.as_ptr(),
+                    len: bad_feature_set_name.len(),
+                },
+                &mut bad_feature_array,
+                &mut bad_feature_schema,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(bad_feature_array.is_null());
+        assert!(bad_feature_schema.is_null());
 
         unsafe {
             vtable.release.unwrap()(vtable.user_data, view_handle);
