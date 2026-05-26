@@ -9,6 +9,12 @@ use crate::model::DatasetSchema;
 use crate::plan::DataPlan;
 use crate::relation::SampleRelationTable;
 
+pub const COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION: u32 = 1;
+
+fn default_coordinator_data_plan_envelope_schema_version() -> u32 {
+    COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CoordinatorRelation {
     pub observation_id: ObservationId,
@@ -53,6 +59,8 @@ impl CoordinatorRelationSet {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CoordinatorDataPlanEnvelope {
+    #[serde(default = "default_coordinator_data_plan_envelope_schema_version")]
+    pub schema_version: u32,
     pub schema_fingerprint: String,
     pub plan_fingerprint: String,
     #[serde(default)]
@@ -77,6 +85,7 @@ impl CoordinatorDataPlanEnvelope {
             .map(coordinator_relations_from_sample_table)
             .transpose()?;
         let envelope = Self {
+            schema_version: COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
             schema_fingerprint,
             plan_fingerprint,
             relation_fingerprint,
@@ -89,6 +98,12 @@ impl CoordinatorDataPlanEnvelope {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.schema_version != COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION {
+            return Err(DataError::Validation(format!(
+                "coordinator data-plan envelope uses unsupported schema_version {}, expected {}",
+                self.schema_version, COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
+            )));
+        }
         validate_fingerprint("schema", &self.schema_fingerprint)?;
         validate_fingerprint("plan", &self.plan_fingerprint)?;
         self.plan.validate()?;
@@ -221,7 +236,20 @@ mod tests {
         .unwrap();
 
         envelope.validate().unwrap();
+        assert_eq!(
+            envelope.schema_version,
+            COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
+        );
         assert!(envelope.coordinator_relations.is_some());
+    }
+
+    #[test]
+    fn envelope_refuses_unsupported_schema_version() {
+        let mut envelope =
+            CoordinatorDataPlanEnvelope::from_parts(&load_schema(), load_plan(), None).unwrap();
+        envelope.schema_version = COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION + 1;
+
+        assert!(envelope.validate().is_err());
     }
 
     #[test]

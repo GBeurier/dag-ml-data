@@ -11,6 +11,7 @@
 | Plans | unresolved choices, empty plans, declared output representation |
 | Planner | fixture schema/model-input/adapters produce expected data plan |
 | Relations | duplicate observations, group consistency, augmentation origin validity |
+| Coordinator envelope | explicit schema version, unsupported schema version refusal, schema/plan/relation fingerprint validation |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability |
 | Views/features/targets | sample/source/augmentation filtering, requested sample-order preservation, repetition-preserving identity, observation-level feature alignment, feature-column filtering, feature representation mismatch refusal, sample-level target de-duplication |
 | ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature Arrow exports, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |

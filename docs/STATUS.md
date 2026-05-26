@@ -16,6 +16,8 @@ Implemented:
 - sample relation fingerprints;
 - coordinator data-plan envelope export with schema, plan and relation
   fingerprints;
+- explicit coordinator data-plan envelope schema version with unsupported
+  version refusal;
 - conversion from `SampleRelationTable` to DAG-ML coordinator relation records;
 - coordinator materialization request and handle-record contracts for validated
   data handles;
