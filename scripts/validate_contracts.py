@@ -310,6 +310,10 @@ def validate_dag_ml_data_tensor_header(header: str, label: str) -> None:
         f"{label} header must expose provider feature-buffer manifests",
     )
     require(
+        "dagmldata_inmemory_provider_new_with_f64_features_json" in header,
+        f"{label} header must expose typed f64 feature provider construction",
+    )
+    require(
         "dagmldata_inmemory_provider_data_feature_buffer_manifest_json" in header,
         f"{label} header must expose data-handle feature-buffer manifests",
     )

@@ -44,15 +44,17 @@ targets, exports numeric observation-level features, and supports
 release/destroy callbacks. A stdlib-only Python example now exercises the same
 lifecycle through the public ABI. Native vtable conformance now checks
 materialize/view/export paths plus release behavior, including parent-handle
-release invalidating child views. Provider feature tables are converted once at
+release invalidating child views. Provider feature inputs are converted once at
 provider construction into reusable column-major `NumericFeatureBuffer` values
 from `dag-ml-data-core`, grouped in a `NumericFeatureBufferArena`, and exposed
-through deterministic feature-buffer manifests before Arrow export. The arena
-binds compatible buffers to each materialized data handle after source-scoped
-relations are known, and provider feature/fusion/collation exports validate
-those bindings before exporting Arrow or tensors. Next: replace the in-memory
-fixture input path with production buffer sources using the same
-manifest/binding/projection contract.
+through deterministic feature-buffer manifests before Arrow export. The
+preferred numeric conformance input is now typed row-major
+`NumericFeatureMatrixF64` with optional validity masks, avoiding per-cell JSON
+values. The arena binds compatible buffers to each materialized data handle
+after source-scoped relations are known, and provider feature/fusion/collation
+exports validate those bindings before exporting Arrow or tensors. Next:
+replace the in-memory typed input path with production buffer sources using the
+same manifest/binding/projection contract.
 
 ## Phase 3: Alignment, Fusion And Collation
 

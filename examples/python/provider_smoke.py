@@ -22,24 +22,25 @@ def main() -> None:
             ],
         }
     ]
-    feature_tables = [
+    f64_feature_matrices = [
         {
             "feature_set_id": "x",
             "representation_id": "tabular_numeric",
             "feature_names": ["f0", "f1"],
-            "rows": [
-                {"observation_id": "obs.S001.base", "values": [1.0, 10.0]},
-                {"observation_id": "obs.S001.rep1", "values": [2.0, 20.0]},
-                {"observation_id": "obs.S001.aug0", "values": [3.0, 30.0]},
-                {"observation_id": "obs.S002.base", "values": [4.0, 40.0]},
+            "observation_ids": [
+                "obs.S001.base",
+                "obs.S001.rep1",
+                "obs.S001.aug0",
+                "obs.S002.base",
             ],
+            "values": [1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0],
         }
     ]
     with InMemoryProvider.from_files(
         args.lib,
         args.envelope,
         target_tables,
-        feature_tables,
+        f64_feature_matrices=f64_feature_matrices,
     ) as provider:
         manifests = provider.feature_buffer_manifests()
         data_handle = provider.materialize_file(args.request)

@@ -63,6 +63,9 @@ Implemented:
 - typed numeric feature buffers now live in `dag-ml-data-core` as reusable
   column-major `NumericFeatureBuffer` contracts with projection tests, rather
   than being private C ABI fixture logic;
+- typed row-major `NumericFeatureMatrixF64` input with optional validity masks
+  converts directly to column-major buffers without per-cell
+  `serde_json::Value` parsing on the numeric conformance path;
 - typed numeric feature buffers are grouped behind a core
   `NumericFeatureBufferStore` with deterministic manifests, row/feature/value
   counts, estimated value bytes and stable buffer fingerprints;
@@ -88,6 +91,8 @@ Implemented:
   layout;
 - provider-owned feature-buffer manifests are exported as JSON through the C ABI
   for binding conformance and lifecycle validation;
+- provider construction accepts typed f64 feature matrices through the C ABI as
+  the preferred conformance path for numeric feature buffers;
 - data-handle-scoped feature-buffer bindings are exported as JSON through the C
   ABI and become invalid when the parent data handle is released;
 - provider vtable release conformance, including parent data-handle release

@@ -245,18 +245,24 @@ class InMemoryProvider:
         envelope_json: bytes,
         target_tables: list[dict[str, Any]] | None = None,
         feature_tables: list[dict[str, Any]] | None = None,
+        f64_feature_matrices: list[dict[str, Any]] | None = None,
     ) -> None:
         self._lib = ctypes.CDLL(str(library_path))
         self._configure_lib()
         target_json = json.dumps(target_tables or []).encode("utf-8")
-        feature_json = json.dumps(feature_tables or []).encode("utf-8")
+        feature_json = json.dumps(feature_tables or f64_feature_matrices or []).encode("utf-8")
         envelope_buffer, envelope_ptr = _u8_buffer(envelope_json)
         target_buffer, target_ptr = _u8_buffer(target_json)
         feature_buffer, feature_ptr = _u8_buffer(feature_json)
         self._buffers = [envelope_buffer, target_buffer, feature_buffer]
         self._vtable = DagMlDataVTable()
         error = DagMlDataString()
-        status = self._lib.dagmldata_inmemory_provider_new_with_features_json(
+        constructor = (
+            self._lib.dagmldata_inmemory_provider_new_with_f64_features_json
+            if f64_feature_matrices is not None
+            else self._lib.dagmldata_inmemory_provider_new_with_features_json
+        )
+        status = constructor(
             envelope_ptr,
             len(envelope_json),
             target_ptr,
@@ -279,12 +285,14 @@ class InMemoryProvider:
         envelope_path: str | Path,
         target_tables: list[dict[str, Any]] | None = None,
         feature_tables: list[dict[str, Any]] | None = None,
+        f64_feature_matrices: list[dict[str, Any]] | None = None,
     ) -> "InMemoryProvider":
         return cls(
             Path(library_path),
             Path(envelope_path).read_bytes(),
             target_tables,
             feature_tables,
+            f64_feature_matrices,
         )
 
     def materialize(self, request: dict[str, Any] | bytes) -> int:
@@ -502,6 +510,17 @@ class InMemoryProvider:
             ctypes.POINTER(DagMlDataString),
         ]
         self._lib.dagmldata_inmemory_provider_new_with_features_json.restype = ctypes.c_int
+        self._lib.dagmldata_inmemory_provider_new_with_f64_features_json.argtypes = [
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+            ctypes.POINTER(DagMlDataVTable),
+            ctypes.POINTER(DagMlDataString),
+        ]
+        self._lib.dagmldata_inmemory_provider_new_with_f64_features_json.restype = ctypes.c_int
         self._lib.dagmldata_inmemory_provider_feature_buffer_manifest_json.argtypes = [
             ctypes.POINTER(DagMlDataVTable),
             ctypes.POINTER(DagMlDataString),

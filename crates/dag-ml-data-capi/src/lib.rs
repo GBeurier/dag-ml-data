@@ -10,7 +10,8 @@ use dag_ml_data_core::{
     CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
     CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
     DatasetSchema, FeatureFusionPolicy, NumericFeatureBufferArena, NumericFeatureBufferStore,
-    NumericTensorBlock, SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
+    NumericFeatureMatrixF64, NumericTensorBlock, SampleAlignmentPlan, SourceFeatureBlock, SourceId,
+    TargetId,
 };
 #[cfg(test)]
 use dag_ml_data_core::{ObservationId, RepresentationId, SampleId};
@@ -812,6 +813,74 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_features_json(
     }
 }
 
+/// Creates a Rust-owned in-memory provider with typed row-major f64 feature matrices.
+///
+/// `feature_matrices_ptr/feature_matrices_len` may be null/zero, or a JSON
+/// array of `NumericFeatureMatrixF64` values. Unlike
+/// `dagmldata_inmemory_provider_new_with_features_json`, this path avoids
+/// per-cell `serde_json::Value` parsing for numeric feature values.
+///
+/// # Safety
+///
+/// Non-null byte pointers must point to readable memory for the duration of the
+/// call. `out_vtable` may be null only if the caller is probing error handling.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_features_json(
+    envelope_ptr: *const u8,
+    envelope_len: usize,
+    target_tables_ptr: *const u8,
+    target_tables_len: usize,
+    feature_matrices_ptr: *const u8,
+    feature_matrices_len: usize,
+    out_vtable: *mut DagMlDataVTable,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_vtable(out_vtable);
+    clear_string(error_out);
+    if envelope_ptr.is_null() {
+        set_string(error_out, "envelope pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_vtable.is_null() {
+        set_string(error_out, "vtable output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let envelope_json = slice::from_raw_parts(envelope_ptr, envelope_len);
+    let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+        Ok(target_tables) => target_tables,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let feature_store = match parse_f64_feature_matrices(feature_matrices_ptr, feature_matrices_len)
+    {
+        Ok(feature_store) => feature_store,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+        Ok(provider) => {
+            *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Destroys a provider vtable returned by `dagmldata_inmemory_provider_new_json`.
 ///
 /// # Safety
@@ -1318,6 +1387,31 @@ fn parse_feature_tables(
         ))
     })?;
     NumericFeatureBufferStore::from_feature_tables(tables)
+}
+
+fn parse_f64_feature_matrices(
+    feature_matrices_ptr: *const u8,
+    feature_matrices_len: usize,
+) -> dag_ml_data_core::Result<NumericFeatureBufferStore> {
+    if feature_matrices_ptr.is_null() {
+        if feature_matrices_len != 0 {
+            return Err(dag_ml_data_core::DataError::Validation(
+                "f64 feature matrices pointer is null".to_string(),
+            ));
+        }
+        return Ok(NumericFeatureBufferStore::default());
+    }
+    if feature_matrices_len == 0 {
+        return Ok(NumericFeatureBufferStore::default());
+    }
+    let json = unsafe { slice::from_raw_parts(feature_matrices_ptr, feature_matrices_len) };
+    let matrices =
+        serde_json::from_slice::<Vec<NumericFeatureMatrixF64>>(json).map_err(|error| {
+            dag_ml_data_core::DataError::Validation(format!(
+                "failed to parse f64 feature matrices JSON: {error}"
+            ))
+        })?;
+    NumericFeatureBufferStore::from_f64_matrices(matrices)
 }
 
 fn provider_vtable(user_data: *mut c_void) -> DagMlDataVTable {
@@ -3064,6 +3158,163 @@ mod tests {
         assert!(tensor.values.ptr.is_null());
         unsafe {
             dagmldata_string_free(error);
+            vtable.release.unwrap()(vtable.user_data, view_handle);
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    #[test]
+    fn inmemory_provider_accepts_typed_f64_feature_matrices() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let materialization_request = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        );
+        let target_tables = b"[]";
+        let feature_matrices = serde_json::to_vec(&serde_json::json!([
+            {
+                "feature_set_id": "x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["f0", "f1"],
+                "observation_ids": [
+                    "obs.S001.base",
+                    "obs.S001.rep1",
+                    "obs.S001.aug0",
+                    "obs.S002.base"
+                ],
+                "values": [1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 0.0],
+                "validity_mask": [true, true, true, true, true, true, true, false]
+            }
+        ]))
+        .unwrap();
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_f64_features_json(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                feature_matrices.as_ptr(),
+                feature_matrices.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let view_json = serde_json::to_vec(&serde_json::json!({
+            "sample_ids": ["S002", "S001"],
+            "include_augmented": false
+        }))
+        .unwrap();
+        let mut view_handle = 0;
+        let status = unsafe {
+            vtable.make_view.unwrap()(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: view_json.as_ptr(),
+                    len: view_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut feature_array = std::ptr::null_mut();
+        let mut feature_schema = std::ptr::null_mut();
+        let feature_set_name = b"x";
+        let status = unsafe {
+            vtable.feature_arrow.unwrap()(
+                vtable.user_data,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: feature_set_name.as_ptr(),
+                    len: feature_set_name.len(),
+                },
+                &mut feature_array,
+                &mut feature_schema,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        unsafe {
+            let array_children = slice::from_raw_parts(
+                (*feature_array).children,
+                (*feature_array).n_children as usize,
+            );
+            assert_eq!(
+                utf8_values(array_children[0]),
+                vec![
+                    Some("obs.S002.base".to_string()),
+                    Some("obs.S001.base".to_string()),
+                    Some("obs.S001.rep1".to_string()),
+                ]
+            );
+            assert_eq!(
+                f64_values(array_children[2]),
+                vec![Some(4.0), Some(1.0), Some(2.0)]
+            );
+            assert_eq!(
+                f64_values(array_children[3]),
+                vec![None, Some(10.0), Some(20.0)]
+            );
+            dagmldata_arrow_array_free(feature_array);
+            dagmldata_arrow_schema_free(feature_schema);
+        }
+
+        let selector = serde_json::to_vec(&serde_json::json!({
+            "feature_set_id": "x",
+            "policy": {
+                "emit_mask": true
+            }
+        }))
+        .unwrap();
+        let mut tensor = DagMlDataTensorF64::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
+                &vtable,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: selector.as_ptr(),
+                    len: selector.len(),
+                },
+                &mut tensor,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        unsafe {
+            assert_eq!(usize_array_values(tensor.shape), vec![3, 2]);
+            assert_eq!(
+                f64_array_values(tensor.values),
+                vec![4.0, 0.0, 1.0, 10.0, 2.0, 20.0]
+            );
+            assert_eq!(
+                u8_array_values(tensor.validity_mask),
+                vec![1, 0, 1, 1, 1, 1]
+            );
+            dagmldata_tensor_f64_free(tensor);
             vtable.release.unwrap()(vtable.user_data, view_handle);
             vtable.release.unwrap()(vtable.user_data, data_handle);
             dagmldata_inmemory_provider_destroy(&mut vtable);

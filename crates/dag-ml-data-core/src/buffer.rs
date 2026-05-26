@@ -44,6 +44,17 @@ pub struct NumericFeatureBufferBinding {
     pub buffer_fingerprint: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NumericFeatureMatrixF64 {
+    pub feature_set_id: String,
+    pub representation_id: RepresentationId,
+    pub feature_names: Vec<String>,
+    pub observation_ids: Vec<ObservationId>,
+    pub values: Vec<f64>,
+    #[serde(default)]
+    pub validity_mask: Option<Vec<bool>>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NumericFeatureBufferStore {
     buffers: BTreeMap<String, NumericFeatureBuffer>,
@@ -92,6 +103,42 @@ impl NumericFeatureBuffer {
             representation_id: table.representation_id,
             feature_names: table.feature_names,
             observation_ids,
+            columns,
+            row_index_by_observation,
+        })
+    }
+
+    pub fn from_f64_matrix(matrix: NumericFeatureMatrixF64) -> Result<Self> {
+        matrix.validate()?;
+        let row_count = matrix.observation_ids.len();
+        let feature_count = matrix.feature_names.len();
+        let mut columns = (0..feature_count)
+            .map(|_| Vec::with_capacity(row_count))
+            .collect::<Vec<_>>();
+        for row_idx in 0..row_count {
+            for (feature_idx, column) in columns.iter_mut().enumerate() {
+                let flat_idx = row_idx * feature_count + feature_idx;
+                let is_valid = matrix
+                    .validity_mask
+                    .as_ref()
+                    .map(|mask| mask[flat_idx])
+                    .unwrap_or(true);
+                column.push(is_valid.then_some(matrix.values[flat_idx]));
+            }
+        }
+        let row_index_by_observation = matrix
+            .observation_ids
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(idx, observation_id)| (observation_id, idx))
+            .collect();
+
+        Ok(Self {
+            feature_set_id: matrix.feature_set_id,
+            representation_id: matrix.representation_id,
+            feature_names: matrix.feature_names,
+            observation_ids: matrix.observation_ids,
             columns,
             row_index_by_observation,
         })
@@ -259,6 +306,38 @@ impl NumericFeatureBuffer {
     }
 }
 
+impl NumericFeatureMatrixF64 {
+    pub fn validate(&self) -> Result<()> {
+        validate_feature_shape(
+            &self.feature_set_id,
+            &self.feature_names,
+            &self.observation_ids,
+        )?;
+        let expected_values = self.feature_names.len() * self.observation_ids.len();
+        if self.values.len() != expected_values {
+            return Err(DataError::Validation(format!(
+                "f64 feature matrix `{}` has {} values for {} observations x {} features",
+                self.feature_set_id,
+                self.values.len(),
+                self.observation_ids.len(),
+                self.feature_names.len()
+            )));
+        }
+        if let Some(validity_mask) = &self.validity_mask {
+            if validity_mask.len() != expected_values {
+                return Err(DataError::Validation(format!(
+                    "f64 feature matrix `{}` validity_mask has {} values for {} observations x {} features",
+                    self.feature_set_id,
+                    validity_mask.len(),
+                    self.observation_ids.len(),
+                    self.feature_names.len()
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl NumericFeatureBufferStore {
     pub fn new(buffers: BTreeMap<String, NumericFeatureBuffer>) -> Result<Self> {
         for (feature_set_id, buffer) in &buffers {
@@ -280,6 +359,20 @@ impl NumericFeatureBufferStore {
             if buffers.insert(feature_set_id.clone(), buffer).is_some() {
                 return Err(DataError::Validation(format!(
                     "duplicate feature table `{feature_set_id}`"
+                )));
+            }
+        }
+        Self::new(buffers)
+    }
+
+    pub fn from_f64_matrices(matrices: Vec<NumericFeatureMatrixF64>) -> Result<Self> {
+        let mut buffers = BTreeMap::new();
+        for matrix in matrices {
+            let feature_set_id = matrix.feature_set_id.clone();
+            let buffer = NumericFeatureBuffer::from_f64_matrix(matrix)?;
+            if buffers.insert(feature_set_id.clone(), buffer).is_some() {
+                return Err(DataError::Validation(format!(
+                    "duplicate f64 feature matrix `{feature_set_id}`"
                 )));
             }
         }
@@ -490,6 +583,48 @@ fn numeric_feature_value(
     }
 }
 
+fn validate_feature_shape(
+    feature_set_id: &str,
+    feature_names: &[String],
+    observation_ids: &[ObservationId],
+) -> Result<()> {
+    if feature_set_id.trim().is_empty() {
+        return Err(DataError::Validation("feature_set_id is empty".to_string()));
+    }
+    if feature_names.is_empty() {
+        return Err(DataError::Validation(format!(
+            "feature matrix `{feature_set_id}` contains no features"
+        )));
+    }
+    let mut seen_features = BTreeSet::new();
+    for feature_name in feature_names {
+        if feature_name.trim().is_empty() {
+            return Err(DataError::Validation(format!(
+                "feature matrix `{feature_set_id}` contains an empty feature name"
+            )));
+        }
+        if !seen_features.insert(feature_name) {
+            return Err(DataError::Validation(format!(
+                "feature matrix `{feature_set_id}` contains duplicate feature `{feature_name}`"
+            )));
+        }
+    }
+    if observation_ids.is_empty() {
+        return Err(DataError::Validation(format!(
+            "feature matrix `{feature_set_id}` contains no observations"
+        )));
+    }
+    let mut seen_observations = BTreeSet::new();
+    for observation_id in observation_ids {
+        if !seen_observations.insert(observation_id) {
+            return Err(DataError::Validation(format!(
+                "feature matrix `{feature_set_id}` contains duplicate observation `{observation_id}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -537,6 +672,17 @@ mod tests {
                     values: vec![serde_json::json!(3.0), serde_json::Value::Null],
                 },
             ],
+        }
+    }
+
+    fn f64_matrix() -> NumericFeatureMatrixF64 {
+        NumericFeatureMatrixF64 {
+            feature_set_id: "x".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            feature_names: vec!["f0".to_string(), "f1".to_string()],
+            observation_ids: vec![oid("obs.s1.nir"), oid("obs.s1.chem"), oid("obs.s2.nir")],
+            values: vec![1.0, 10.0, 2.0, 20.0, 3.0, 0.0],
+            validity_mask: Some(vec![true, true, true, true, true, false]),
         }
     }
 
@@ -620,6 +766,42 @@ mod tests {
     }
 
     #[test]
+    fn builds_columnar_buffer_from_row_major_f64_matrix() {
+        let buffer = NumericFeatureBuffer::from_f64_matrix(f64_matrix()).unwrap();
+        assert_eq!(buffer.row_count(), 3);
+        assert_eq!(buffer.feature_count(), 2);
+
+        let block = buffer
+            .project_relations(&relations(), Some(&source("nir")), None)
+            .unwrap();
+
+        assert_eq!(
+            block.observation_ids,
+            vec![oid("obs.s2.nir"), oid("obs.s1.nir")]
+        );
+        assert_eq!(
+            block.values,
+            vec![
+                vec![serde_json::json!(3.0), serde_json::Value::Null],
+                vec![serde_json::json!(1.0), serde_json::json!(10.0)],
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_f64_matrix_shape() {
+        let mut matrix = f64_matrix();
+        matrix.values.pop();
+        let error = NumericFeatureBuffer::from_f64_matrix(matrix).unwrap_err();
+        assert!(format!("{error}").contains("has 5 values"));
+
+        let mut matrix = f64_matrix();
+        matrix.validity_mask = Some(vec![true]);
+        let error = NumericFeatureBuffer::from_f64_matrix(matrix).unwrap_err();
+        assert!(format!("{error}").contains("validity_mask has 1 values"));
+    }
+
+    #[test]
     fn store_manifests_and_projects_by_feature_set_id() {
         let store = NumericFeatureBufferStore::from_feature_tables(vec![table()]).unwrap();
         assert_eq!(store.len(), 1);
@@ -664,6 +846,20 @@ mod tests {
             )
             .unwrap();
         assert!(wrong_representation.is_empty());
+    }
+
+    #[test]
+    fn store_accepts_typed_f64_matrices() {
+        let store = NumericFeatureBufferStore::from_f64_matrices(vec![f64_matrix()]).unwrap();
+        let manifests = store.manifests().unwrap();
+
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0].feature_set_id, "x");
+        assert_eq!(manifests[0].value_count, 6);
+
+        let error = NumericFeatureBufferStore::from_f64_matrices(vec![f64_matrix(), f64_matrix()])
+            .unwrap_err();
+        assert!(format!("{error}").contains("duplicate f64 feature matrix"));
     }
 
     #[test]
