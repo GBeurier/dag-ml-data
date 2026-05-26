@@ -1997,6 +1997,7 @@ mod tests {
     #[test]
     fn exports_coordinator_feature_fusion_arrow_over_abi() {
         let request = serde_json::json!({
+            "schema_version": 1,
             "feature_set_id": "fused",
             "sources": [
                 {
@@ -2163,6 +2164,7 @@ mod tests {
         assert_eq!(status, DagMlDataStatusCode::Ok);
 
         let fusion_selector = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
             "feature_set_id": "fused",
             "sources": [
                 {"source_id": "nir", "feature_set_id": "nir_x"},

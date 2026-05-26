@@ -26,3 +26,15 @@ compares the copies when `DAG_ML_REPO` points to a sibling checkout, and CI
 checks out that peer explicitly. When development moves into a monorepo, this
 file should become a single generated or shared contract artifact used by both
 crates.
+
+## Feature Fusion Selector v1
+
+Schema: `feature_fusion_selector.schema.json`
+
+Canonical fixture: `examples/fixtures/oof_campaign/feature_fusion_selector_nir_chem.json`
+
+Runtime shape consumed by the in-memory provider `feature_arrow` hook:
+`{ schema_version, feature_set_id, sources, alignment, policy? }`, where each
+source maps a `source_id` to a provider-owned `feature_set_id` and optional
+column subset. This selector keeps the vtable ABI stable while making
+multi-source feature fusion explicit and conformance-testable.

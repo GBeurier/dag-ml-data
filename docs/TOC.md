@@ -8,7 +8,7 @@ Use this as a validation map before development starts.
 | Agent handoff | `AGENTS.md` | Rules for autonomous implementation work | A new agent knows boundaries and green gate |
 | Architecture | `docs/ARCHITECTURE.md` | Data-layer modules and DAG-ML frontier | No execution graph responsibility leaks in |
 | ABI | `docs/ABI.md` | Data provider ABI and ownership | Host buffers stay host-owned |
-| Shared contract schema | `docs/contracts/coordinator_data_plan_envelope.schema.json` | JSON Schema for the coordinator data-plan envelope produced for `dag-ml` | Fixtures and bindings declare the same v1 envelope shape |
+| Shared contract schemas | `docs/contracts/coordinator_data_plan_envelope.schema.json`, `docs/contracts/feature_fusion_selector.schema.json` | JSON Schemas for the coordinator data-plan envelope and feature fusion selector produced for `dag-ml` | Fixtures and bindings declare the same v1 wire shapes |
 | Rationale | `docs/RATIONALE.md` | Split from DAG-ML and design tradeoffs | Data scope is independently defensible |
 | MVP acceptance | `docs/MVP_ACCEPTANCE.md` | First data-contract target for UC6/UC11 | Data plans support stacking without owning OOF logic |
 | Capability matrix | `docs/CAPABILITY_MATRIX.md` | Full nirs4all replacement data surface | Data contracts expose identity without owning OOF |
@@ -29,7 +29,7 @@ Use this as a validation map before development starts.
 | Rust formatting | `cargo fmt --all --check` |
 | Rust tests | `cargo test --workspace` |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
-| Contract schema syntax | `python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null` |
+| Contract schema syntax | `python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null && python3 -m json.tool docs/contracts/feature_fusion_selector.schema.json >/dev/null` |
 | Shared contract drift | `DAG_ML_REPO=../dag-ml python3 scripts/validate_contracts.py` |
 | Example schema | `cargo run -p dag-ml-data-cli -- fingerprint-schema examples/minimal_schema.json` |
 | Python ABI smoke | `cargo build -p dag-ml-data-capi --lib && python3 examples/python/provider_smoke.py --lib target/debug/libdag_ml_data_capi.so --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json` |
