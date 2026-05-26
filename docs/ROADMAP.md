@@ -36,9 +36,11 @@ coordinator envelope plus materialization request, returns an opaque handle
 record, and records run/node/phase/variant/fold/fingerprint traceability for
 `dag-ml` controller tasks. It also creates identity-filtered view handles and
 aligns sample-level target values while de-duplicating repeated observations.
-Minimal Arrow C Data identity and numeric target-table exports exist for
-coordinator smoke tests. Next: attach real buffer lifecycles and export view
-identity/target arrays through the provider vtable.
+The C ABI now exposes a Rust-owned in-memory provider vtable that materializes
+data handles, creates view handles, exports view identity, exports numeric
+targets, and supports release/destroy callbacks. Next: add Python/native
+provider conformance against that behavior, then attach real feature-buffer
+lifecycles.
 
 ## Phase 3: Alignment And Fusion
 

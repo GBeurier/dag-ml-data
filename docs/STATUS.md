@@ -29,6 +29,8 @@ Implemented:
 - Arrow C Data ABI structs, release helpers and coordinator identity-table
   export from validated envelopes;
 - Arrow C Data numeric target-table export through materialized view handles;
+- Rust-owned in-memory provider vtable with materialize, make-view,
+  view-identity, target, release and destroy callbacks;
 - C ABI schema fingerprint entry point;
 - example schema fixture;
 - CI workflow.
@@ -36,12 +38,13 @@ Implemented:
 Not implemented yet:
 
 - production runtime data providers with real buffer/view lifecycles;
-- full Arrow buffer/view provider implementation beyond identity-table smoke;
+- full Arrow feature-buffer provider implementation beyond identity/target
+  conformance smokes;
 - alignment and fusion execution;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
-Connect the handle arena to a buffer-backed provider that can export real view
-identity and target arrays through the data-provider vtable.
+Add Python and native provider conformance tests against the in-memory provider
+vtable, then attach feature-buffer lifecycles.

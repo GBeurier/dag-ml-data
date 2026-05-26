@@ -9,10 +9,10 @@ contracts and schema fingerprints. It does not own ML phases, CV orchestration,
 OOF joins or model execution; those belong to `dag-ml`.
 
 > Status: foundation scaffold plus coordinator envelope, handle/materialized-view
-> smoke, target alignment smoke and minimal Arrow identity export. The project
-> has executable Rust crates, C ABI header, CLI fingerprinting/planning/
-> materialization commands, design documents, rationale, roadmap, CI and
-> contract tests.
+> smoke, target alignment smoke and an in-memory C ABI provider vtable for
+> identity/target Arrow exports. The project has executable Rust crates, C ABI
+> header, CLI fingerprinting/planning/materialization commands, design
+> documents, rationale, roadmap, CI and contract tests.
 
 ## Repository Layout
 
@@ -58,4 +58,6 @@ The first useful milestone is a schema and planning core that can:
 7. expose coordinator identity relations through a minimal Arrow C Data ABI
    smoke path;
 8. create identity-filtered view handles and align sample-level target values
-   across repeated observations.
+   across repeated observations;
+9. exercise the provider vtable lifecycle for materialize/view/identity/target
+   operations.

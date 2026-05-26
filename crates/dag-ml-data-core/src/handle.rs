@@ -284,6 +284,30 @@ impl CoordinatorHandleArena {
             .ok_or_else(|| DataError::Validation(format!("unknown view handle `{handle}`")))
     }
 
+    pub fn release_handle(&self, handle: u64) -> bool {
+        if self.view_records.borrow_mut().remove(&handle).is_some() {
+            self.view_relations.borrow_mut().remove(&handle);
+            return true;
+        }
+        if let Some(record) = self.records.borrow_mut().remove(&handle) {
+            self.data_relations.borrow_mut().remove(&handle);
+            let child_views = self
+                .view_records
+                .borrow()
+                .iter()
+                .filter_map(|(view_handle, view_record)| {
+                    (view_record.parent_handle == record.handle).then_some(*view_handle)
+                })
+                .collect::<Vec<_>>();
+            for view_handle in child_views {
+                self.view_records.borrow_mut().remove(&view_handle);
+                self.view_relations.borrow_mut().remove(&view_handle);
+            }
+            return true;
+        }
+        false
+    }
+
     pub fn target_values(
         &self,
         view_handle: u64,
@@ -593,5 +617,20 @@ mod tests {
         assert_eq!(target.target_id.as_str(), "y");
         assert_eq!(target.sample_ids, vec![SampleId::new("S001").unwrap()]);
         assert_eq!(target.values, vec![json!(42.0)]);
+    }
+
+    #[test]
+    fn release_data_handle_releases_child_views() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view_record = arena
+            .make_view(data.handle.handle, &DataView::default())
+            .unwrap();
+
+        assert!(arena.release_handle(data.handle.handle));
+        assert_eq!(arena.handle_record(data.handle.handle), None);
+        assert_eq!(arena.view_record(view_record.handle.handle), None);
+        assert!(arena.view_identity(view_record.handle.handle).is_err());
+        assert!(!arena.release_handle(data.handle.handle));
     }
 }

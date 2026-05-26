@@ -15,6 +15,9 @@ memory while exposing deterministic descriptors and identity tables to the core.
 - `dagmldata_coordinator_target_arrow_json` for numeric target-table smoke tests
   from a validated envelope, materialization request, `DataView` and target
   table;
+- `dagmldata_inmemory_provider_new_json` for a Rust-owned provider vtable that
+  materializes data handles, creates view handles, exports view identity, exports
+  numeric targets and supports release/destroy callbacks;
 - `DagMlDataVTable` with materialize/view/identity/target/release hooks.
 
 ## Ownership Rules
@@ -27,6 +30,7 @@ memory while exposing deterministic descriptors and identity tables to the core.
 | Rust error/fingerprint string | Rust allocation returned through ABI | `dagmldata_string_free` |
 | Arrow arrays/schemas returned by Rust helpers | Rust allocation returned through ABI | `dagmldata_arrow_array_free`, `dagmldata_arrow_schema_free` |
 | Arrow arrays produced by host vtables | Producer of the Arrow array | Arrow C Data Interface release callback |
+| Rust-owned in-memory provider vtable | Rust allocation behind `user_data` | `DagMlDataVTable.destroy` or `dagmldata_inmemory_provider_destroy` |
 
 ## Coordinator Identity Export
 
@@ -46,10 +50,27 @@ target values to the selected samples and emits `sample_id`, `target_id` and
 numeric `value` columns. Repeated observations are intentionally de-duplicated
 to one target value per sample.
 
+## In-Memory Provider VTable
+
+The in-memory provider is the current ABI conformance target. It accepts one
+validated coordinator envelope plus optional sample-level target tables, then
+implements:
+
+- `materialize`: validates a coordinator materialization request and returns an
+  opaque data handle;
+- `make_view`: applies a `DataView` to a data handle and returns an opaque view
+  handle;
+- `view_identity`: returns the filtered relation table as Arrow C Data;
+- `target_arrow`: returns sample-level numeric targets aligned to the view;
+- `release` and `destroy`: release handles and provider state.
+
+It still does not own heavy feature buffers. Full provider implementations will
+use the same vtable shape while keeping data buffers host-owned.
+
 ## ABI Roadmap
 
 1. Freeze byte/string/status conventions.
 2. Add C smoke test for schema fingerprinting.
 3. Add path-solving and data-plan validation over canonical JSON.
-4. Add provider-vtable identity and target Arrow conformance tests for Python
-   and native host data providers.
+4. Add Python and native host provider conformance against the in-memory
+   provider's identity/target behavior.
