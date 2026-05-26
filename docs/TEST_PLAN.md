@@ -11,6 +11,7 @@
 | Plans | unresolved choices, empty plans, declared output representation |
 | Planner | fixture schema/model-input/adapters produce expected data plan |
 | Alignment | stable `inner`, `left`, `outer` sample order, duplicate source/sample refusal, multi-source planner emits explicit `Align` before `Join` |
+| Feature fusion | singleton-source broadcast over reference repetitions, deterministic synthetic outer rows, duplicate unnamespaced column refusal, incoherent presence-mask refusal, ambiguous repeated non-reference source refusal |
 | Relations | duplicate observations, group consistency, augmentation origin validity |
 | Coordinator envelope | explicit schema version, published envelope JSON Schema version, unsupported schema version refusal, schema/plan/relation fingerprint validation |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability |
@@ -24,6 +25,8 @@ Add after providers exist:
 - handle arena refuses schema/plan/relation mismatch and missing required relations;
 - provider views return identical identity, feature and target rows independent
   of handle order;
+- provider-backed multi-source feature fusion matches the pure Rust fusion
+  kernel for repeated reference rows, missing sources and outer joins;
 - Python and Rust providers return identical provider-vtable identity, feature
   and target Arrow tables;
 - path solver returns same plan independent of adapter registration order;

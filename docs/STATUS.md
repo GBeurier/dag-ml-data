@@ -37,6 +37,10 @@ Implemented:
 - observation-level feature table alignment for view handles, preserving
   repeated observations, applying `DataView.columns` and keeping view sample
   order;
+- executable observation-level feature fusion for aligned multi-source feature
+  blocks, including namespaced columns, repetition-preserving reference rows,
+  singleton-source broadcast, deterministic outer synthetic rows and explicit
+  refusal of ambiguous repeated non-reference sources;
 - feature exports now validate that the feature table representation matches
   the materialized data-plan output representation for the parent view handle;
 - CLI `materialize-envelope` smoke command;
@@ -65,11 +69,12 @@ Not implemented yet:
 - production runtime data providers with real buffer/view lifecycles;
 - production Arrow feature-buffer provider implementation beyond the current
   in-memory typed numeric buffer conformance;
-- full feature-fusion execution and late collation;
+- provider/runtime wiring for the current feature-fusion kernel and late
+  collation;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
-Attach real production feature-buffer lifecycles and extend the current
-alignment plan into executable feature fusion.
+Attach real production feature-buffer lifecycles and wire the current
+alignment/fusion kernels into provider-backed execution.

@@ -18,8 +18,8 @@ enforce them.
 | Models | `ModelInputSpec`, accepted representations/types, aux inputs | controller and `dag-ml` execute model phases |
 | Refit | serialized `DataPlan`, schema fingerprints, fitted refs | `dag-ml` controls replay/refit phase |
 | Branching | immutable views and source filters | `dag-ml` owns branch graph semantics |
-| Merging | alignment, feature join, source join, collation contracts | `dag-ml` validates prediction joins and downstream use |
-| Concatenation | namespace columns, presence indicators, output representation | `dag-ml` decides whether the merge is legal in phase |
+| Merging | alignment, feature join, source join, repetition-preserving broadcast, null-filled missing sources, collation contracts | `dag-ml` validates prediction joins and downstream use |
+| Concatenation | namespace columns by default, duplicate-column refusal when unnamespaced, presence indicators, output representation | `dag-ml` decides whether the merge is legal in phase |
 | Finetuning | stateful/supervised adapter declarations | `dag-ml` enforces fold-train fit boundaries |
 | Generation | serializable adapter params and plugin versions | `dag-ml` owns variant enumeration |
 | Tuning | dry-run shapes and deterministic data plans | `dag-ml` owns tuner phase and nested CV |

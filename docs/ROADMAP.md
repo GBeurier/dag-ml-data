@@ -59,8 +59,12 @@ Definition of done:
 
 Status: started. The core now has a deterministic sample-alignment planner for
 `inner`, `left` and `outer` policies, and model-input planning emits an explicit
-`Align` step before multi-source joins. Execution of feature fusion and late
-collation is still pending.
+`Align` step before multi-source joins. The core also has an executable
+observation-level feature-fusion kernel for aligned feature blocks. It preserves
+reference-source repetitions, broadcasts singleton non-reference rows, fills
+missing outer/left values with nulls, namespaces columns by default and refuses
+ambiguous repeated non-reference joins. Provider/runtime wiring and late
+collation are still pending.
 
 ## Phase 4: nirs4all Connector
 
