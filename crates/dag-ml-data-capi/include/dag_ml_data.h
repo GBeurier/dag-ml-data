@@ -33,6 +33,9 @@ typedef struct DagMlDataBytesView {
     size_t len;
 } DagMlDataBytesView;
 
+#ifndef ARROW_C_DATA_INTERFACE
+#define ARROW_C_DATA_INTERFACE
+
 typedef struct ArrowArray {
     int64_t length;
     int64_t null_count;
@@ -57,6 +60,8 @@ typedef struct ArrowSchema {
     void (*release)(struct ArrowSchema *schema);
     void *private_data;
 } ArrowSchema;
+
+#endif
 
 typedef struct DagMlDataVTable {
     uint32_t abi_version;
