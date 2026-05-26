@@ -2,13 +2,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[test]
-fn python_ctypes_exercises_inmemory_provider_vtable() {
+fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
+    manifest_dir
         .parent()
         .and_then(Path::parent)
-        .expect("workspace root");
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+fn build_capi_cdylib(workspace_root: &Path) -> PathBuf {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let build = Command::new(cargo)
         .arg("build")
@@ -26,9 +29,26 @@ fn python_ctypes_exercises_inmemory_provider_vtable() {
     );
 
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
+        .map(|path| {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                path
+            } else {
+                workspace_root.join(path)
+            }
+        })
         .unwrap_or_else(|| workspace_root.join("target"));
-    let lib_path = target_dir.join("debug").join("libdag_ml_data_capi.so");
+    target_dir.join("debug").join(format!(
+        "{}dag_ml_data_capi{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ))
+}
+
+#[test]
+fn python_ctypes_exercises_inmemory_provider_vtable() {
+    let workspace_root = workspace_root();
+    let lib_path = build_capi_cdylib(&workspace_root);
     let envelope_path = workspace_root
         .join("examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json");
     let request_path = workspace_root
@@ -272,4 +292,37 @@ assert not vtable.user_data
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn python_example_provider_smoke_runs_against_c_abi() {
+    let workspace_root = workspace_root();
+    let lib_path = build_capi_cdylib(&workspace_root);
+    let envelope_path = workspace_root
+        .join("examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json");
+    let request_path = workspace_root
+        .join("examples/fixtures/oof_campaign/materialization_request_model_base_x.json");
+    let script_path = workspace_root.join("examples/python/provider_smoke.py");
+
+    let output = Command::new("python3")
+        .arg(&script_path)
+        .arg("--lib")
+        .arg(&lib_path)
+        .arg("--envelope")
+        .arg(&envelope_path)
+        .arg("--request")
+        .arg(&request_path)
+        .output()
+        .expect("run reusable Python provider smoke");
+
+    assert!(
+        output.status.success(),
+        "Python example provider smoke failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""identity_rows": 2"#), "{stdout}");
+    assert!(stdout.contains(r#""target_rows": 1"#), "{stdout}");
 }

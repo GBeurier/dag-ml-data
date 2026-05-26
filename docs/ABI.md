@@ -73,13 +73,16 @@ the provider vtable, materializes a view, exports identity/target Arrow arrays
 and releases all handles.
 
 `tests/python_ctypes_smoke.rs` performs the same provider lifecycle from Python
-using only `ctypes`, validating that the ABI is binding-friendly before a richer
-Python package exists.
+using only `ctypes`. It also runs `examples/python/provider_smoke.py`, which uses
+`examples/python/dag_ml_data_provider.py` as a small reusable wrapper around the
+current provider vtable. This is intentionally not the final Python package API:
+it is the binding-friendly conformance target for materialize, view creation,
+identity export, target export, release and destroy.
 
 ## ABI Roadmap
 
 1. Freeze byte/string/status conventions.
 2. Add C smoke test for schema fingerprinting.
 3. Add path-solving and data-plan validation over canonical JSON.
-4. Add native host provider conformance and a reusable Python provider package
-   against the in-memory provider's identity/target behavior.
+4. Add native host provider conformance and extend the Python provider example
+   against feature-buffer lifecycles once they exist.

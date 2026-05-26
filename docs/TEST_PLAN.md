@@ -13,7 +13,7 @@
 | Relations | duplicate observations, group consistency, augmentation origin validity |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability |
 | Views/targets | sample/source/augmentation filtering, repetition-preserving identity, sample-level target de-duplication |
-| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity and numeric target Arrow exports, in-memory provider vtable lifecycle, C header syntax, linked C runtime and Python ctypes smokes |
+| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity and numeric target Arrow exports, in-memory provider vtable lifecycle, C header syntax, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
 
 ## Conformance Tests
 
@@ -21,7 +21,8 @@ Add after providers exist:
 
 - handle arena refuses schema/plan/relation mismatch and missing required relations;
 - provider views return identical identity and target rows independent of handle order;
-- Python and Rust providers return identical provider-vtable identity Arrow tables;
+- Python and Rust providers return identical provider-vtable identity and target
+  Arrow tables;
 - path solver returns same plan independent of adapter registration order;
 - source alignment is stable for `inner`, `left` and `outer`;
 - schema fingerprint rejects incompatible predict-time schemas.

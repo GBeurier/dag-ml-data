@@ -34,6 +34,8 @@ Implemented:
 - C header and linked C runtime smokes for the provider vtable and Arrow
   signatures;
 - Python `ctypes` smoke for the same provider lifecycle;
+- reusable stdlib-only Python provider wrapper and CLI smoke in
+  `examples/python`;
 - C ABI schema fingerprint entry point;
 - example schema fixture;
 - CI workflow.
@@ -49,5 +51,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Add native provider conformance and a reusable Python provider package against
-the in-memory provider vtable, then attach feature-buffer lifecycles.
+Add native provider conformance against the in-memory provider vtable, then
+attach feature-buffer lifecycles and extend the Python example over real
+provider-owned Arrow buffers.

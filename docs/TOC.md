@@ -19,6 +19,7 @@ Use this as a validation map before development starts.
 | Core crate | `crates/dag-ml-data-core` | Schema, representation and data-plan primitives | `cargo test -p dag-ml-data-core` passes |
 | C ABI crate | `crates/dag-ml-data-capi` | FFI-safe helpers and `DataVTable` shape | Header mirrors Rust ABI structs |
 | CLI crate | `crates/dag-ml-data-cli` | Local validation and fingerprinting | Example schema fingerprints |
+| Python ABI example | `examples/python` | Stdlib-only provider vtable smoke | Python can materialize, view, read identity/targets and release handles |
 
 ## Validation Checklist
 
@@ -28,3 +29,4 @@ Use this as a validation map before development starts.
 | Rust tests | `cargo test --workspace` |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Example schema | `cargo run -p dag-ml-data-cli -- fingerprint-schema examples/minimal_schema.json` |
+| Python ABI smoke | `cargo build -p dag-ml-data-capi --lib && python3 examples/python/provider_smoke.py --lib target/debug/libdag_ml_data_capi.so --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json` |

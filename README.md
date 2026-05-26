@@ -9,10 +9,11 @@ contracts and schema fingerprints. It does not own ML phases, CV orchestration,
 OOF joins or model execution; those belong to `dag-ml`.
 
 > Status: foundation scaffold plus coordinator envelope, handle/materialized-view
-> smoke, target alignment smoke and an in-memory C ABI provider vtable for
-> identity/target Arrow exports. The project has executable Rust crates, C ABI
-> header, CLI fingerprinting/planning/materialization commands, design
-> documents, rationale, roadmap, CI and contract tests.
+> smoke, target alignment smoke, an in-memory C ABI provider vtable and a
+> reusable Python `ctypes` smoke wrapper for identity/target Arrow exports. The
+> project has executable Rust crates, C ABI header, CLI
+> fingerprinting/planning/materialization commands, design documents,
+> rationale, roadmap, CI and contract tests.
 
 ## Repository Layout
 
@@ -33,6 +34,7 @@ docs/
   design/source/      # moved ML_DATA source specification
 examples/
   minimal_schema.json
+  python/             # stdlib-only ctypes wrapper and provider smoke
 ```
 
 ## Quick Start
@@ -42,6 +44,8 @@ cargo fmt --all --check
 cargo test --workspace
 cargo run -p dag-ml-data-cli -- fingerprint-schema examples/minimal_schema.json
 cargo run -p dag-ml-data-cli -- materialize-envelope --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
+cargo build -p dag-ml-data-capi --lib
+python3 examples/python/provider_smoke.py --lib target/debug/libdag_ml_data_capi.so --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
 ```
 
 ## First Implementation Target
@@ -60,4 +64,6 @@ The first useful milestone is a schema and planning core that can:
 8. create identity-filtered view handles and align sample-level target values
    across repeated observations;
 9. exercise the provider vtable lifecycle for materialize/view/identity/target
-   operations.
+   operations;
+10. provide a stdlib-only Python ABI smoke wrapper that external bindings can
+    use as a starting conformance target.
