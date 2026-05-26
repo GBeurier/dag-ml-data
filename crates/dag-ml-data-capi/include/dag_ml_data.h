@@ -87,6 +87,7 @@ DagMlDataStatusCode dagmldata_coordinator_feature_fusion_arrow_json(const uint8_
 DagMlDataStatusCode dagmldata_coordinator_feature_collation_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *out_json, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_features_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *feature_tables_ptr, size_t feature_tables_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_feature_collation_json(const DagMlDataVTable *vtable, DagMlDataHandle view, DagMlDataBytesView selector_json, DagMlDataString *out_json, DagMlDataString *error_out);
 void dagmldata_inmemory_provider_destroy(DagMlDataVTable *vtable);
 
 #ifdef __cplusplus

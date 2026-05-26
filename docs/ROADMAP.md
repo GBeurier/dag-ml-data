@@ -68,8 +68,11 @@ kernel as Arrow over already materialized feature blocks, and the in-memory
 provider vtable can route `feature_arrow` JSON fusion selectors through the same
 kernel using provider-owned typed feature buffers. A core numeric collation
 kernel now produces row-major tensor blocks with deterministic padding,
-truncation, presence masks and value-validity masks. Production provider
-lifecycles and provider-backed collation are still pending.
+truncation, presence masks and value-validity masks. The in-memory provider can
+now route feature-collation JSON selectors, including fused selectors, through
+provider-owned typed buffers and return deterministic `NumericTensorBlock`
+JSON. Production provider lifecycles and a stable non-JSON tensor-buffer ABI are
+still pending.
 
 ## Phase 4: nirs4all Connector
 

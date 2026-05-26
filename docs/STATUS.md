@@ -62,6 +62,9 @@ Implemented:
 - executable numeric late-collation kernel for feature blocks and ragged numeric
   rows, producing row-major tensor blocks with deterministic padding,
   truncation, presence masks and value-validity masks;
+- provider-backed feature collation over in-memory provider typed buffers,
+  including fusion selectors, returning deterministic JSON `NumericTensorBlock`
+  output without changing the provider vtable layout;
 - provider vtable release conformance, including parent data-handle release
   invalidating child view handles;
 - C header and linked C runtime smokes for the provider vtable and Arrow
@@ -78,13 +81,12 @@ Not implemented yet:
 - production runtime data providers with real buffer/view lifecycles;
 - production Arrow feature-buffer provider implementation beyond the current
   in-memory typed numeric buffer conformance;
-- production provider lifecycles for fused feature exports and provider-backed
-  late collation;
+- production provider lifecycles for fused feature exports and stable tensor
+  buffer export beyond the in-memory JSON tensor conformance;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
-Attach real production feature-buffer lifecycles for single-source and fused
-feature exports, then expose the collation kernel through provider-backed
-execution.
+Attach real production feature-buffer lifecycles for single-source, fused and
+collated tensor exports, then define the stable non-JSON tensor-buffer ABI.

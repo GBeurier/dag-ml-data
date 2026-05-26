@@ -71,6 +71,7 @@ static DagMlDataStatusCode feature_arrow(void *user_data, DagMlDataHandle view, 
 int main(void) {
     DagMlDataVTable table = {0};
     DagMlDataString error = {0};
+    DagMlDataString out = {0};
     ArrowArray *array = NULL;
     ArrowSchema *schema = NULL;
 
@@ -86,6 +87,7 @@ int main(void) {
     (void)dagmldata_coordinator_feature_collation_json((const uint8_t*)"{}", 2, &error, &error);
     (void)dagmldata_inmemory_provider_new_json((const uint8_t*)"{}", 2, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
+    (void)dagmldata_inmemory_provider_feature_collation_json(&table, 0, (DagMlDataBytesView){0}, &out, &error);
     dagmldata_arrow_array_free(array);
     dagmldata_arrow_schema_free(schema);
     dagmldata_inmemory_provider_destroy(&table);

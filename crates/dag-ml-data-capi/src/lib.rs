@@ -650,6 +650,61 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_destroy(vtable: *mut DagMlD
     *vtable = empty_vtable();
 }
 
+/// Builds a JSON row-major tensor from feature buffers owned by the Rust
+/// in-memory provider.
+///
+/// The selector JSON shape is `{ feature_set_id, policy? }` for a single
+/// provider feature table, or `{ fusion, policy? }` where `fusion` is a feature
+/// fusion selector accepted by the provider. The output JSON is a
+/// `NumericTensorBlock`.
+///
+/// # Safety
+///
+/// `vtable` must point to a live vtable returned by
+/// `dagmldata_inmemory_provider_new_with_features_json`; `selector_json.ptr`
+/// must point to `selector_json.len` readable bytes. Returned strings must be
+/// released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_json(
+    vtable: *const DagMlDataVTable,
+    view: DagMlDataHandle,
+    selector_json: DagMlDataBytesView,
+    out_json: *mut DagMlDataString,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(out_json);
+    clear_string(error_out);
+    if vtable.is_null() || (*vtable).user_data.is_null() || selector_json.ptr.is_null() {
+        set_string(
+            error_out,
+            "provider vtable, user_data or selector pointer is null",
+        );
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    let selector = slice::from_raw_parts(selector_json.ptr, selector_json.len);
+    match serde_json::from_slice::<ProviderFeatureCollationJsonRequest>(selector) {
+        Ok(request) => match provider_feature_collation_block(provider, view, &request)
+            .and_then(|block| collate_feature_block(&block, &request.policy))
+            .and_then(|tensor| serde_json::to_string(&tensor).map_err(Into::into))
+        {
+            Ok(tensor_json) => {
+                set_string(out_json, tensor_json);
+                DagMlDataStatusCode::Ok
+            }
+            Err(error) => {
+                set_string(error_out, error.to_string());
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 unsafe fn clear_string(out: *mut DagMlDataString) {
     if !out.is_null() {
         *out = DagMlDataString::default();
@@ -778,6 +833,16 @@ struct ProviderFeatureFusionSelector {
     alignment: SampleAlignmentPlan,
     #[serde(default)]
     policy: FeatureFusionPolicy,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderFeatureCollationJsonRequest {
+    #[serde(default)]
+    feature_set_id: Option<String>,
+    #[serde(default)]
+    fusion: Option<ProviderFeatureFusionSelector>,
+    #[serde(default)]
+    policy: CollationPolicy,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1393,6 +1458,37 @@ fn provider_feature_fusion_block(
         &selector.alignment,
         &selector.policy,
     )
+}
+
+fn provider_feature_collation_block(
+    provider: &InMemoryProvider,
+    view_handle: u64,
+    selector: &ProviderFeatureCollationJsonRequest,
+) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
+    match (&selector.feature_set_id, &selector.fusion) {
+        (Some(feature_set_id), None) => {
+            if feature_set_id.trim().is_empty() {
+                return Err(dag_ml_data_core::DataError::Validation(
+                    "feature collation selector feature_set_id is empty".to_string(),
+                ));
+            }
+            let feature_table = provider.feature_tables.get(feature_set_id).ok_or_else(|| {
+                dag_ml_data_core::DataError::Validation(format!(
+                    "unknown feature table `{feature_set_id}` for collation"
+                ))
+            })?;
+            let block = provider_feature_block(provider, view_handle, feature_table)?;
+            Ok(provider_feature_block_to_coordinator(block))
+        }
+        (None, Some(fusion)) => provider_feature_fusion_block(provider, view_handle, fusion),
+        (Some(_), Some(_)) => Err(dag_ml_data_core::DataError::Validation(
+            "feature collation selector must not specify both feature_set_id and fusion"
+                .to_string(),
+        )),
+        (None, None) => Err(dag_ml_data_core::DataError::Validation(
+            "feature collation selector requires feature_set_id or fusion".to_string(),
+        )),
+    }
 }
 
 fn provider_feature_block_to_coordinator(block: ProviderFeatureBlock) -> CoordinatorFeatureBlock {
@@ -2334,6 +2430,148 @@ mod tests {
             );
             dagmldata_arrow_array_free(feature_array);
             dagmldata_arrow_schema_free(feature_schema);
+            vtable.release.unwrap()(vtable.user_data, view_handle);
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    #[test]
+    fn inmemory_provider_feature_collation_uses_provider_buffers_and_fusion_selector() {
+        let (envelope, materialization_request) = multisource_provider_fixture();
+        let target_tables = b"[]";
+        let feature_tables = serde_json::to_vec(&serde_json::json!([
+            {
+                "feature_set_id": "nir_x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["n0"],
+                "rows": [
+                    {"observation_id": "obs.S001.r1", "values": [1.0]},
+                    {"observation_id": "obs.S001.r2", "values": [2.0]},
+                    {"observation_id": "obs.S002.r1", "values": [3.0]}
+                ]
+            },
+            {
+                "feature_set_id": "chem_x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["c0"],
+                "rows": [
+                    {"observation_id": "chem.S001", "values": [10.0]},
+                    {"observation_id": "chem.S002", "values": [20.0]}
+                ]
+            }
+        ]))
+        .unwrap();
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_features_json(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                feature_tables.as_ptr(),
+                feature_tables.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let view_json = serde_json::to_vec(&serde_json::json!({
+            "sample_ids": ["S001", "S002"],
+            "include_augmented": false
+        }))
+        .unwrap();
+        let mut view_handle = 0;
+        let status = unsafe {
+            vtable.make_view.unwrap()(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: view_json.as_ptr(),
+                    len: view_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let selector = serde_json::to_vec(&serde_json::json!({
+            "fusion": {
+                "schema_version": 1,
+                "feature_set_id": "fused",
+                "sources": [
+                    {"source_id": "nir", "feature_set_id": "nir_x"},
+                    {"source_id": "chem", "feature_set_id": "chem_x"}
+                ],
+                "alignment": {
+                    "mode": "inner",
+                    "sample_ids": ["S001", "S002"],
+                    "masks": [
+                        {"source_id": "nir", "sample_ids": ["S001", "S002"], "present": [true, true]},
+                        {"source_id": "chem", "sample_ids": ["S001", "S002"], "present": [true, true]}
+                    ]
+                }
+            },
+            "policy": {
+                "emit_mask": true
+            }
+        }))
+        .unwrap();
+        let mut out_json = DagMlDataString::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_collation_json(
+                &vtable,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: selector.as_ptr(),
+                    len: selector.len(),
+                },
+                &mut out_json,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        let tensor_json = unsafe { string_value(out_json) };
+        let tensor: serde_json::Value = serde_json::from_str(&tensor_json).unwrap();
+        assert_eq!(tensor["shape"], serde_json::json!([3, 2]));
+        assert_eq!(
+            tensor["observation_ids"],
+            serde_json::json!(["obs.S001.r1", "obs.S001.r2", "obs.S002.r1"])
+        );
+        assert_eq!(
+            tensor["values"],
+            serde_json::json!([1.0, 10.0, 2.0, 10.0, 3.0, 20.0])
+        );
+        assert_eq!(
+            tensor["feature_names"],
+            serde_json::json!(["nir.n0", "chem.c0"])
+        );
+        assert_eq!(
+            tensor["presence_mask"],
+            serde_json::json!([true, true, true, true, true, true])
+        );
+
+        unsafe {
             vtable.release.unwrap()(vtable.user_data, view_handle);
             vtable.release.unwrap()(vtable.user_data, data_handle);
             dagmldata_inmemory_provider_destroy(&mut vtable);

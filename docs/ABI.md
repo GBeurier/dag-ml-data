@@ -27,6 +27,8 @@ memory while exposing deterministic descriptors and identity tables to the core.
   numeric targets and supports release/destroy callbacks;
 - `dagmldata_inmemory_provider_new_with_features_json` for the same provider
   plus JSON feature tables used by binding conformance tests;
+- `dagmldata_inmemory_provider_feature_collation_json` for JSON row-major
+  tensor collation from feature buffers owned by the in-memory provider;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
   The `feature_arrow` hook accepts either a plain feature-set id or a JSON
   feature-fusion selector.
@@ -87,6 +89,14 @@ and returns a JSON `NumericTensorBlock` with observation/sample identity,
 row-major shape and values, optional presence mask and optional value-validity
 mask. It is a conformance helper, not a provider lifecycle.
 
+`dagmldata_inmemory_provider_feature_collation_json` exercises the same
+late-collation kernel against provider-owned typed numeric buffers. It accepts
+`{ feature_set_id, policy? }` for a single provider feature table or
+`{ fusion, policy? }` where `fusion` is the provider feature-fusion selector,
+and returns the same JSON `NumericTensorBlock`. This helper is specific to
+vtables created by `dagmldata_inmemory_provider_new_with_features_json`; it does
+not change the stable `DagMlDataVTable` layout.
+
 ## In-Memory Provider VTable
 
 The in-memory provider is the current ABI conformance target. It accepts one
@@ -111,9 +121,11 @@ construction time, but it converts them once into typed numeric buffers owned by
 the provider state. `feature_arrow` exports are then view projections over those
 owned buffers, not per-call JSON numeric parsing. Fusion selectors reuse those
 typed buffers, filter each source by source identity in the view, and then call
-the same pure Rust fusion kernel used by the standalone ABI helper. Full
-provider implementations will use the same vtable shape while keeping
-production data buffers host-owned.
+the same pure Rust fusion kernel used by the standalone ABI helper. Provider
+feature-collation selectors then collate either a single feature table or the
+fused block into a deterministic row-major tensor without reparsing feature
+values. Full provider implementations will use the same vtable shape while
+keeping production data buffers host-owned.
 
 `tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
@@ -138,5 +150,7 @@ identity export, target export, feature export, release and destroy.
    collation kernels.
 6. Route in-memory provider `feature_arrow` fusion selectors through the same
    kernel.
-7. Replace in-memory typed fixture buffers with production feature-buffer
+7. Route in-memory provider feature-collation selectors through provider-owned
+   typed buffers.
+8. Replace in-memory typed fixture buffers with production feature-buffer
    lifecycles.

@@ -333,6 +333,27 @@ class InMemoryProvider:
     ) -> list[dict[str, Any]]:
         return self.feature_values(view_handle, json.dumps(selector))
 
+    def feature_tensor(self, view_handle: int, selector: dict[str, Any]) -> dict[str, Any]:
+        payload = json.dumps(selector).encode("utf-8")
+        buffer, view = _bytes_view(payload)
+        self._buffers.append(buffer)
+        out = DagMlDataString()
+        error = DagMlDataString()
+        status = self._lib.dagmldata_inmemory_provider_feature_collation_json(
+            ctypes.byref(self._vtable),
+            view_handle,
+            view,
+            ctypes.byref(out),
+            ctypes.byref(error),
+        )
+        if status != 0:
+            message = self._consume_string(error) or f"status {status}"
+            raise RuntimeError(f"feature collation failed: {message}")
+        payload = self._consume_string(out)
+        if payload is None:
+            raise RuntimeError("feature collation returned no JSON")
+        return json.loads(payload)
+
     def release(self, handle: int) -> None:
         self._vtable.release(self._vtable.user_data, handle)
 
@@ -367,6 +388,14 @@ class InMemoryProvider:
             ctypes.POINTER(DagMlDataString),
         ]
         self._lib.dagmldata_inmemory_provider_new_with_features_json.restype = ctypes.c_int
+        self._lib.dagmldata_inmemory_provider_feature_collation_json.argtypes = [
+            ctypes.POINTER(DagMlDataVTable),
+            ctypes.c_uint64,
+            DagMlDataBytesView,
+            ctypes.POINTER(DagMlDataString),
+            ctypes.POINTER(DagMlDataString),
+        ]
+        self._lib.dagmldata_inmemory_provider_feature_collation_json.restype = ctypes.c_int
         self._lib.dagmldata_inmemory_provider_destroy.argtypes = [ctypes.POINTER(DagMlDataVTable)]
         self._lib.dagmldata_inmemory_provider_destroy.restype = None
         self._lib.dagmldata_string_free.argtypes = [DagMlDataString]
@@ -377,11 +406,14 @@ class InMemoryProvider:
         self._lib.dagmldata_arrow_schema_free.restype = None
 
     def _consume_error(self, error: DagMlDataString) -> str | None:
-        if not error.ptr:
+        return self._consume_string(error)
+
+    def _consume_string(self, value: DagMlDataString) -> str | None:
+        if not value.ptr:
             return None
-        value = ctypes.string_at(error.ptr, error.len).decode("utf-8")
-        self._lib.dagmldata_string_free(error)
-        return value
+        text = ctypes.string_at(value.ptr, value.len).decode("utf-8")
+        self._lib.dagmldata_string_free(value)
+        return text
 
     def _call_arrow(
         self,
