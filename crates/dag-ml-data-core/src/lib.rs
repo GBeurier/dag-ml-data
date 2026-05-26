@@ -5,6 +5,7 @@
 
 pub mod adapter;
 pub mod alignment;
+pub mod collation;
 pub mod coordinator;
 pub mod error;
 pub mod fingerprint;
@@ -18,6 +19,7 @@ pub mod relation;
 
 pub use adapter::*;
 pub use alignment::*;
+pub use collation::*;
 pub use coordinator::*;
 pub use error::{DataError, Result};
 pub use fingerprint::*;

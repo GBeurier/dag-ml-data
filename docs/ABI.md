@@ -20,6 +20,8 @@ memory while exposing deterministic descriptors and identity tables to the core.
 - `dagmldata_coordinator_feature_fusion_arrow_json` for numeric multi-source
   fused feature-table smoke tests over already materialized coordinator feature
   blocks;
+- `dagmldata_coordinator_feature_collation_json` for JSON row-major tensor
+  collation smoke tests over coordinator feature blocks;
 - `dagmldata_inmemory_provider_new_json` for a Rust-owned provider vtable that
   materializes data handles, creates view handles, exports view identity, exports
   numeric targets and supports release/destroy callbacks;
@@ -79,6 +81,12 @@ reference-source repeated observations, broadcasts singleton rows from secondary
 sources, namespaces fused feature columns by default and refuses incoherent
 presence masks or ambiguous repeated secondary sources.
 
+`dagmldata_coordinator_feature_collation_json` exercises the pure Rust numeric
+late-collation kernel through the C ABI. It accepts `{ feature_block, policy? }`
+and returns a JSON `NumericTensorBlock` with observation/sample identity,
+row-major shape and values, optional presence mask and optional value-validity
+mask. It is a conformance helper, not a provider lifecycle.
+
 ## In-Memory Provider VTable
 
 The in-memory provider is the current ABI conformance target. It accepts one
@@ -126,7 +134,8 @@ identity export, target export, feature export, release and destroy.
 3. Add path-solving and data-plan validation over canonical JSON.
 4. Add native host provider conformance against the current
    identity/target/feature behavior.
-5. Add ABI conformance for the core multi-source feature-fusion kernel.
+5. Add ABI conformance for the core multi-source feature-fusion and numeric
+   collation kernels.
 6. Route in-memory provider `feature_arrow` fusion selectors through the same
    kernel.
 7. Replace in-memory typed fixture buffers with production feature-buffer

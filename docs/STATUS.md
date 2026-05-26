@@ -50,6 +50,7 @@ Implemented:
 - Arrow C Data numeric feature-table export through materialized view handles;
 - Arrow C Data numeric feature-fusion export for aligned multi-source feature
   blocks;
+- JSON numeric feature-collation export for row-major tensor conformance;
 - Rust-owned in-memory provider vtable with materialize, make-view,
   view-identity, target, feature, release and destroy callbacks;
 - in-memory provider feature tables are converted once at provider creation
@@ -58,6 +59,9 @@ Implemented:
 - provider `feature_arrow` accepts JSON fusion selectors and routes
   source-filtered provider-owned feature buffers through the core feature-fusion
   kernel;
+- executable numeric late-collation kernel for feature blocks and ragged numeric
+  rows, producing row-major tensor blocks with deterministic padding,
+  truncation, presence masks and value-validity masks;
 - provider vtable release conformance, including parent data-handle release
   invalidating child view handles;
 - C header and linked C runtime smokes for the provider vtable and Arrow
@@ -74,11 +78,13 @@ Not implemented yet:
 - production runtime data providers with real buffer/view lifecycles;
 - production Arrow feature-buffer provider implementation beyond the current
   in-memory typed numeric buffer conformance;
-- production provider lifecycles for fused feature exports and late collation;
+- production provider lifecycles for fused feature exports and provider-backed
+  late collation;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
 Attach real production feature-buffer lifecycles for single-source and fused
-feature exports, then add late collation.
+feature exports, then expose the collation kernel through provider-backed
+execution.

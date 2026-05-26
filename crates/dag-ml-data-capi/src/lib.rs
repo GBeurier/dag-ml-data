@@ -4,11 +4,11 @@ use std::os::raw::c_char;
 use std::slice;
 
 use dag_ml_data_core::{
-    fuse_feature_blocks, schema_fingerprint, CoordinatorDataMaterializationRequest,
-    CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
-    CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
-    DatasetSchema, FeatureFusionPolicy, ObservationId, RepresentationId, SampleAlignmentPlan,
-    SampleId, SourceFeatureBlock, SourceId, TargetId,
+    collate_feature_block, fuse_feature_blocks, schema_fingerprint, CollationPolicy,
+    CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock,
+    CoordinatorFeatureTable, CoordinatorHandleArena, CoordinatorTargetBlock,
+    CoordinatorTargetTable, DataView, DatasetSchema, FeatureFusionPolicy, ObservationId,
+    RepresentationId, SampleAlignmentPlan, SampleId, SourceFeatureBlock, SourceId, TargetId,
 };
 use serde::Deserialize;
 
@@ -459,6 +459,55 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_fusion_arrow_json(
     }
 }
 
+/// Builds a JSON row-major tensor from a coordinator feature block.
+///
+/// The request JSON shape is `{ feature_block, policy? }`. The output JSON is a
+/// `NumericTensorBlock`: it preserves observation/sample identity and emits
+/// deterministic shape, values, optional presence mask and optional validity
+/// mask.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `out_json` and `error_out` may be null. Any
+/// returned string must be released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_json: *mut DagMlDataString,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(out_json);
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_string(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<CoordinatorFeatureCollationJsonRequest>(json) {
+        Ok(request) => {
+            match collate_feature_block(&request.feature_block, &request.policy)
+                .and_then(|tensor| serde_json::to_string(&tensor).map_err(Into::into))
+            {
+                Ok(tensor_json) => {
+                    set_string(out_json, tensor_json);
+                    DagMlDataStatusCode::Ok
+                }
+                Err(error) => {
+                    set_string(error_out, error.to_string());
+                    DagMlDataStatusCode::ValidationError
+                }
+            }
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Creates a Rust-owned in-memory provider and returns its C ABI vtable.
 ///
 /// `envelope_ptr/envelope_len` must encode a `CoordinatorDataPlanEnvelope`.
@@ -713,6 +762,13 @@ struct ProviderFeatureBlock {
     observation_ids: Vec<ObservationId>,
     sample_ids: Vec<SampleId>,
     values: Vec<Vec<Option<f64>>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoordinatorFeatureCollationJsonRequest {
+    feature_block: CoordinatorFeatureBlock,
+    #[serde(default)]
+    policy: CollationPolicy,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2086,6 +2142,51 @@ mod tests {
     }
 
     #[test]
+    fn exports_coordinator_feature_collation_json_over_abi() {
+        let request = serde_json::json!({
+            "feature_block": {
+                "feature_set_id": "x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["f0", "f1"],
+                "observation_ids": ["obs.S001", "obs.S002"],
+                "sample_ids": ["S001", "S002"],
+                "values": [[1.0, null], [3.0, 4.0]]
+            },
+            "policy": {
+                "emit_mask": true
+            }
+        });
+        let request = serde_json::to_vec(&request).unwrap();
+        let mut out_json = DagMlDataString::default();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_coordinator_feature_collation_json(
+                request.as_ptr(),
+                request.len(),
+                &mut out_json,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        assert!(!out_json.ptr.is_null());
+        let tensor_json = unsafe { string_value(out_json) };
+        let tensor: serde_json::Value = serde_json::from_str(&tensor_json).unwrap();
+        assert_eq!(tensor["shape"], serde_json::json!([2, 2]));
+        assert_eq!(tensor["values"], serde_json::json!([1.0, 0.0, 3.0, 4.0]));
+        assert_eq!(
+            tensor["presence_mask"],
+            serde_json::json!([true, true, true, true])
+        );
+        assert_eq!(
+            tensor["validity_mask"],
+            serde_json::json!([true, false, true, true])
+        );
+    }
+
+    #[test]
     fn inmemory_provider_feature_arrow_accepts_fusion_selector_json() {
         let (envelope, materialization_request) = multisource_provider_fixture();
         let target_tables = b"[]";
@@ -2610,6 +2711,13 @@ mod tests {
         }
         let byte = *bitmap.cast::<u8>().add(idx / 8);
         byte & (1 << (idx % 8)) != 0
+    }
+
+    unsafe fn string_value(value: DagMlDataString) -> String {
+        let bytes = slice::from_raw_parts(value.ptr.cast::<u8>(), value.len);
+        let out = String::from_utf8(bytes.to_vec()).unwrap();
+        dagmldata_string_free(value);
+        out
     }
 
     fn multisource_provider_fixture() -> (Vec<u8>, Vec<u8>) {

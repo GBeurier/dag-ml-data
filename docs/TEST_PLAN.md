@@ -12,11 +12,12 @@
 | Planner | fixture schema/model-input/adapters produce expected data plan |
 | Alignment | stable `inner`, `left`, `outer` sample order, duplicate source/sample refusal, multi-source planner emits explicit `Align` before `Join` |
 | Feature fusion | singleton-source broadcast over reference repetitions, deterministic synthetic outer rows, duplicate unnamespaced column refusal, incoherent presence-mask refusal, ambiguous repeated non-reference source refusal |
+| Collation | rectangular feature blocks to row-major tensors, ragged row padding, truncation side rules, presence/value-validity masks, non-numeric feature refusal |
 | Relations | duplicate observations, group consistency, augmentation origin validity |
 | Coordinator envelope | explicit schema version, published envelope JSON Schema version, unsupported schema version refusal, schema/plan/relation fingerprint validation |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability |
 | Views/features/targets | sample/source/augmentation filtering, requested sample-order preservation, repetition-preserving identity, observation-level feature alignment, feature-column filtering, feature representation mismatch refusal, sample-level target de-duplication |
-| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature/fused-feature Arrow exports, in-memory typed feature-buffer creation, provider-backed feature fusion selector over `feature_arrow`, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
+| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature/fused-feature Arrow exports, feature-collation JSON export, in-memory typed feature-buffer creation, provider-backed feature fusion selector over `feature_arrow`, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
 
 ## Conformance Tests
 

@@ -48,7 +48,7 @@ release invalidating child views. Provider feature tables are converted once at
 provider construction into typed numeric buffers before Arrow export. Next:
 attach real production feature-buffer lifecycles.
 
-## Phase 3: Alignment And Fusion
+## Phase 3: Alignment, Fusion And Collation
 
 Definition of done:
 
@@ -66,8 +66,10 @@ missing outer/left values with nulls, namespaces columns by default and refuses
 ambiguous repeated non-reference joins. A C ABI conformance helper exports that
 kernel as Arrow over already materialized feature blocks, and the in-memory
 provider vtable can route `feature_arrow` JSON fusion selectors through the same
-kernel using provider-owned typed feature buffers. Production provider
-lifecycles and late collation are still pending.
+kernel using provider-owned typed feature buffers. A core numeric collation
+kernel now produces row-major tensor blocks with deterministic padding,
+truncation, presence masks and value-validity masks. Production provider
+lifecycles and provider-backed collation are still pending.
 
 ## Phase 4: nirs4all Connector
 
