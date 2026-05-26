@@ -31,8 +31,11 @@ Definition of done:
 - C ABI conformance around view creation and identity export;
 - Arrow identity table smoke tests.
 
-Next: materialize a validated coordinator envelope into opaque handles for
-`dag-ml` controller tasks.
+Status: first in-memory coordinator handle arena implemented. It validates a
+coordinator envelope plus materialization request, returns an opaque handle
+record, and records run/node/phase/variant/fold/fingerprint traceability for
+`dag-ml` controller tasks. Next: attach real buffer/view lifecycles and Arrow
+identity export.
 
 ## Phase 3: Alignment And Fusion
 

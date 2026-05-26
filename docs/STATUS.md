@@ -1,6 +1,7 @@
 # Status
 
-Current state: foundation scaffold plus coordinator data-plan envelope.
+Current state: foundation scaffold plus coordinator data-plan envelope and
+first handle materialization smoke.
 
 Implemented:
 
@@ -15,13 +16,18 @@ Implemented:
 - coordinator data-plan envelope export with schema, plan and relation
   fingerprints;
 - conversion from `SampleRelationTable` to DAG-ML coordinator relation records;
+- coordinator materialization request and handle-record contracts for validated
+  data handles;
+- in-memory coordinator handle arena that materializes envelopes into opaque
+  handle records with run/node/phase/variant/fold/fingerprint traceability;
+- CLI `materialize-envelope` smoke command;
 - C ABI schema fingerprint entry point;
 - example schema fixture;
 - CI workflow.
 
 Not implemented yet:
 
-- runtime data providers;
+- production runtime data providers with real buffer/view lifecycles;
 - Arrow identity export;
 - alignment and fusion execution;
 - fitted adapter serialization;
@@ -29,5 +35,5 @@ Not implemented yet:
 
 Next recommended task:
 
-Implement a runtime data provider mock that materializes a validated
-coordinator envelope into opaque handles for `dag-ml` controller tasks.
+Connect the handle arena to a buffer-backed provider and expose identity tables
+through Arrow C Data Interface smoke tests.

@@ -4,8 +4,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_data_core::{
     data_plan_fingerprint, plan_model_input, sample_relation_fingerprint, schema_fingerprint,
-    AdapterRegistry, AdapterRegistrySpec, CoordinatorDataPlanEnvelope, DataPlan, DataPlanRequest,
-    DatasetSchema, ModelInputSpec, SampleRelationTable, SourceId,
+    AdapterRegistry, AdapterRegistrySpec, CoordinatorDataMaterializationRequest,
+    CoordinatorDataPlanEnvelope, CoordinatorHandleArena, DataPlan, DataPlanRequest, DatasetSchema,
+    ModelInputSpec, SampleRelationTable, SourceId,
 };
 
 #[derive(Debug, Parser)]
@@ -36,6 +37,14 @@ enum Command {
     },
     ValidateEnvelope {
         path: PathBuf,
+    },
+    MaterializeEnvelope {
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long, default_value = "controller:data.provider")]
+        owner: String,
     },
     PlanModelInput {
         #[arg(long)]
@@ -107,6 +116,21 @@ fn main() -> Result<()> {
                     .map(|relations| relations.records.len())
                     .unwrap_or(0)
             );
+        }
+        Command::MaterializeEnvelope {
+            envelope,
+            request,
+            owner,
+        } => {
+            let envelope: CoordinatorDataPlanEnvelope =
+                read_json(&envelope, "coordinator data-plan envelope")?;
+            let request: CoordinatorDataMaterializationRequest =
+                read_json(&request, "coordinator data materialization request")?;
+            let arena = CoordinatorHandleArena::new(owner)?;
+            let record = arena
+                .materialize(&envelope, &request)
+                .with_context(|| "failed to materialize coordinator data handle")?;
+            println!("{}", serde_json::to_string_pretty(&record)?);
         }
         Command::PlanModelInput {
             schema,

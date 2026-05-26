@@ -11,12 +11,14 @@
 | Plans | unresolved choices, empty plans, declared output representation |
 | Planner | fixture schema/model-input/adapters produce expected data plan |
 | Relations | duplicate observations, group consistency, augmentation origin validity |
+| Handles | materialization request/envelope fingerprint match, opaque handle record traceability |
 | ABI | null pointer handling, invalid JSON, valid fingerprint |
 
 ## Conformance Tests
 
 Add after providers exist:
 
+- handle arena refuses schema/plan/relation mismatch and missing required relations;
 - Python and Rust providers return identical identity Arrow tables;
 - path solver returns same plan independent of adapter registration order;
 - source alignment is stable for `inner`, `left` and `outer`;
@@ -27,3 +29,10 @@ Add after providers exist:
 The first shared fixture should be a minimal UC6 stacking dataset: two base
 prediction sources, a meta-model input plan and a shuffled sample order that
 forces identity-based alignment.
+
+Current CLI smoke commands:
+
+```bash
+cargo run -p dag-ml-data-cli -- validate-envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json
+cargo run -p dag-ml-data-cli -- materialize-envelope --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
+```

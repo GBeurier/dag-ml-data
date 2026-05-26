@@ -8,9 +8,10 @@ sample relations, representation adapters, data plans, alignment/collation
 contracts and schema fingerprints. It does not own ML phases, CV orchestration,
 OOF joins or model execution; those belong to `dag-ml`.
 
-> Status: foundation scaffold. The project is ready for implementation work:
-> executable Rust crates, C ABI header, CLI fingerprinting, design documents,
-> rationale, roadmap, CI and first contract tests are present.
+> Status: foundation scaffold plus coordinator envelope and handle-materialization
+> smoke. The project has executable Rust crates, C ABI header, CLI
+> fingerprinting/planning/materialization commands, design documents, rationale,
+> roadmap, CI and contract tests.
 
 ## Repository Layout
 
@@ -39,6 +40,7 @@ examples/
 cargo fmt --all --check
 cargo test --workspace
 cargo run -p dag-ml-data-cli -- fingerprint-schema examples/minimal_schema.json
+cargo run -p dag-ml-data-cli -- materialize-envelope --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
 ```
 
 ## First Implementation Target
@@ -49,4 +51,6 @@ The first useful milestone is a schema and planning core that can:
 2. describe semantic axes and representations;
 3. produce deterministic schema fingerprints;
 4. represent unresolved data plans without executing ML;
-5. expose fingerprinting and basic validation through the C ABI.
+5. expose fingerprinting and basic validation through the C ABI;
+6. materialize validated coordinator envelopes into opaque handle records for
+   DAG-ML controller tasks.

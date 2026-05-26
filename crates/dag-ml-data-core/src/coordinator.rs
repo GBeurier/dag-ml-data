@@ -161,7 +161,7 @@ pub fn coordinator_relations_from_sample_table(
     Ok(converted)
 }
 
-fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
+pub(crate) fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(DataError::Validation(format!(
             "{label} fingerprint must be a 64-character hex digest"
