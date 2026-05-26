@@ -2,7 +2,7 @@
 
 Current state: foundation scaffold plus coordinator data-plan envelope,
 materialized data/view handle smokes, target alignment smoke and minimal Arrow
-identity export.
+identity/target/feature export.
 
 Implemented:
 
@@ -25,12 +25,15 @@ Implemented:
   observations while allowing sample/source/augmentation selection;
 - sample-level target value alignment for view handles with deterministic
   de-duplication across repeated observations;
+- observation-level feature table alignment for view handles, preserving
+  repeated observations and applying `DataView.columns`;
 - CLI `materialize-envelope` smoke command;
 - Arrow C Data ABI structs, release helpers and coordinator identity-table
   export from validated envelopes;
 - Arrow C Data numeric target-table export through materialized view handles;
+- Arrow C Data numeric feature-table export through materialized view handles;
 - Rust-owned in-memory provider vtable with materialize, make-view,
-  view-identity, target, release and destroy callbacks;
+  view-identity, target, feature, release and destroy callbacks;
 - C header and linked C runtime smokes for the provider vtable and Arrow
   signatures;
 - Python `ctypes` smoke for the same provider lifecycle;
@@ -43,7 +46,7 @@ Implemented:
 Not implemented yet:
 
 - production runtime data providers with real buffer/view lifecycles;
-- full Arrow feature-buffer provider implementation beyond identity/target
+- full production Arrow feature-buffer provider implementation beyond JSON
   conformance smokes;
 - alignment and fusion execution;
 - fitted adapter serialization;
@@ -52,5 +55,5 @@ Not implemented yet:
 Next recommended task:
 
 Add native provider conformance against the in-memory provider vtable, then
-attach feature-buffer lifecycles and extend the Python example over real
-provider-owned Arrow buffers.
+replace JSON feature-table smokes with real provider-owned Arrow buffer
+lifecycles.

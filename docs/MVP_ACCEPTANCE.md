@@ -40,13 +40,13 @@ The data-side MVP is the minimum needed for `dag-ml` UC6 and UC11 fixtures:
 | path solver | returns the cheapest non-lossy path unless policy allows lossy adapters |
 | `DataPlan` shape | output representation and every step input/output is explicit |
 | schema fingerprint | source and sample ordering do not change fingerprints |
-| C ABI helper | schema fingerprint and coordinator identity Arrow export are callable from C ABI |
+| C ABI helper | schema fingerprint plus coordinator identity/target/feature Arrow exports are callable from C ABI |
 
 ## Non-Target For MVP
 
 - actual file readers;
 - GPU tensor collation;
-- full provider-backed Arrow buffer/view implementation;
+- full production provider-backed Arrow buffer/view implementation;
 - nirs4all `SpectroDataset` connector;
 - domain-specific adapter defaults.
 

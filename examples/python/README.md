@@ -7,7 +7,8 @@ Files:
 
 - `dag_ml_data_provider.py`: minimal wrapper around `DagMlDataVTable`,
   `ArrowArray` and `ArrowSchema`;
-- `provider_smoke.py`: executable conformance smoke over the in-memory provider.
+- `provider_smoke.py`: executable conformance smoke over the in-memory provider,
+  including observation-level features and sample-level targets.
 
 Run from the repository root:
 
@@ -18,4 +19,5 @@ python3 examples/python/provider_smoke.py --lib target/debug/libdag_ml_data_capi
 
 The wrapper is intentionally not the final Python package API. It is a small
 binding reference for materialization, view creation, identity export,
-sample-level target export, handle release and provider destruction.
+observation-level feature export, sample-level target export, handle release
+and provider destruction.

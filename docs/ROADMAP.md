@@ -28,8 +28,8 @@ Definition of done:
 
 - in-memory Rust provider for tests;
 - Python provider skeleton and reusable `ctypes` smoke;
-- C ABI conformance around view creation and identity export;
-- Arrow identity table smoke tests.
+- C ABI conformance around view creation and identity/target/feature export;
+- Arrow identity, target and feature table smoke tests.
 
 Status: first in-memory coordinator handle arena implemented. It validates a
 coordinator envelope plus materialization request, returns an opaque handle
@@ -38,10 +38,10 @@ record, and records run/node/phase/variant/fold/fingerprint traceability for
 aligns sample-level target values while de-duplicating repeated observations.
 The C ABI now exposes a Rust-owned in-memory provider vtable that materializes
 data handles, creates view handles, exports view identity, exports numeric
-targets, and supports release/destroy callbacks. A stdlib-only Python example
-now exercises the same lifecycle through the public ABI. Next: add native
-provider conformance against that behavior, then attach real feature-buffer
-lifecycles.
+targets, exports numeric observation-level features, and supports
+release/destroy callbacks. A stdlib-only Python example now exercises the same
+lifecycle through the public ABI. Next: add native provider conformance against
+that behavior, then attach real feature-buffer lifecycles.
 
 ## Phase 3: Alignment And Fusion
 

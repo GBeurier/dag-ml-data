@@ -7,7 +7,7 @@ use crate::coordinator::{
     validate_fingerprint, CoordinatorDataPlanEnvelope, CoordinatorRelation, CoordinatorRelationSet,
 };
 use crate::error::{DataError, Result};
-use crate::ids::{RepresentationId, SampleId, SourceId, TargetId};
+use crate::ids::{ObservationId, RepresentationId, SampleId, SourceId, TargetId};
 use crate::model::DataView;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -147,6 +147,77 @@ pub struct CoordinatorTargetBlock {
     pub target_id: TargetId,
     pub sample_ids: Vec<SampleId>,
     pub values: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorFeatureRow {
+    pub observation_id: ObservationId,
+    pub values: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorFeatureTable {
+    pub feature_set_id: String,
+    pub representation_id: RepresentationId,
+    pub feature_names: Vec<String>,
+    pub rows: Vec<CoordinatorFeatureRow>,
+}
+
+impl CoordinatorFeatureTable {
+    pub fn validate(&self) -> Result<()> {
+        validate_non_empty("feature_set_id", &self.feature_set_id)?;
+        if self.feature_names.is_empty() {
+            return Err(DataError::Validation(format!(
+                "feature table `{}` contains no features",
+                self.feature_set_id
+            )));
+        }
+        let mut seen_features = BTreeSet::new();
+        for feature_name in &self.feature_names {
+            validate_non_empty("feature_name", feature_name)?;
+            if !seen_features.insert(feature_name) {
+                return Err(DataError::Validation(format!(
+                    "feature table `{}` contains duplicate feature `{}`",
+                    self.feature_set_id, feature_name
+                )));
+            }
+        }
+        if self.rows.is_empty() {
+            return Err(DataError::Validation(format!(
+                "feature table `{}` contains no rows",
+                self.feature_set_id
+            )));
+        }
+        let mut seen_observations = BTreeSet::new();
+        for row in &self.rows {
+            if !seen_observations.insert(&row.observation_id) {
+                return Err(DataError::Validation(format!(
+                    "feature table `{}` contains duplicate observation `{}`",
+                    self.feature_set_id, row.observation_id
+                )));
+            }
+            if row.values.len() != self.feature_names.len() {
+                return Err(DataError::Validation(format!(
+                    "feature table `{}` row `{}` has {} values for {} features",
+                    self.feature_set_id,
+                    row.observation_id,
+                    row.values.len(),
+                    self.feature_names.len()
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorFeatureBlock {
+    pub feature_set_id: String,
+    pub representation_id: RepresentationId,
+    pub feature_names: Vec<String>,
+    pub observation_ids: Vec<ObservationId>,
+    pub sample_ids: Vec<SampleId>,
+    pub values: Vec<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug)]
@@ -355,6 +426,59 @@ impl CoordinatorHandleArena {
         })
     }
 
+    pub fn feature_values(
+        &self,
+        view_handle: u64,
+        feature_table: &CoordinatorFeatureTable,
+    ) -> Result<CoordinatorFeatureBlock> {
+        feature_table.validate()?;
+        let view_record = self
+            .view_records
+            .borrow()
+            .get(&view_handle)
+            .cloned()
+            .ok_or_else(|| DataError::Validation(format!("unknown view handle `{view_handle}`")))?;
+        let relations = self.view_identity(view_handle)?;
+        let selected_indices = selected_feature_indices(feature_table, &view_record.view)?;
+        let rows_by_observation = feature_table
+            .rows
+            .iter()
+            .map(|row| (&row.observation_id, row))
+            .collect::<BTreeMap<_, _>>();
+        let mut observation_ids = Vec::with_capacity(relations.records.len());
+        let mut sample_ids = Vec::with_capacity(relations.records.len());
+        let mut values = Vec::with_capacity(relations.records.len());
+        for relation in &relations.records {
+            let row = rows_by_observation
+                .get(&relation.observation_id)
+                .ok_or_else(|| {
+                    DataError::Validation(format!(
+                        "feature table `{}` has no row for observation `{}`",
+                        feature_table.feature_set_id, relation.observation_id
+                    ))
+                })?;
+            observation_ids.push(relation.observation_id.clone());
+            sample_ids.push(relation.sample_id.clone());
+            values.push(
+                selected_indices
+                    .iter()
+                    .map(|idx| row.values[*idx].clone())
+                    .collect(),
+            );
+        }
+        Ok(CoordinatorFeatureBlock {
+            feature_set_id: feature_table.feature_set_id.clone(),
+            representation_id: feature_table.representation_id.clone(),
+            feature_names: selected_indices
+                .iter()
+                .map(|idx| feature_table.feature_names[*idx].clone())
+                .collect(),
+            observation_ids,
+            sample_ids,
+            values,
+        })
+    }
+
     pub fn handle_record(&self, handle: u64) -> Option<CoordinatorDataHandleRecord> {
         self.records.borrow().get(&handle).cloned()
     }
@@ -518,6 +642,40 @@ fn unique_sample_count(relations: &[CoordinatorRelation]) -> usize {
         .len()
 }
 
+fn selected_feature_indices(
+    table: &CoordinatorFeatureTable,
+    view: &DataView,
+) -> Result<Vec<usize>> {
+    let index_by_name = table
+        .feature_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name, idx))
+        .collect::<BTreeMap<_, _>>();
+    let indices = if let Some(columns) = &view.columns {
+        columns
+            .iter()
+            .map(|column| {
+                index_by_name.get(column).copied().ok_or_else(|| {
+                    DataError::Validation(format!(
+                        "feature table `{}` has no feature column `{}`",
+                        table.feature_set_id, column
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        (0..table.feature_names.len()).collect()
+    };
+    if indices.is_empty() {
+        return Err(DataError::Validation(format!(
+            "feature table `{}` selected no feature columns",
+            table.feature_set_id
+        )));
+    }
+    Ok(indices)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,6 +775,64 @@ mod tests {
         assert_eq!(target.target_id.as_str(), "y");
         assert_eq!(target.sample_ids, vec![SampleId::new("S001").unwrap()]);
         assert_eq!(target.values, vec![json!(42.0)]);
+    }
+
+    #[test]
+    fn feature_values_are_observation_level_and_filter_columns() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view = DataView {
+            sample_ids: Some(vec![SampleId::new("S001").unwrap()]),
+            columns: Some(vec!["f1".to_string()]),
+            include_augmented: false,
+            ..Default::default()
+        };
+        let view_record = arena.make_view(data.handle.handle, &view).unwrap();
+        let feature_table = CoordinatorFeatureTable {
+            feature_set_id: "x".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            feature_names: vec!["f0".to_string(), "f1".to_string()],
+            rows: vec![
+                CoordinatorFeatureRow {
+                    observation_id: ObservationId::new("obs.S001.base").unwrap(),
+                    values: vec![json!(1.0), json!(10.0)],
+                },
+                CoordinatorFeatureRow {
+                    observation_id: ObservationId::new("obs.S001.rep1").unwrap(),
+                    values: vec![json!(2.0), json!(20.0)],
+                },
+                CoordinatorFeatureRow {
+                    observation_id: ObservationId::new("obs.S001.aug0").unwrap(),
+                    values: vec![json!(3.0), json!(30.0)],
+                },
+                CoordinatorFeatureRow {
+                    observation_id: ObservationId::new("obs.S002.base").unwrap(),
+                    values: vec![json!(4.0), json!(40.0)],
+                },
+            ],
+        };
+
+        let features = arena
+            .feature_values(view_record.handle.handle, &feature_table)
+            .unwrap();
+
+        assert_eq!(features.feature_set_id, "x");
+        assert_eq!(features.feature_names, vec!["f1".to_string()]);
+        assert_eq!(
+            features.observation_ids,
+            vec![
+                ObservationId::new("obs.S001.base").unwrap(),
+                ObservationId::new("obs.S001.rep1").unwrap(),
+            ]
+        );
+        assert_eq!(
+            features.sample_ids,
+            vec![
+                SampleId::new("S001").unwrap(),
+                SampleId::new("S001").unwrap()
+            ]
+        );
+        assert_eq!(features.values, vec![vec![json!(10.0)], vec![json!(20.0)]]);
     }
 
     #[test]

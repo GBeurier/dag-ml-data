@@ -21,7 +21,7 @@ enforce OOF invariants.
 |---|---|
 | `dag-ml-data-core` | Pure Rust serializable contracts and validation. |
 | `dag-ml-data` | Stable Rust facade for downstream crates and bindings. |
-| `dag-ml-data-capi` | C ABI helper functions and data vtable skeleton. |
+| `dag-ml-data-capi` | C ABI helper functions and data provider vtable contracts. |
 | `dag-ml-data-cli` | Local schema validation and fingerprint utility. |
 
 ## Data Planning Flow
@@ -34,8 +34,9 @@ DatasetSchema + ModelInputSpec + policy
   -> host-owned data handle returned to dag-ml
 ```
 
-The first scaffold stops at serializable schemas, plans and fingerprints. Runtime
-adapters and path solving are the next implementation step.
+The current scaffold reaches validated handles/views plus Arrow C Data smokes
+for identity, sample-level targets and observation-level features. Runtime
+adapters and production host buffer lifecycles are still outside the scaffold.
 
 ## Boundary With `dag-ml`
 

@@ -131,6 +131,14 @@ TARGET_ARROW = ctypes.CFUNCTYPE(
     ctypes.POINTER(ctypes.POINTER(ArrowArray)),
     ctypes.POINTER(ctypes.POINTER(ArrowSchema)),
 )
+FEATURE_ARROW = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.c_uint64,
+    DagMlDataBytesView,
+    ctypes.POINTER(ctypes.POINTER(ArrowArray)),
+    ctypes.POINTER(ctypes.POINTER(ArrowSchema)),
+)
 RELEASE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint64)
 DESTROY = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
 
@@ -143,6 +151,7 @@ class DagMlDataVTable(ctypes.Structure):
         ("make_view", MAKE_VIEW),
         ("view_identity", VIEW_IDENTITY),
         ("target_arrow", TARGET_ARROW),
+        ("feature_arrow", FEATURE_ARROW),
         ("release", RELEASE),
         ("destroy", DESTROY),
     ]
@@ -325,4 +334,5 @@ fn python_example_provider_smoke_runs_against_c_abi() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(r#""identity_rows": 2"#), "{stdout}");
     assert!(stdout.contains(r#""target_rows": 1"#), "{stdout}");
+    assert!(stdout.contains(r#""feature_rows": 2"#), "{stdout}");
 }

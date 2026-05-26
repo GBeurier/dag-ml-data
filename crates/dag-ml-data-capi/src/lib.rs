@@ -5,8 +5,8 @@ use std::slice;
 
 use dag_ml_data_core::{
     schema_fingerprint, CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope,
-    CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
-    DatasetSchema, TargetId,
+    CoordinatorFeatureBlock, CoordinatorFeatureTable, CoordinatorHandleArena,
+    CoordinatorTargetBlock, CoordinatorTargetTable, DataView, DatasetSchema, TargetId,
 };
 use serde::Deserialize;
 
@@ -113,6 +113,15 @@ pub struct DagMlDataVTable {
             user_data: *mut c_void,
             view: DagMlDataHandle,
             target_name: DagMlDataBytesView,
+            out_arrow_array: *mut *mut ArrowArray,
+            out_arrow_schema: *mut *mut ArrowSchema,
+        ) -> DagMlDataStatusCode,
+    >,
+    pub feature_arrow: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            view: DagMlDataHandle,
+            feature_set_name: DagMlDataBytesView,
             out_arrow_array: *mut *mut ArrowArray,
             out_arrow_schema: *mut *mut ArrowSchema,
         ) -> DagMlDataStatusCode,
@@ -329,6 +338,63 @@ pub unsafe extern "C" fn dagmldata_coordinator_target_arrow_json(
     }
 }
 
+/// Builds an Arrow C Data feature table from a coordinator envelope, data view
+/// and observation-level feature table.
+///
+/// The request JSON shape is `{ envelope, materialization_request, view,
+/// feature_table, owner_controller? }`. The returned table has
+/// `observation_id`, `sample_id` and one numeric column per selected feature.
+/// Repeated observations are preserved; `DataView.columns` filters feature
+/// columns without changing row identity.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `out_arrow_array`, `out_arrow_schema` and
+/// `error_out` may be null. Returned Arrow pointers must be released with
+/// `dagmldata_arrow_array_free` and `dagmldata_arrow_schema_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_coordinator_feature_arrow_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_arrow_array: *mut *mut ArrowArray,
+    out_arrow_schema: *mut *mut ArrowSchema,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_arrow_array(out_arrow_array);
+    clear_arrow_schema(out_arrow_schema);
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_string(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_arrow_array.is_null() || out_arrow_schema.is_null() {
+        set_string(error_out, "arrow output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<CoordinatorFeatureArrowRequest>(json) {
+        Ok(request) => {
+            match build_feature_block(&request).and_then(|block| build_feature_arrow(&block)) {
+                Ok((array, schema)) => {
+                    *out_arrow_array = Box::into_raw(Box::new(array));
+                    *out_arrow_schema = Box::into_raw(Box::new(schema));
+                    DagMlDataStatusCode::Ok
+                }
+                Err(error) => {
+                    set_string(error_out, error.to_string());
+                    DagMlDataStatusCode::ValidationError
+                }
+            }
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Creates a Rust-owned in-memory provider and returns its C ABI vtable.
 ///
 /// `envelope_ptr/envelope_len` must encode a `CoordinatorDataPlanEnvelope`.
@@ -376,7 +442,73 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_json(
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    match InMemoryProvider::new(envelope, target_tables) {
+    match InMemoryProvider::new(envelope, target_tables, BTreeMap::new()) {
+        Ok(provider) => {
+            *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Creates a Rust-owned in-memory provider with target and feature tables.
+///
+/// `feature_tables_ptr/feature_tables_len` may be null/zero, or a JSON array of
+/// `CoordinatorFeatureTable` values. This is the current conformance helper for
+/// binding tests that need real observation-level feature data.
+///
+/// # Safety
+///
+/// Non-null byte pointers must point to readable memory for the duration of the
+/// call. `out_vtable` may be null only if the caller is probing error handling.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_features_json(
+    envelope_ptr: *const u8,
+    envelope_len: usize,
+    target_tables_ptr: *const u8,
+    target_tables_len: usize,
+    feature_tables_ptr: *const u8,
+    feature_tables_len: usize,
+    out_vtable: *mut DagMlDataVTable,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_vtable(out_vtable);
+    clear_string(error_out);
+    if envelope_ptr.is_null() {
+        set_string(error_out, "envelope pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_vtable.is_null() {
+        set_string(error_out, "vtable output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let envelope_json = slice::from_raw_parts(envelope_ptr, envelope_len);
+    let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+        Ok(target_tables) => target_tables,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let feature_tables = match parse_feature_tables(feature_tables_ptr, feature_tables_len) {
+        Ok(feature_tables) => feature_tables,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match InMemoryProvider::new(envelope, target_tables, feature_tables) {
         Ok(provider) => {
             *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
             DagMlDataStatusCode::Ok
@@ -452,6 +584,16 @@ struct CoordinatorTargetArrowRequest {
     owner_controller: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct CoordinatorFeatureArrowRequest {
+    envelope: CoordinatorDataPlanEnvelope,
+    materialization_request: CoordinatorDataMaterializationRequest,
+    view: DataView,
+    feature_table: CoordinatorFeatureTable,
+    #[serde(default = "default_owner_controller")]
+    owner_controller: String,
+}
+
 fn default_owner_controller() -> String {
     "controller:data.provider".to_string()
 }
@@ -460,18 +602,21 @@ struct InMemoryProvider {
     arena: CoordinatorHandleArena,
     envelope: CoordinatorDataPlanEnvelope,
     target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
+    feature_tables: BTreeMap<String, CoordinatorFeatureTable>,
 }
 
 impl InMemoryProvider {
     fn new(
         envelope: CoordinatorDataPlanEnvelope,
         target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
+        feature_tables: BTreeMap<String, CoordinatorFeatureTable>,
     ) -> dag_ml_data_core::Result<Self> {
         envelope.validate()?;
         Ok(Self {
             arena: CoordinatorHandleArena::new(default_owner_controller())?,
             envelope,
             target_tables,
+            feature_tables,
         })
     }
 }
@@ -510,14 +655,52 @@ fn parse_target_tables(
     Ok(by_target)
 }
 
+fn parse_feature_tables(
+    feature_tables_ptr: *const u8,
+    feature_tables_len: usize,
+) -> dag_ml_data_core::Result<BTreeMap<String, CoordinatorFeatureTable>> {
+    if feature_tables_ptr.is_null() {
+        if feature_tables_len != 0 {
+            return Err(dag_ml_data_core::DataError::Validation(
+                "feature tables pointer is null".to_string(),
+            ));
+        }
+        return Ok(BTreeMap::new());
+    }
+    if feature_tables_len == 0 {
+        return Ok(BTreeMap::new());
+    }
+    let json = unsafe { slice::from_raw_parts(feature_tables_ptr, feature_tables_len) };
+    let tables = serde_json::from_slice::<Vec<CoordinatorFeatureTable>>(json).map_err(|error| {
+        dag_ml_data_core::DataError::Validation(format!(
+            "failed to parse feature tables JSON: {error}"
+        ))
+    })?;
+    let mut by_feature_set = BTreeMap::new();
+    for table in tables {
+        table.validate()?;
+        let feature_set_id = table.feature_set_id.clone();
+        if by_feature_set
+            .insert(feature_set_id.clone(), table)
+            .is_some()
+        {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "duplicate feature table `{feature_set_id}`"
+            )));
+        }
+    }
+    Ok(by_feature_set)
+}
+
 fn provider_vtable(user_data: *mut c_void) -> DagMlDataVTable {
     DagMlDataVTable {
-        abi_version: 1,
+        abi_version: 2,
         user_data,
         materialize: Some(provider_materialize),
         make_view: Some(provider_make_view),
         view_identity: Some(provider_view_identity),
         target_arrow: Some(provider_target_arrow),
+        feature_arrow: Some(provider_feature_arrow),
         release: Some(provider_release),
         destroy: Some(provider_destroy),
     }
@@ -525,12 +708,13 @@ fn provider_vtable(user_data: *mut c_void) -> DagMlDataVTable {
 
 fn empty_vtable() -> DagMlDataVTable {
     DagMlDataVTable {
-        abi_version: 1,
+        abi_version: 2,
         user_data: std::ptr::null_mut(),
         materialize: None,
         make_view: None,
         view_identity: None,
         target_arrow: None,
+        feature_arrow: None,
         release: None,
         destroy: None,
     }
@@ -659,6 +843,48 @@ unsafe extern "C" fn provider_target_arrow(
     }
 }
 
+unsafe extern "C" fn provider_feature_arrow(
+    user_data: *mut c_void,
+    view: DagMlDataHandle,
+    feature_set_name: DagMlDataBytesView,
+    out_arrow_array: *mut *mut ArrowArray,
+    out_arrow_schema: *mut *mut ArrowSchema,
+) -> DagMlDataStatusCode {
+    clear_arrow_array(out_arrow_array);
+    clear_arrow_schema(out_arrow_schema);
+    if user_data.is_null()
+        || feature_set_name.ptr.is_null()
+        || out_arrow_array.is_null()
+        || out_arrow_schema.is_null()
+    {
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let provider = &*(user_data.cast::<InMemoryProvider>());
+    let feature_set_name = match std::str::from_utf8(slice::from_raw_parts(
+        feature_set_name.ptr,
+        feature_set_name.len,
+    )) {
+        Ok(feature_set_name) if !feature_set_name.trim().is_empty() => feature_set_name,
+        _ => return DagMlDataStatusCode::ValidationError,
+    };
+    let feature_table = match provider.feature_tables.get(feature_set_name) {
+        Some(feature_table) => feature_table,
+        None => return DagMlDataStatusCode::ValidationError,
+    };
+    match provider
+        .arena
+        .feature_values(view, feature_table)
+        .and_then(|features| build_feature_arrow(&features))
+    {
+        Ok((array, schema)) => {
+            *out_arrow_array = Box::into_raw(Box::new(array));
+            *out_arrow_schema = Box::into_raw(Box::new(schema));
+            DagMlDataStatusCode::Ok
+        }
+        Err(_) => DagMlDataStatusCode::ValidationError,
+    }
+}
+
 unsafe extern "C" fn provider_release(user_data: *mut c_void, handle: DagMlDataHandle) {
     if user_data.is_null() {
         return;
@@ -776,6 +1002,15 @@ fn build_target_block(
     arena.target_values(view.handle.handle, &request.target_table)
 }
 
+fn build_feature_block(
+    request: &CoordinatorFeatureArrowRequest,
+) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
+    let arena = CoordinatorHandleArena::new(&request.owner_controller)?;
+    let data = arena.materialize(&request.envelope, &request.materialization_request)?;
+    let view = arena.make_view(data.handle.handle, &request.view)?;
+    arena.feature_values(view.handle.handle, &request.feature_table)
+}
+
 fn build_target_arrow(
     target: &CoordinatorTargetBlock,
 ) -> dag_ml_data_core::Result<(ArrowArray, ArrowSchema)> {
@@ -815,6 +1050,60 @@ fn build_target_arrow(
     Ok((
         struct_array(target.sample_ids.len(), child_arrays),
         struct_schema("coordinator_target", child_schemas)?,
+    ))
+}
+
+fn build_feature_arrow(
+    features: &CoordinatorFeatureBlock,
+) -> dag_ml_data_core::Result<(ArrowArray, ArrowSchema)> {
+    let mut child_arrays = vec![
+        Box::into_raw(Box::new(string_array(
+            features
+                .observation_ids
+                .iter()
+                .map(|observation_id| Some(observation_id.as_str())),
+        )?)),
+        Box::into_raw(Box::new(string_array(
+            features
+                .sample_ids
+                .iter()
+                .map(|sample_id| Some(sample_id.as_str())),
+        )?)),
+    ];
+    let mut child_schemas = vec![
+        Box::into_raw(Box::new(field_schema("observation_id", "u", false)?)),
+        Box::into_raw(Box::new(field_schema("sample_id", "u", false)?)),
+    ];
+    for (feature_idx, feature_name) in features.feature_names.iter().enumerate() {
+        let numeric_values = features
+            .values
+            .iter()
+            .map(|row| match &row[feature_idx] {
+                serde_json::Value::Null => Ok(None),
+                serde_json::Value::Number(number) => number.as_f64().map(Some).ok_or_else(|| {
+                    dag_ml_data_core::DataError::Validation(format!(
+                        "feature `{}` contains a non-f64 numeric value",
+                        feature_name
+                    ))
+                }),
+                _ => Err(dag_ml_data_core::DataError::Validation(format!(
+                    "feature `{}` Arrow smoke only supports numeric or null values",
+                    feature_name
+                ))),
+            })
+            .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
+        child_arrays.push(Box::into_raw(Box::new(f64_array(
+            numeric_values.into_iter(),
+        ))));
+        child_schemas.push(Box::into_raw(Box::new(field_schema(
+            feature_name,
+            "g",
+            true,
+        )?)));
+    }
+    Ok((
+        struct_array(features.observation_ids.len(), child_arrays),
+        struct_schema("coordinator_features", child_schemas)?,
     ))
 }
 
@@ -1251,7 +1540,78 @@ mod tests {
     }
 
     #[test]
-    fn inmemory_provider_vtable_materializes_views_identity_and_targets() {
+    fn exports_coordinator_feature_arrow_over_abi() {
+        let envelope: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        let materialization_request: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        ))
+        .unwrap();
+        let request = serde_json::json!({
+            "envelope": envelope,
+            "materialization_request": materialization_request,
+            "view": {
+                "sample_ids": ["S001"],
+                "columns": ["f1"],
+                "include_augmented": false
+            },
+            "feature_table": {
+                "feature_set_id": "x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["f0", "f1"],
+                "rows": [
+                    {"observation_id": "obs.S001.base", "values": [1.0, 10.0]},
+                    {"observation_id": "obs.S001.rep1", "values": [2.0, 20.0]},
+                    {"observation_id": "obs.S001.aug0", "values": [3.0, 30.0]},
+                    {"observation_id": "obs.S002.base", "values": [4.0, 40.0]}
+                ]
+            }
+        });
+        let request = serde_json::to_vec(&request).unwrap();
+        let mut array = std::ptr::null_mut();
+        let mut schema = std::ptr::null_mut();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_coordinator_feature_arrow_json(
+                request.as_ptr(),
+                request.len(),
+                &mut array,
+                &mut schema,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        unsafe {
+            assert_eq!((*array).length, 2);
+            assert_eq!((*array).n_children, 3);
+            let array_children =
+                slice::from_raw_parts((*array).children, (*array).n_children as usize);
+            let schema_children =
+                slice::from_raw_parts((*schema).children, (*schema).n_children as usize);
+            assert_eq!(
+                CStr::from_ptr((*schema_children[2]).name).to_str().unwrap(),
+                "f1"
+            );
+            assert_eq!(
+                utf8_values(array_children[0]),
+                vec![
+                    Some("obs.S001.base".to_string()),
+                    Some("obs.S001.rep1".to_string()),
+                ]
+            );
+            assert_eq!(f64_values(array_children[2]), vec![Some(10.0), Some(20.0)]);
+            dagmldata_arrow_array_free(array);
+            dagmldata_arrow_schema_free(schema);
+        }
+    }
+
+    #[test]
+    fn inmemory_provider_vtable_materializes_views_identity_targets_and_features() {
         let envelope = include_bytes!(
             "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
         );
@@ -1268,15 +1628,31 @@ mod tests {
             }
         ]))
         .unwrap();
+        let feature_tables = serde_json::to_vec(&serde_json::json!([
+            {
+                "feature_set_id": "x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["f0", "f1"],
+                "rows": [
+                    {"observation_id": "obs.S001.base", "values": [1.0, 10.0]},
+                    {"observation_id": "obs.S001.rep1", "values": [2.0, 20.0]},
+                    {"observation_id": "obs.S001.aug0", "values": [3.0, 30.0]},
+                    {"observation_id": "obs.S002.base", "values": [4.0, 40.0]}
+                ]
+            }
+        ]))
+        .unwrap();
         let mut vtable = empty_vtable();
         let mut error = DagMlDataString::default();
 
         let status = unsafe {
-            dagmldata_inmemory_provider_new_json(
+            dagmldata_inmemory_provider_new_with_features_json(
                 envelope.as_ptr(),
                 envelope.len(),
                 target_tables.as_ptr(),
                 target_tables.len(),
+                feature_tables.as_ptr(),
+                feature_tables.len(),
                 &mut vtable,
                 &mut error,
             )
@@ -1302,7 +1678,7 @@ mod tests {
         assert_eq!(data_handle, 1);
 
         let view_json = serde_json::to_vec(
-            &serde_json::json!({"sample_ids": ["S001"], "include_augmented": false}),
+            &serde_json::json!({"sample_ids": ["S001"], "columns": ["f1"], "include_augmented": false}),
         )
         .unwrap();
         let mut view_handle = 0;
@@ -1380,6 +1756,42 @@ mod tests {
             assert_eq!(f64_values(array_children[2]), vec![Some(42.0)]);
             dagmldata_arrow_array_free(target_array);
             dagmldata_arrow_schema_free(target_schema);
+        }
+
+        let mut feature_array = std::ptr::null_mut();
+        let mut feature_schema = std::ptr::null_mut();
+        let feature_arrow = vtable.feature_arrow.unwrap();
+        let feature_set_name = b"x";
+        let status = unsafe {
+            feature_arrow(
+                vtable.user_data,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: feature_set_name.as_ptr(),
+                    len: feature_set_name.len(),
+                },
+                &mut feature_array,
+                &mut feature_schema,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        unsafe {
+            assert_eq!((*feature_array).length, 2);
+            assert_eq!((*feature_array).n_children, 3);
+            let array_children = slice::from_raw_parts(
+                (*feature_array).children,
+                (*feature_array).n_children as usize,
+            );
+            assert_eq!(
+                utf8_values(array_children[0]),
+                vec![
+                    Some("obs.S001.base".to_string()),
+                    Some("obs.S001.rep1".to_string()),
+                ]
+            );
+            assert_eq!(f64_values(array_children[2]), vec![Some(10.0), Some(20.0)]);
+            dagmldata_arrow_array_free(feature_array);
+            dagmldata_arrow_schema_free(feature_schema);
         }
 
         unsafe {

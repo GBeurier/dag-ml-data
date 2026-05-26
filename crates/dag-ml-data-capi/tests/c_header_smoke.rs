@@ -55,6 +55,19 @@ static DagMlDataStatusCode target_arrow(void *user_data, DagMlDataHandle view, D
     return DAG_ML_DATA_STATUS_OK;
 }
 
+static DagMlDataStatusCode feature_arrow(void *user_data, DagMlDataHandle view, DagMlDataBytesView feature_set_name, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema) {
+    (void)user_data;
+    (void)view;
+    (void)feature_set_name;
+    if (out_arrow_array != NULL) {
+        *out_arrow_array = NULL;
+    }
+    if (out_arrow_schema != NULL) {
+        *out_arrow_schema = NULL;
+    }
+    return DAG_ML_DATA_STATUS_OK;
+}
+
 int main(void) {
     DagMlDataVTable table = {0};
     DagMlDataString error = {0};
@@ -66,9 +79,11 @@ int main(void) {
     table.make_view = make_view;
     table.view_identity = view_identity;
     table.target_arrow = target_arrow;
+    table.feature_arrow = feature_arrow;
 
     (void)dagmldata_version();
     (void)dagmldata_inmemory_provider_new_json((const uint8_t*)"{}", 2, NULL, 0, &table, &error);
+    (void)dagmldata_inmemory_provider_new_with_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
     dagmldata_arrow_array_free(array);
     dagmldata_arrow_schema_free(schema);
     dagmldata_inmemory_provider_destroy(&table);
@@ -174,8 +189,10 @@ int main(int argc, char **argv) {
     Bytes envelope = {0};
     Bytes request = {0};
     const uint8_t target_tables[] = "[{\"target_id\":\"y\",\"values\":[{\"sample_id\":\"S001\",\"value\":42.0},{\"sample_id\":\"S002\",\"value\":7.0}]}]";
-    const uint8_t view_json[] = "{\"sample_ids\":[\"S001\"],\"include_augmented\":false}";
+    const uint8_t feature_tables[] = "[{\"feature_set_id\":\"x\",\"representation_id\":\"tabular_numeric\",\"feature_names\":[\"f0\",\"f1\"],\"rows\":[{\"observation_id\":\"obs.S001.base\",\"values\":[1.0,10.0]},{\"observation_id\":\"obs.S001.rep1\",\"values\":[2.0,20.0]},{\"observation_id\":\"obs.S001.aug0\",\"values\":[3.0,30.0]},{\"observation_id\":\"obs.S002.base\",\"values\":[4.0,40.0]}]}]";
+    const uint8_t view_json[] = "{\"sample_ids\":[\"S001\"],\"columns\":[\"f1\"],\"include_augmented\":false}";
     const uint8_t target_name[] = "y";
+    const uint8_t feature_set_name[] = "x";
     DagMlDataVTable vtable = {0};
     DagMlDataString error = {0};
     DagMlDataHandle data_handle = 0;
@@ -184,6 +201,8 @@ int main(int argc, char **argv) {
     ArrowSchema *identity_schema = NULL;
     ArrowArray *target_array = NULL;
     ArrowSchema *target_schema = NULL;
+    ArrowArray *feature_array = NULL;
+    ArrowSchema *feature_schema = NULL;
     DagMlDataStatusCode status;
 
     if (argc != 3) {
@@ -193,11 +212,13 @@ int main(int argc, char **argv) {
         return 3;
     }
 
-    status = dagmldata_inmemory_provider_new_json(
+    status = dagmldata_inmemory_provider_new_with_features_json(
         envelope.ptr,
         envelope.len,
         target_tables,
         sizeof(target_tables) - 1,
+        feature_tables,
+        sizeof(feature_tables) - 1,
         &vtable,
         &error
     );
@@ -241,6 +262,19 @@ int main(int argc, char **argv) {
     }
     dagmldata_arrow_array_free(target_array);
     dagmldata_arrow_schema_free(target_schema);
+
+    status = vtable.feature_arrow(
+        vtable.user_data,
+        view_handle,
+        (DagMlDataBytesView){feature_set_name, sizeof(feature_set_name) - 1},
+        &feature_array,
+        &feature_schema
+    );
+    if (status != DAG_ML_DATA_STATUS_OK || feature_array == NULL || feature_array->length != 2 || feature_array->n_children != 3) {
+        return 15;
+    }
+    dagmldata_arrow_array_free(feature_array);
+    dagmldata_arrow_schema_free(feature_schema);
 
     vtable.release(vtable.user_data, view_handle);
     vtable.release(vtable.user_data, data_handle);

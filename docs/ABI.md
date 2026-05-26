@@ -15,10 +15,14 @@ memory while exposing deterministic descriptors and identity tables to the core.
 - `dagmldata_coordinator_target_arrow_json` for numeric target-table smoke tests
   from a validated envelope, materialization request, `DataView` and target
   table;
+- `dagmldata_coordinator_feature_arrow_json` for numeric observation-level
+  feature-table smoke tests from the same coordinator/view contracts;
 - `dagmldata_inmemory_provider_new_json` for a Rust-owned provider vtable that
   materializes data handles, creates view handles, exports view identity, exports
   numeric targets and supports release/destroy callbacks;
-- `DagMlDataVTable` with materialize/view/identity/target/release hooks.
+- `dagmldata_inmemory_provider_new_with_features_json` for the same provider
+  plus JSON feature tables used by binding conformance tests;
+- `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
 
 ## Ownership Rules
 
@@ -50,11 +54,17 @@ target values to the selected samples and emits `sample_id`, `target_id` and
 numeric `value` columns. Repeated observations are intentionally de-duplicated
 to one target value per sample.
 
+`dagmldata_coordinator_feature_arrow_json` is intentionally observation-level.
+It materializes the same envelope/view, preserves repeated observations, applies
+`DataView.columns`, and emits `observation_id`, `sample_id` plus one numeric
+column per selected feature. This keeps the target aggregation rule separate
+from feature row identity.
+
 ## In-Memory Provider VTable
 
 The in-memory provider is the current ABI conformance target. It accepts one
-validated coordinator envelope plus optional sample-level target tables, then
-implements:
+validated coordinator envelope plus optional sample-level target tables and
+observation-level feature tables, then implements:
 
 - `materialize`: validates a coordinator materialization request and returns an
   opaque data handle;
@@ -62,27 +72,32 @@ implements:
   handle;
 - `view_identity`: returns the filtered relation table as Arrow C Data;
 - `target_arrow`: returns sample-level numeric targets aligned to the view;
+- `feature_arrow`: returns observation-level numeric features aligned to the
+  view and filtered by `DataView.columns`;
 - `release` and `destroy`: release handles and provider state.
 
-It still does not own heavy feature buffers. Full provider implementations will
-use the same vtable shape while keeping data buffers host-owned.
+It still owns only small JSON fixture feature tables, not heavy production
+feature buffers. Full provider implementations will use the same vtable shape
+while keeping data buffers host-owned.
 
 `tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
-the provider vtable, materializes a view, exports identity/target Arrow arrays
-and releases all handles.
+the provider vtable, materializes a view, exports identity, target and feature
+Arrow arrays, then releases all handles.
 
 `tests/python_ctypes_smoke.rs` performs the same provider lifecycle from Python
 using only `ctypes`. It also runs `examples/python/provider_smoke.py`, which uses
 `examples/python/dag_ml_data_provider.py` as a small reusable wrapper around the
 current provider vtable. This is intentionally not the final Python package API:
 it is the binding-friendly conformance target for materialize, view creation,
-identity export, target export, release and destroy.
+identity export, target export, feature export, release and destroy.
 
 ## ABI Roadmap
 
 1. Freeze byte/string/status conventions.
 2. Add C smoke test for schema fingerprinting.
 3. Add path-solving and data-plan validation over canonical JSON.
-4. Add native host provider conformance and extend the Python provider example
-   against feature-buffer lifecycles once they exist.
+4. Add native host provider conformance against the current
+   identity/target/feature behavior.
+5. Replace JSON fixture feature tables with production feature-buffer
+   lifecycles.

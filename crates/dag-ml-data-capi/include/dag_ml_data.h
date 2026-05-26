@@ -70,6 +70,7 @@ typedef struct DagMlDataVTable {
     DagMlDataStatusCode (*make_view)(void *user_data, DagMlDataHandle dataset, DagMlDataBytesView selector_json, DagMlDataHandle *out_view);
     DagMlDataStatusCode (*view_identity)(void *user_data, DagMlDataHandle view, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
     DagMlDataStatusCode (*target_arrow)(void *user_data, DagMlDataHandle view, DagMlDataBytesView target_name, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
+    DagMlDataStatusCode (*feature_arrow)(void *user_data, DagMlDataHandle view, DagMlDataBytesView feature_set_name, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
     void (*release)(void *user_data, DagMlDataHandle handle);
     void (*destroy)(void *user_data);
 } DagMlDataVTable;
@@ -81,7 +82,9 @@ void dagmldata_arrow_schema_free(ArrowSchema *schema);
 DagMlDataStatusCode dagmldata_schema_fingerprint_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *fingerprint_out, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_identity_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_target_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_coordinator_feature_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_new_with_features_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *feature_tables_ptr, size_t feature_tables_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 void dagmldata_inmemory_provider_destroy(DagMlDataVTable *vtable);
 
 #ifdef __cplusplus

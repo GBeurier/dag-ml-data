@@ -10,8 +10,8 @@ OOF joins or model execution; those belong to `dag-ml`.
 
 > Status: foundation scaffold plus coordinator envelope, handle/materialized-view
 > smoke, target alignment smoke, an in-memory C ABI provider vtable and a
-> reusable Python `ctypes` smoke wrapper for identity/target Arrow exports. The
-> project has executable Rust crates, C ABI header, CLI
+> reusable Python `ctypes` smoke wrapper for identity/target/feature Arrow
+> exports. The project has executable Rust crates, C ABI header, CLI
 > fingerprinting/planning/materialization commands, design documents,
 > rationale, roadmap, CI and contract tests.
 
@@ -21,7 +21,7 @@ OOF joins or model execution; those belong to `dag-ml`.
 crates/
   dag-ml-data-core/   # schema, representation, view, relation and plan types
   dag-ml-data/        # Rust facade re-exporting stable core APIs
-  dag-ml-data-capi/   # C ABI helpers and DataVTable skeleton
+  dag-ml-data-capi/   # C ABI helpers and DataVTable contracts
   dag-ml-data-cli/    # local schema validation/fingerprint utility
 docs/
   TOC.md              # validation-oriented table of contents
@@ -63,7 +63,7 @@ The first useful milestone is a schema and planning core that can:
    smoke path;
 8. create identity-filtered view handles and align sample-level target values
    across repeated observations;
-9. exercise the provider vtable lifecycle for materialize/view/identity/target
-   operations;
+9. exercise the provider vtable lifecycle for
+   materialize/view/identity/target/feature operations;
 10. provide a stdlib-only Python ABI smoke wrapper that external bindings can
     use as a starting conformance target.

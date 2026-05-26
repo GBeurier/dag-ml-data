@@ -83,6 +83,14 @@ TargetArrowFn = ctypes.CFUNCTYPE(
     ctypes.POINTER(ctypes.POINTER(ArrowArray)),
     ctypes.POINTER(ctypes.POINTER(ArrowSchema)),
 )
+FeatureArrowFn = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.c_uint64,
+    DagMlDataBytesView,
+    ctypes.POINTER(ctypes.POINTER(ArrowArray)),
+    ctypes.POINTER(ctypes.POINTER(ArrowSchema)),
+)
 ReleaseFn = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint64)
 DestroyFn = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
 
@@ -95,6 +103,7 @@ class DagMlDataVTable(ctypes.Structure):
         ("make_view", MakeViewFn),
         ("view_identity", ViewIdentityFn),
         ("target_arrow", TargetArrowFn),
+        ("feature_arrow", FeatureArrowFn),
         ("release", ReleaseFn),
         ("destroy", DestroyFn),
     ]
@@ -150,20 +159,25 @@ class InMemoryProvider:
         library_path: str | Path,
         envelope_json: bytes,
         target_tables: list[dict[str, Any]] | None = None,
+        feature_tables: list[dict[str, Any]] | None = None,
     ) -> None:
         self._lib = ctypes.CDLL(str(library_path))
         self._configure_lib()
         target_json = json.dumps(target_tables or []).encode("utf-8")
+        feature_json = json.dumps(feature_tables or []).encode("utf-8")
         envelope_buffer, envelope_ptr = _u8_buffer(envelope_json)
         target_buffer, target_ptr = _u8_buffer(target_json)
-        self._buffers = [envelope_buffer, target_buffer]
+        feature_buffer, feature_ptr = _u8_buffer(feature_json)
+        self._buffers = [envelope_buffer, target_buffer, feature_buffer]
         self._vtable = DagMlDataVTable()
         error = DagMlDataString()
-        status = self._lib.dagmldata_inmemory_provider_new_json(
+        status = self._lib.dagmldata_inmemory_provider_new_with_features_json(
             envelope_ptr,
             len(envelope_json),
             target_ptr,
             len(target_json),
+            feature_ptr,
+            len(feature_json),
             ctypes.byref(self._vtable),
             ctypes.byref(error),
         )
@@ -179,8 +193,14 @@ class InMemoryProvider:
         library_path: str | Path,
         envelope_path: str | Path,
         target_tables: list[dict[str, Any]] | None = None,
+        feature_tables: list[dict[str, Any]] | None = None,
     ) -> "InMemoryProvider":
-        return cls(Path(library_path), Path(envelope_path).read_bytes(), target_tables)
+        return cls(
+            Path(library_path),
+            Path(envelope_path).read_bytes(),
+            target_tables,
+            feature_tables,
+        )
 
     def materialize(self, request: dict[str, Any] | bytes) -> int:
         payload = request if isinstance(request, bytes) else json.dumps(request).encode("utf-8")
@@ -265,6 +285,47 @@ class InMemoryProvider:
             self._lib.dagmldata_arrow_array_free(array)
             self._lib.dagmldata_arrow_schema_free(schema)
 
+    def feature_values(self, view_handle: int, feature_set_id: str) -> list[dict[str, Any]]:
+        feature_buffer, feature_view = _bytes_view(feature_set_id.encode("utf-8"))
+        self._buffers.append(feature_buffer)
+        array = ctypes.POINTER(ArrowArray)()
+        schema = ctypes.POINTER(ArrowSchema)()
+        status = self._vtable.feature_arrow(
+            self._vtable.user_data,
+            view_handle,
+            feature_view,
+            ctypes.byref(array),
+            ctypes.byref(schema),
+        )
+        if status != 0:
+            raise RuntimeError(f"feature_arrow failed: status {status}")
+        try:
+            children = array.contents.children
+            schema_children = schema.contents.children
+            observation_ids = _utf8_values(children[0])
+            sample_ids = _utf8_values(children[1])
+            feature_names = [
+                schema_children[idx].contents.name.decode("utf-8")
+                for idx in range(2, schema.contents.n_children)
+            ]
+            feature_columns = [
+                _f64_values(children[idx]) for idx in range(2, array.contents.n_children)
+            ]
+            return [
+                {
+                    "observation_id": observation_ids[row_idx],
+                    "sample_id": sample_ids[row_idx],
+                    "features": {
+                        feature_name: feature_columns[col_idx][row_idx]
+                        for col_idx, feature_name in enumerate(feature_names)
+                    },
+                }
+                for row_idx in range(array.contents.length)
+            ]
+        finally:
+            self._lib.dagmldata_arrow_array_free(array)
+            self._lib.dagmldata_arrow_schema_free(schema)
+
     def release(self, handle: int) -> None:
         self._vtable.release(self._vtable.user_data, handle)
 
@@ -288,6 +349,17 @@ class InMemoryProvider:
             ctypes.POINTER(DagMlDataString),
         ]
         self._lib.dagmldata_inmemory_provider_new_json.restype = ctypes.c_int
+        self._lib.dagmldata_inmemory_provider_new_with_features_json.argtypes = [
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+            ctypes.POINTER(DagMlDataVTable),
+            ctypes.POINTER(DagMlDataString),
+        ]
+        self._lib.dagmldata_inmemory_provider_new_with_features_json.restype = ctypes.c_int
         self._lib.dagmldata_inmemory_provider_destroy.argtypes = [ctypes.POINTER(DagMlDataVTable)]
         self._lib.dagmldata_inmemory_provider_destroy.restype = None
         self._lib.dagmldata_string_free.argtypes = [DagMlDataString]
