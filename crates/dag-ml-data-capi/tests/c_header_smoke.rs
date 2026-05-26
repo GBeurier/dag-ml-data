@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[test]
@@ -95,5 +96,204 @@ int main(void) {
         "C header smoke failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn c_program_links_and_exercises_inmemory_provider_vtable() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let build = Command::new(cargo)
+        .arg("build")
+        .arg("-p")
+        .arg("dag-ml-data-capi")
+        .arg("--lib")
+        .current_dir(workspace_root)
+        .output()
+        .expect("run cargo build for cdylib");
+    assert!(
+        build.status.success(),
+        "cargo build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("target"));
+    let lib_dir = target_dir.join("debug");
+    let source = r#"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "dag_ml_data.h"
+
+typedef struct Bytes {
+    uint8_t *ptr;
+    size_t len;
+} Bytes;
+
+static int read_file(const char *path, Bytes *out) {
+    FILE *file = fopen(path, "rb");
+    long len;
+    if (file == NULL) {
+        return 1;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return 2;
+    }
+    len = ftell(file);
+    if (len < 0) {
+        fclose(file);
+        return 3;
+    }
+    if (fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return 4;
+    }
+    out->ptr = (uint8_t *)malloc((size_t)len);
+    out->len = (size_t)len;
+    if (out->ptr == NULL && out->len != 0) {
+        fclose(file);
+        return 5;
+    }
+    if (fread(out->ptr, 1, out->len, file) != out->len) {
+        fclose(file);
+        return 6;
+    }
+    fclose(file);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    Bytes envelope = {0};
+    Bytes request = {0};
+    const uint8_t target_tables[] = "[{\"target_id\":\"y\",\"values\":[{\"sample_id\":\"S001\",\"value\":42.0},{\"sample_id\":\"S002\",\"value\":7.0}]}]";
+    const uint8_t view_json[] = "{\"sample_ids\":[\"S001\"],\"include_augmented\":false}";
+    const uint8_t target_name[] = "y";
+    DagMlDataVTable vtable = {0};
+    DagMlDataString error = {0};
+    DagMlDataHandle data_handle = 0;
+    DagMlDataHandle view_handle = 0;
+    ArrowArray *identity_array = NULL;
+    ArrowSchema *identity_schema = NULL;
+    ArrowArray *target_array = NULL;
+    ArrowSchema *target_schema = NULL;
+    DagMlDataStatusCode status;
+
+    if (argc != 3) {
+        return 2;
+    }
+    if (read_file(argv[1], &envelope) != 0 || read_file(argv[2], &request) != 0) {
+        return 3;
+    }
+
+    status = dagmldata_inmemory_provider_new_json(
+        envelope.ptr,
+        envelope.len,
+        target_tables,
+        sizeof(target_tables) - 1,
+        &vtable,
+        &error
+    );
+    if (status != DAG_ML_DATA_STATUS_OK || vtable.user_data == NULL || error.ptr != NULL) {
+        return 10;
+    }
+    status = vtable.materialize(
+        vtable.user_data,
+        0,
+        (DagMlDataBytesView){request.ptr, request.len},
+        &data_handle
+    );
+    if (status != DAG_ML_DATA_STATUS_OK || data_handle == 0) {
+        return 11;
+    }
+    status = vtable.make_view(
+        vtable.user_data,
+        data_handle,
+        (DagMlDataBytesView){view_json, sizeof(view_json) - 1},
+        &view_handle
+    );
+    if (status != DAG_ML_DATA_STATUS_OK || view_handle == 0) {
+        return 12;
+    }
+    status = vtable.view_identity(vtable.user_data, view_handle, &identity_array, &identity_schema);
+    if (status != DAG_ML_DATA_STATUS_OK || identity_array == NULL || identity_array->length != 2) {
+        return 13;
+    }
+    dagmldata_arrow_array_free(identity_array);
+    dagmldata_arrow_schema_free(identity_schema);
+
+    status = vtable.target_arrow(
+        vtable.user_data,
+        view_handle,
+        (DagMlDataBytesView){target_name, sizeof(target_name) - 1},
+        &target_array,
+        &target_schema
+    );
+    if (status != DAG_ML_DATA_STATUS_OK || target_array == NULL || target_array->length != 1) {
+        return 14;
+    }
+    dagmldata_arrow_array_free(target_array);
+    dagmldata_arrow_schema_free(target_schema);
+
+    vtable.release(vtable.user_data, view_handle);
+    vtable.release(vtable.user_data, data_handle);
+    dagmldata_inmemory_provider_destroy(&vtable);
+    free(envelope.ptr);
+    free(request.ptr);
+    return 0;
+}
+"#;
+    let pid = std::process::id();
+    let source_path = std::env::temp_dir().join(format!("dag_ml_data_linked_smoke_{pid}.c"));
+    let exe_path = std::env::temp_dir().join(format!("dag_ml_data_linked_smoke_{pid}"));
+    fs::write(&source_path, source).expect("write linked C smoke source");
+
+    let compile = Command::new("cc")
+        .arg("-std=c11")
+        .arg("-I")
+        .arg(manifest_dir.join("include"))
+        .arg(&source_path)
+        .arg("-L")
+        .arg(&lib_dir)
+        .arg("-ldag_ml_data_capi")
+        .arg(format!("-Wl,-rpath,{}", lib_dir.display()))
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("compile linked C smoke");
+    assert!(
+        compile.status.success(),
+        "C linked smoke compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let run = Command::new(&exe_path)
+        .arg(
+            workspace_root
+                .join("examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"),
+        )
+        .arg(
+            workspace_root
+                .join("examples/fixtures/oof_campaign/materialization_request_model_base_x.json"),
+        )
+        .output()
+        .expect("run linked C smoke");
+    let _ = fs::remove_file(&source_path);
+    let _ = fs::remove_file(&exe_path);
+
+    assert!(
+        run.status.success(),
+        "C linked smoke failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
     );
 }

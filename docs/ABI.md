@@ -67,14 +67,15 @@ implements:
 It still does not own heavy feature buffers. Full provider implementations will
 use the same vtable shape while keeping data buffers host-owned.
 
-`tests/c_header_smoke.rs` compiles a small C translation unit against
-`dag_ml_data.h` with `cc -fsyntax-only`, including the provider creation helper,
-Arrow pointer types and every vtable callback signature.
+`tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
+`cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
+the provider vtable, materializes a view, exports identity/target Arrow arrays
+and releases all handles.
 
 ## ABI Roadmap
 
 1. Freeze byte/string/status conventions.
 2. Add C smoke test for schema fingerprinting.
 3. Add path-solving and data-plan validation over canonical JSON.
-4. Add linked C, Python and native host provider conformance against the in-memory
+4. Add Python and native host provider conformance against the in-memory
    provider's identity/target behavior.

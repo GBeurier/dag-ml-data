@@ -13,7 +13,7 @@
 | Relations | duplicate observations, group consistency, augmentation origin validity |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability |
 | Views/targets | sample/source/augmentation filtering, repetition-preserving identity, sample-level target de-duplication |
-| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity and numeric target Arrow exports, in-memory provider vtable lifecycle, C header syntax smoke |
+| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity and numeric target Arrow exports, in-memory provider vtable lifecycle, C header syntax and linked runtime smokes |
 
 ## Conformance Tests
 

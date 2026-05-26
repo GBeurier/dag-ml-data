@@ -31,8 +31,8 @@ Implemented:
 - Arrow C Data numeric target-table export through materialized view handles;
 - Rust-owned in-memory provider vtable with materialize, make-view,
   view-identity, target, release and destroy callbacks;
-- C header smoke that compiles the provider vtable and Arrow signatures with a
-  C compiler;
+- C header and linked C runtime smokes for the provider vtable and Arrow
+  signatures;
 - C ABI schema fingerprint entry point;
 - example schema fixture;
 - CI workflow.
@@ -48,5 +48,5 @@ Not implemented yet:
 
 Next recommended task:
 
-Add linked C, Python and native provider conformance tests against the in-memory
-provider vtable, then attach feature-buffer lifecycles.
+Add Python and native provider conformance tests against the in-memory provider
+vtable, then attach feature-buffer lifecycles.
