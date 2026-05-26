@@ -44,6 +44,9 @@ Implemented:
 - Arrow C Data numeric feature-table export through materialized view handles;
 - Rust-owned in-memory provider vtable with materialize, make-view,
   view-identity, target, feature, release and destroy callbacks;
+- in-memory provider feature tables are converted once at provider creation
+  into typed numeric buffers, so provider exports no longer re-parse JSON values
+  on every `feature_arrow` call;
 - provider vtable release conformance, including parent data-handle release
   invalidating child view handles;
 - C header and linked C runtime smokes for the provider vtable and Arrow
@@ -58,14 +61,13 @@ Implemented:
 Not implemented yet:
 
 - production runtime data providers with real buffer/view lifecycles;
-- full production Arrow feature-buffer provider implementation beyond JSON
-  conformance smokes;
+- production Arrow feature-buffer provider implementation beyond the current
+  in-memory typed numeric buffer conformance;
 - alignment and fusion execution;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
-Add native provider conformance against the in-memory provider vtable, then
-replace JSON feature-table smokes with real provider-owned Arrow buffer
-lifecycles.
+Replace the in-memory typed feature-buffer conformance with real provider-owned
+Arrow buffer lifecycles.

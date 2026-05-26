@@ -6,7 +6,8 @@ use std::slice;
 use dag_ml_data_core::{
     schema_fingerprint, CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope,
     CoordinatorFeatureBlock, CoordinatorFeatureTable, CoordinatorHandleArena,
-    CoordinatorTargetBlock, CoordinatorTargetTable, DataView, DatasetSchema, TargetId,
+    CoordinatorTargetBlock, CoordinatorTargetTable, DataView, DatasetSchema, ObservationId,
+    RepresentationId, SampleId, TargetId,
 };
 use serde::Deserialize;
 
@@ -602,14 +603,14 @@ struct InMemoryProvider {
     arena: CoordinatorHandleArena,
     envelope: CoordinatorDataPlanEnvelope,
     target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
-    feature_tables: BTreeMap<String, CoordinatorFeatureTable>,
+    feature_tables: BTreeMap<String, ProviderFeatureTable>,
 }
 
 impl InMemoryProvider {
     fn new(
         envelope: CoordinatorDataPlanEnvelope,
         target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
-        feature_tables: BTreeMap<String, CoordinatorFeatureTable>,
+        feature_tables: BTreeMap<String, ProviderFeatureTable>,
     ) -> dag_ml_data_core::Result<Self> {
         envelope.validate()?;
         Ok(Self {
@@ -618,6 +619,104 @@ impl InMemoryProvider {
             target_tables,
             feature_tables,
         })
+    }
+}
+
+struct ProviderFeatureRow {
+    observation_id: ObservationId,
+    values: Vec<Option<f64>>,
+}
+
+struct ProviderFeatureTable {
+    feature_set_id: String,
+    representation_id: RepresentationId,
+    feature_names: Vec<String>,
+    rows: Vec<ProviderFeatureRow>,
+}
+
+struct ProviderFeatureBlock {
+    feature_names: Vec<String>,
+    observation_ids: Vec<ObservationId>,
+    sample_ids: Vec<SampleId>,
+    values: Vec<Vec<Option<f64>>>,
+}
+
+impl ProviderFeatureTable {
+    fn from_json_table(table: CoordinatorFeatureTable) -> dag_ml_data_core::Result<Self> {
+        table.validate()?;
+        let mut rows = Vec::with_capacity(table.rows.len());
+        for row in table.rows {
+            let mut values = Vec::with_capacity(row.values.len());
+            for (feature_idx, value) in row.values.into_iter().enumerate() {
+                let feature_name = &table.feature_names[feature_idx];
+                values.push(numeric_feature_value(
+                    &table.feature_set_id,
+                    &row.observation_id,
+                    feature_name,
+                    value,
+                )?);
+            }
+            rows.push(ProviderFeatureRow {
+                observation_id: row.observation_id,
+                values,
+            });
+        }
+        Ok(Self {
+            feature_set_id: table.feature_set_id,
+            representation_id: table.representation_id,
+            feature_names: table.feature_names,
+            rows,
+        })
+    }
+
+    fn selected_indices(&self, view: &DataView) -> dag_ml_data_core::Result<Vec<usize>> {
+        let index_by_name = self
+            .feature_names
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| (name, idx))
+            .collect::<BTreeMap<_, _>>();
+        let indices = if let Some(columns) = &view.columns {
+            columns
+                .iter()
+                .map(|column| {
+                    index_by_name.get(column).copied().ok_or_else(|| {
+                        dag_ml_data_core::DataError::Validation(format!(
+                            "feature table `{}` has no feature column `{}`",
+                            self.feature_set_id, column
+                        ))
+                    })
+                })
+                .collect::<dag_ml_data_core::Result<Vec<_>>>()?
+        } else {
+            (0..self.feature_names.len()).collect()
+        };
+        if indices.is_empty() {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "feature table `{}` selected no feature columns",
+                self.feature_set_id
+            )));
+        }
+        Ok(indices)
+    }
+}
+
+fn numeric_feature_value(
+    feature_set_id: &str,
+    observation_id: &ObservationId,
+    feature_name: &str,
+    value: serde_json::Value,
+) -> dag_ml_data_core::Result<Option<f64>> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(number) => number.as_f64().map(Some).ok_or_else(|| {
+            dag_ml_data_core::DataError::Validation(format!(
+                "feature table `{feature_set_id}` row `{observation_id}` feature `{feature_name}` contains a non-f64 numeric value"
+            ))
+        }),
+        _ => Err(dag_ml_data_core::DataError::Validation(format!(
+            "feature table `{feature_set_id}` row `{observation_id}` feature `{feature_name}` must be numeric or null"
+        ))),
     }
 }
 
@@ -658,7 +757,7 @@ fn parse_target_tables(
 fn parse_feature_tables(
     feature_tables_ptr: *const u8,
     feature_tables_len: usize,
-) -> dag_ml_data_core::Result<BTreeMap<String, CoordinatorFeatureTable>> {
+) -> dag_ml_data_core::Result<BTreeMap<String, ProviderFeatureTable>> {
     if feature_tables_ptr.is_null() {
         if feature_tables_len != 0 {
             return Err(dag_ml_data_core::DataError::Validation(
@@ -678,8 +777,8 @@ fn parse_feature_tables(
     })?;
     let mut by_feature_set = BTreeMap::new();
     for table in tables {
-        table.validate()?;
         let feature_set_id = table.feature_set_id.clone();
+        let table = ProviderFeatureTable::from_json_table(table)?;
         if by_feature_set
             .insert(feature_set_id.clone(), table)
             .is_some()
@@ -871,10 +970,8 @@ unsafe extern "C" fn provider_feature_arrow(
         Some(feature_table) => feature_table,
         None => return DagMlDataStatusCode::ValidationError,
     };
-    match provider
-        .arena
-        .feature_values(view, feature_table)
-        .and_then(|features| build_feature_arrow(&features))
+    match provider_feature_block(provider, view, feature_table)
+        .and_then(|features| build_provider_feature_arrow(&features))
     {
         Ok((array, schema)) => {
             *out_arrow_array = Box::into_raw(Box::new(array));
@@ -1011,6 +1108,70 @@ fn build_feature_block(
     arena.feature_values(view.handle.handle, &request.feature_table)
 }
 
+fn provider_feature_block(
+    provider: &InMemoryProvider,
+    view_handle: u64,
+    feature_table: &ProviderFeatureTable,
+) -> dag_ml_data_core::Result<ProviderFeatureBlock> {
+    let view_record = provider.arena.view_record(view_handle).ok_or_else(|| {
+        dag_ml_data_core::DataError::Validation(format!("unknown view handle `{view_handle}`"))
+    })?;
+    let parent_record = provider
+        .arena
+        .handle_record(view_record.parent_handle.handle)
+        .ok_or_else(|| {
+            dag_ml_data_core::DataError::Validation(format!(
+                "view `{view_handle}` parent data handle `{}` is not live",
+                view_record.parent_handle.handle
+            ))
+        })?;
+    if feature_table.representation_id != parent_record.output_representation {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "feature table `{}` representation `{}` does not match materialized output representation `{}`",
+            feature_table.feature_set_id,
+            feature_table.representation_id,
+            parent_record.output_representation
+        )));
+    }
+    let relations = provider.arena.view_identity(view_handle)?;
+    let selected_indices = feature_table.selected_indices(&view_record.view)?;
+    let rows_by_observation = feature_table
+        .rows
+        .iter()
+        .map(|row| (&row.observation_id, row))
+        .collect::<BTreeMap<_, _>>();
+    let mut observation_ids = Vec::with_capacity(relations.records.len());
+    let mut sample_ids = Vec::with_capacity(relations.records.len());
+    let mut values = Vec::with_capacity(relations.records.len());
+    for relation in &relations.records {
+        let row = rows_by_observation
+            .get(&relation.observation_id)
+            .ok_or_else(|| {
+                dag_ml_data_core::DataError::Validation(format!(
+                    "feature table `{}` has no row for observation `{}`",
+                    feature_table.feature_set_id, relation.observation_id
+                ))
+            })?;
+        observation_ids.push(relation.observation_id.clone());
+        sample_ids.push(relation.sample_id.clone());
+        values.push(
+            selected_indices
+                .iter()
+                .map(|idx| row.values[*idx])
+                .collect(),
+        );
+    }
+    Ok(ProviderFeatureBlock {
+        feature_names: selected_indices
+            .iter()
+            .map(|idx| feature_table.feature_names[*idx].clone())
+            .collect(),
+        observation_ids,
+        sample_ids,
+        values,
+    })
+}
+
 fn build_target_arrow(
     target: &CoordinatorTargetBlock,
 ) -> dag_ml_data_core::Result<(ArrowArray, ArrowSchema)> {
@@ -1094,6 +1255,43 @@ fn build_feature_arrow(
             .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
         child_arrays.push(Box::into_raw(Box::new(f64_array(
             numeric_values.into_iter(),
+        ))));
+        child_schemas.push(Box::into_raw(Box::new(field_schema(
+            feature_name,
+            "g",
+            true,
+        )?)));
+    }
+    Ok((
+        struct_array(features.observation_ids.len(), child_arrays),
+        struct_schema("coordinator_features", child_schemas)?,
+    ))
+}
+
+fn build_provider_feature_arrow(
+    features: &ProviderFeatureBlock,
+) -> dag_ml_data_core::Result<(ArrowArray, ArrowSchema)> {
+    let mut child_arrays = vec![
+        Box::into_raw(Box::new(string_array(
+            features
+                .observation_ids
+                .iter()
+                .map(|observation_id| Some(observation_id.as_str())),
+        )?)),
+        Box::into_raw(Box::new(string_array(
+            features
+                .sample_ids
+                .iter()
+                .map(|sample_id| Some(sample_id.as_str())),
+        )?)),
+    ];
+    let mut child_schemas = vec![
+        Box::into_raw(Box::new(field_schema("observation_id", "u", false)?)),
+        Box::into_raw(Box::new(field_schema("sample_id", "u", false)?)),
+    ];
+    for (feature_idx, feature_name) in features.feature_names.iter().enumerate() {
+        child_arrays.push(Box::into_raw(Box::new(f64_array(
+            features.values.iter().map(|row| row[feature_idx]),
         ))));
         child_schemas.push(Box::into_raw(Box::new(field_schema(
             feature_name,
@@ -1890,6 +2088,46 @@ mod tests {
             dagmldata_inmemory_provider_destroy(&mut vtable);
         }
         assert!(vtable.user_data.is_null());
+    }
+
+    #[test]
+    fn inmemory_provider_rejects_non_numeric_feature_buffers_on_creation() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let feature_tables = serde_json::to_vec(&serde_json::json!([
+            {
+                "feature_set_id": "x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["f0"],
+                "rows": [
+                    {"observation_id": "obs.S001.base", "values": ["bad"]}
+                ]
+            }
+        ]))
+        .unwrap();
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_features_json(
+                envelope.as_ptr(),
+                envelope.len(),
+                std::ptr::null(),
+                0,
+                feature_tables.as_ptr(),
+                feature_tables.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(vtable.user_data.is_null());
+        assert!(!error.ptr.is_null());
+        unsafe {
+            dagmldata_string_free(error);
+        }
     }
 
     unsafe fn utf8_values(array: *const ArrowArray) -> Vec<Option<String>> {

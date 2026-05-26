@@ -82,9 +82,11 @@ observation-level feature tables, then implements:
   view and filtered by `DataView.columns`;
 - `release` and `destroy`: release handles and provider state.
 
-It still owns only small JSON fixture feature tables, not heavy production
-feature buffers. Full provider implementations will use the same vtable shape
-while keeping data buffers host-owned.
+The conformance provider still receives small JSON fixture feature tables at
+construction time, but it converts them once into typed numeric buffers owned by
+the provider state. `feature_arrow` exports are then view projections over those
+owned buffers, not per-call JSON numeric parsing. Full provider implementations
+will use the same vtable shape while keeping production data buffers host-owned.
 
 `tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
@@ -105,5 +107,5 @@ identity export, target export, feature export, release and destroy.
 3. Add path-solving and data-plan validation over canonical JSON.
 4. Add native host provider conformance against the current
    identity/target/feature behavior.
-5. Replace JSON fixture feature tables with production feature-buffer
+5. Replace in-memory typed fixture buffers with production feature-buffer
    lifecycles.

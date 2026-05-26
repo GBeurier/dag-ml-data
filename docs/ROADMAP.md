@@ -44,7 +44,9 @@ targets, exports numeric observation-level features, and supports
 release/destroy callbacks. A stdlib-only Python example now exercises the same
 lifecycle through the public ABI. Native vtable conformance now checks
 materialize/view/export paths plus release behavior, including parent-handle
-release invalidating child views. Next: attach real feature-buffer lifecycles.
+release invalidating child views. Provider feature tables are converted once at
+provider construction into typed numeric buffers before Arrow export. Next:
+attach real production feature-buffer lifecycles.
 
 ## Phase 3: Alignment And Fusion
 
