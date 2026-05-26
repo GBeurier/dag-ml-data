@@ -41,4 +41,5 @@ Current CLI smoke commands:
 cargo run -p dag-ml-data-cli -- validate-envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json
 cargo run -p dag-ml-data-cli -- materialize-envelope --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
 python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null
+DAG_ML_REPO=../dag-ml python3 scripts/validate_contracts.py
 ```

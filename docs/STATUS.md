@@ -20,6 +20,8 @@ Implemented:
   version refusal;
 - published JSON Schema artifact for coordinator data-plan envelopes, with a
   unit smoke that keeps its declared version aligned to the Rust contract;
+- stdlib shared-contract validation script plus CI checkout of `dag-ml` so
+  schema copies and coordinator fixtures cannot drift silently;
 - conversion from `SampleRelationTable` to DAG-ML coordinator relation records;
 - coordinator materialization request and handle-record contracts for validated
   data handles;
