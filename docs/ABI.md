@@ -33,6 +33,8 @@ memory while exposing deterministic descriptors and identity tables to the core.
   numeric targets and supports release/destroy callbacks;
 - `dagmldata_inmemory_provider_new_with_features_json` for the same provider
   plus JSON feature tables used by binding conformance tests;
+- `dagmldata_inmemory_provider_feature_buffer_manifest_json` for deterministic
+  JSON manifests of provider-owned numeric feature buffers;
 - `dagmldata_inmemory_provider_feature_collation_json` for JSON row-major
   tensor collation from feature buffers owned by the in-memory provider;
 - `dagmldata_inmemory_provider_feature_collation_tensor_f64_json` for ABI-owned
@@ -118,6 +120,13 @@ the binding-oriented path. These helpers are specific to vtables created by
 `dagmldata_inmemory_provider_new_with_features_json`; they do not change the
 stable `DagMlDataVTable` layout.
 
+`dagmldata_inmemory_provider_feature_buffer_manifest_json` returns an array of
+`NumericFeatureBufferManifest` values for the provider-owned typed buffers. Each
+manifest includes the feature-set id, representation id, feature and observation
+ids, row/feature/value counts, estimated f64 storage bytes and a deterministic
+buffer fingerprint. Bindings can use this before creating feature views or
+tensors to verify that the provider loaded the expected data buffers.
+
 ## In-Memory Provider VTable
 
 The in-memory provider is the current ABI conformance target. It accepts one
@@ -125,7 +134,8 @@ validated coordinator envelope plus optional sample-level target tables and
 observation-level feature tables, then implements:
 
 - `materialize`: validates a coordinator materialization request and returns an
-  opaque data handle;
+  opaque data handle whose coordinator relations are scoped to the requested
+  `source_ids`;
 - `make_view`: applies a `DataView` to a data handle and returns an opaque view
   handle;
 - `view_identity`: returns the filtered relation table as Arrow C Data;
@@ -139,15 +149,15 @@ observation-level feature tables, then implements:
 
 The conformance provider still receives small JSON fixture feature tables at
 construction time, but it converts them once into column-major
-`NumericFeatureBuffer` values owned by the provider state. `feature_arrow`
-exports are then view projections over those owned buffers, not per-call JSON
-numeric parsing. Fusion selectors reuse those typed buffers, filter each source
-by source identity in the view, and then call the same pure Rust fusion kernel
-used by the standalone ABI helper. Provider feature-collation selectors then
-collate either a single feature table or the fused block into deterministic
-row-major JSON or `DagMlDataTensorF64` tensors without reparsing feature
-values. Full provider implementations will use the same vtable shape while
-keeping production data buffers host-owned.
+`NumericFeatureBuffer` values grouped by `NumericFeatureBufferStore` in the
+provider state. `feature_arrow` exports are then view projections over those
+owned buffers, not per-call JSON numeric parsing. Fusion selectors reuse those
+typed buffers, filter each source by source identity in the view, and then call
+the same pure Rust fusion kernel used by the standalone ABI helper. Provider
+feature-collation selectors then collate either a single feature table or the
+fused block into deterministic row-major JSON or `DagMlDataTensorF64` tensors
+without reparsing feature values. Full provider implementations will use the
+same vtable shape while keeping production data buffers host-owned.
 
 `tests/c_header_smoke.rs` has two C checks: a header syntax smoke with
 `cc -fsyntax-only`, and a linked C program that loads the Rust `cdylib`, creates
@@ -178,5 +188,6 @@ identity export, target export, feature export, release and destroy.
 7. Route in-memory provider feature-collation selectors through provider-owned
    typed buffers.
 8. Expose provider-backed collation as `DagMlDataTensorF64` for bindings.
-9. Replace in-memory typed fixture buffers with production feature-buffer
+9. Expose provider-owned feature-buffer manifests for binding conformance.
+10. Replace in-memory typed fixture buffers with production feature-buffer
    lifecycles.

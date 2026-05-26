@@ -252,6 +252,11 @@ impl CoordinatorHandleArena {
         envelope.validate()?;
         request.validate()?;
         validate_request_against_envelope(envelope, request)?;
+        let scoped_relations = envelope
+            .coordinator_relations
+            .as_ref()
+            .map(|relations| scoped_relations_for_materialization(relations, request))
+            .transpose()?;
 
         let handle = CoordinatorHandleRef {
             handle: self.next_handle(),
@@ -273,7 +278,7 @@ impl CoordinatorHandleArena {
             plan_id: envelope.plan.id.clone(),
             output_representation: request.output_representation.clone(),
             source_ids: request.source_ids.clone(),
-            sample_count: envelope.coordinator_relations.as_ref().map(|relations| {
+            sample_count: scoped_relations.as_ref().map(|relations| {
                 relations
                     .records
                     .iter()
@@ -281,15 +286,14 @@ impl CoordinatorHandleArena {
                     .collect::<BTreeSet<_>>()
                     .len()
             }),
-            relation_record_count: envelope
-                .coordinator_relations
+            relation_record_count: scoped_relations
                 .as_ref()
                 .map(|relations| relations.records.len()),
         };
         self.records
             .borrow_mut()
             .insert(handle.handle, record.clone());
-        if let Some(relations) = envelope.coordinator_relations.clone() {
+        if let Some(relations) = scoped_relations {
             self.data_relations
                 .borrow_mut()
                 .insert(handle.handle, relations);
@@ -570,6 +574,38 @@ fn validate_request_against_envelope(
     Ok(())
 }
 
+fn scoped_relations_for_materialization(
+    relations: &CoordinatorRelationSet,
+    request: &CoordinatorDataMaterializationRequest,
+) -> Result<CoordinatorRelationSet> {
+    relations.validate()?;
+    if request.source_ids.is_empty() {
+        return Ok(relations.clone());
+    }
+    let source_filter = request.source_ids.iter().collect::<BTreeSet<_>>();
+    let scoped = relations
+        .records
+        .iter()
+        .filter(|relation| {
+            relation
+                .source_id
+                .as_ref()
+                .map(|source_id| source_filter.contains(source_id))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if scoped.is_empty() {
+        return Err(DataError::Validation(format!(
+            "materialization request `{}` on `{}` selected no coordinator relations for requested source ids",
+            request.input_name, request.node_id
+        )));
+    }
+    let scoped = CoordinatorRelationSet { records: scoped };
+    scoped.validate()?;
+    Ok(scoped)
+}
+
 fn validate_non_empty(label: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() {
         return Err(DataError::Validation(format!("{label} must not be empty")));
@@ -755,6 +791,58 @@ mod tests {
         request.plan_fingerprint = "0".repeat(64);
 
         assert!(arena.materialize(&envelope(), &request).is_err());
+    }
+
+    #[test]
+    fn materialization_scopes_relations_to_requested_sources() {
+        let mut envelope = envelope();
+        let chem = SourceId::new("chem").unwrap();
+        envelope.plan.steps.push(crate::plan::DataPlanStep {
+            kind: crate::plan::DataPlanStepKind::Materialize,
+            source_id: Some(chem.clone()),
+            adapter_id: None,
+            input_representation: None,
+            output_representation: Some(RepresentationId::new("tabular_numeric").unwrap()),
+            fit_scope: crate::plan::FitScope::Stateless,
+            requires_user_choice: false,
+            metadata: BTreeMap::new(),
+        });
+        envelope.plan_fingerprint = crate::data_plan_fingerprint(&envelope.plan).unwrap();
+        envelope.relation_fingerprint = None;
+        envelope
+            .coordinator_relations
+            .as_mut()
+            .unwrap()
+            .records
+            .push(CoordinatorRelation {
+                observation_id: ObservationId::new("chem.S001").unwrap(),
+                sample_id: SampleId::new("S001").unwrap(),
+                target_id: Some(TargetId::new("y").unwrap()),
+                group_id: None,
+                origin_sample_id: None,
+                source_id: Some(chem.clone()),
+                is_augmented: false,
+            });
+        envelope.validate().unwrap();
+
+        let mut request = request();
+        request.plan_fingerprint = envelope.plan_fingerprint.clone();
+        request.relation_fingerprint = None;
+        request.require_relations = false;
+        request.source_ids = vec![SourceId::new("nir").unwrap()];
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope, &request).unwrap();
+        let view = arena
+            .make_view(data.handle.handle, &DataView::default())
+            .unwrap();
+        let identity = arena.view_identity(view.handle.handle).unwrap();
+
+        assert_eq!(data.relation_record_count, Some(4));
+        assert!(identity
+            .records
+            .iter()
+            .all(|record| record.source_id.as_ref() == Some(&SourceId::new("nir").unwrap())));
     }
 
     #[test]

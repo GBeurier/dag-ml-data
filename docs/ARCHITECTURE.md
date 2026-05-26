@@ -34,9 +34,11 @@ DatasetSchema + ModelInputSpec + policy
   -> host-owned data handle returned to dag-ml
 ```
 
-The current scaffold reaches validated handles/views plus Arrow C Data smokes
-for identity, sample-level targets and observation-level features. Runtime
-adapters and production host buffer lifecycles are still outside the scaffold.
+The current scaffold reaches validated handles/views, source-scoped
+materialization relations, typed numeric feature-buffer stores with manifests,
+and Arrow C Data smokes for identity, sample-level targets and
+observation-level features. Runtime adapters and production host buffer arenas
+are still outside the scaffold.
 
 ## Boundary With `dag-ml`
 

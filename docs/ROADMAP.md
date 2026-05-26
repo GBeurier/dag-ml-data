@@ -46,8 +46,11 @@ lifecycle through the public ABI. Native vtable conformance now checks
 materialize/view/export paths plus release behavior, including parent-handle
 release invalidating child views. Provider feature tables are converted once at
 provider construction into reusable column-major `NumericFeatureBuffer` values
-from `dag-ml-data-core` before Arrow export. Next: attach real production
-feature-buffer lifecycles.
+from `dag-ml-data-core`, grouped in a `NumericFeatureBufferStore`, and exposed
+through deterministic feature-buffer manifests before Arrow export. Materialized
+data handles now scope coordinator relations to requested source ids before any
+view is created. Next: replace the in-memory fixture store with production
+buffer arenas using the same manifest/projection contract.
 
 ## Phase 3: Alignment, Fusion And Collation
 
@@ -72,7 +75,7 @@ kernel now produces row-major tensor blocks with deterministic padding,
 truncation, presence masks and value-validity masks. The in-memory provider can
 now route feature-collation JSON selectors, including fused selectors, through
 provider-owned typed buffers and return deterministic `NumericTensorBlock` JSON
-or ABI-owned `DagMlDataTensorF64` buffers. Production provider lifecycles and
+or ABI-owned `DagMlDataTensorF64` buffers. Production provider arenas and
 non-f64 tensor-buffer variants are still pending.
 
 ## Phase 4: nirs4all Connector

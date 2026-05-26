@@ -8,7 +8,8 @@ use dag_ml_data_core::{
     CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock,
     CoordinatorFeatureTable, CoordinatorHandleArena, CoordinatorTargetBlock,
     CoordinatorTargetTable, DataView, DatasetSchema, FeatureFusionPolicy, NumericFeatureBuffer,
-    NumericTensorBlock, SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
+    NumericFeatureBufferStore, NumericTensorBlock, SampleAlignmentPlan, SourceFeatureBlock,
+    SourceId, TargetId,
 };
 #[cfg(test)]
 use dag_ml_data_core::{ObservationId, RepresentationId, SampleId};
@@ -728,7 +729,11 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_json(
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    match InMemoryProvider::new(envelope, target_tables, BTreeMap::new()) {
+    match InMemoryProvider::new(
+        envelope,
+        target_tables,
+        NumericFeatureBufferStore::default(),
+    ) {
         Ok(provider) => {
             *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
             DagMlDataStatusCode::Ok
@@ -821,6 +826,47 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_destroy(vtable: *mut DagMlD
         destroy((*vtable).user_data);
     }
     *vtable = empty_vtable();
+}
+
+/// Returns the provider-owned numeric feature-buffer manifests as JSON.
+///
+/// The JSON is an array of `NumericFeatureBufferManifest` values. It is a
+/// conformance/debug export for bindings that need to verify which typed
+/// buffers are loaded before creating views, feature Arrow arrays or tensors.
+///
+/// # Safety
+///
+/// `vtable` must point to a live vtable returned by
+/// `dagmldata_inmemory_provider_new_with_features_json`. Returned strings must
+/// be released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_buffer_manifest_json(
+    vtable: *const DagMlDataVTable,
+    out_json: *mut DagMlDataString,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(out_json);
+    clear_string(error_out);
+    if vtable.is_null() || (*vtable).user_data.is_null() {
+        set_string(error_out, "provider vtable or user_data is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    match provider
+        .feature_store
+        .manifests()
+        .and_then(|manifests| serde_json::to_string(&manifests).map_err(Into::into))
+    {
+        Ok(json) => {
+            set_string(out_json, json);
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
 }
 
 /// Builds a JSON row-major tensor from feature buffers owned by the Rust
@@ -1118,21 +1164,21 @@ struct InMemoryProvider {
     arena: CoordinatorHandleArena,
     envelope: CoordinatorDataPlanEnvelope,
     target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
-    feature_tables: BTreeMap<String, NumericFeatureBuffer>,
+    feature_store: NumericFeatureBufferStore,
 }
 
 impl InMemoryProvider {
     fn new(
         envelope: CoordinatorDataPlanEnvelope,
         target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
-        feature_tables: BTreeMap<String, NumericFeatureBuffer>,
+        feature_store: NumericFeatureBufferStore,
     ) -> dag_ml_data_core::Result<Self> {
         envelope.validate()?;
         Ok(Self {
             arena: CoordinatorHandleArena::new(default_owner_controller())?,
             envelope,
             target_tables,
-            feature_tables,
+            feature_store,
         })
     }
 }
@@ -1208,17 +1254,17 @@ fn parse_target_tables(
 fn parse_feature_tables(
     feature_tables_ptr: *const u8,
     feature_tables_len: usize,
-) -> dag_ml_data_core::Result<BTreeMap<String, NumericFeatureBuffer>> {
+) -> dag_ml_data_core::Result<NumericFeatureBufferStore> {
     if feature_tables_ptr.is_null() {
         if feature_tables_len != 0 {
             return Err(dag_ml_data_core::DataError::Validation(
                 "feature tables pointer is null".to_string(),
             ));
         }
-        return Ok(BTreeMap::new());
+        return Ok(NumericFeatureBufferStore::default());
     }
     if feature_tables_len == 0 {
-        return Ok(BTreeMap::new());
+        return Ok(NumericFeatureBufferStore::default());
     }
     let json = unsafe { slice::from_raw_parts(feature_tables_ptr, feature_tables_len) };
     let tables = serde_json::from_slice::<Vec<CoordinatorFeatureTable>>(json).map_err(|error| {
@@ -1226,20 +1272,7 @@ fn parse_feature_tables(
             "failed to parse feature tables JSON: {error}"
         ))
     })?;
-    let mut by_feature_set = BTreeMap::new();
-    for table in tables {
-        let feature_set_id = table.feature_set_id.clone();
-        let table = NumericFeatureBuffer::from_feature_table(table)?;
-        if by_feature_set
-            .insert(feature_set_id.clone(), table)
-            .is_some()
-        {
-            return Err(dag_ml_data_core::DataError::Validation(format!(
-                "duplicate feature table `{feature_set_id}`"
-            )));
-        }
-    }
-    Ok(by_feature_set)
+    NumericFeatureBufferStore::from_feature_tables(tables)
 }
 
 fn provider_vtable(user_data: *mut c_void) -> DagMlDataVTable {
@@ -1430,7 +1463,7 @@ unsafe extern "C" fn provider_feature_arrow(
         if feature_set_name.trim().is_empty() {
             return DagMlDataStatusCode::ValidationError;
         }
-        let feature_table = match provider.feature_tables.get(feature_set_name) {
+        let feature_table = match provider.feature_store.get(feature_set_name) {
             Some(feature_table) => feature_table,
             None => return DagMlDataStatusCode::ValidationError,
         };
@@ -1630,7 +1663,7 @@ fn provider_feature_fusion_block(
     let mut sources = Vec::with_capacity(selector.sources.len());
     for source in &selector.sources {
         let feature_table = provider
-            .feature_tables
+            .feature_store
             .get(&source.feature_set_id)
             .ok_or_else(|| {
                 dag_ml_data_core::DataError::Validation(format!(
@@ -1670,7 +1703,7 @@ fn provider_feature_collation_block(
                     "feature collation selector feature_set_id is empty".to_string(),
                 ));
             }
-            let feature_table = provider.feature_tables.get(feature_set_id).ok_or_else(|| {
+            let feature_table = provider.feature_store.get(feature_set_id).ok_or_else(|| {
                 dag_ml_data_core::DataError::Validation(format!(
                     "unknown feature table `{feature_set_id}` for collation"
                 ))
@@ -2869,6 +2902,31 @@ mod tests {
         assert_eq!(status, DagMlDataStatusCode::Ok);
         assert!(error.ptr.is_null());
         assert!(!vtable.user_data.is_null());
+
+        let mut manifest_json = DagMlDataString::default();
+        let mut manifest_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_feature_buffer_manifest_json(
+                &vtable,
+                &mut manifest_json,
+                &mut manifest_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(manifest_error.ptr.is_null());
+        let manifests: serde_json::Value =
+            serde_json::from_str(&unsafe { string_value(manifest_json) }).unwrap();
+        assert_eq!(manifests.as_array().unwrap().len(), 2);
+        assert_eq!(manifests[0]["schema_version"], serde_json::json!(1));
+        assert_eq!(manifests[0]["feature_set_id"], serde_json::json!("x"));
+        assert_eq!(manifests[0]["row_count"], serde_json::json!(4));
+        assert_eq!(manifests[0]["feature_count"], serde_json::json!(2));
+        assert_eq!(manifests[0]["estimated_value_bytes"], serde_json::json!(64));
+        assert_eq!(
+            manifests[0]["buffer_fingerprint"].as_str().unwrap().len(),
+            64
+        );
+
         let mut data_handle = 0;
         let materialize = vtable.materialize.unwrap();
         let status = unsafe {

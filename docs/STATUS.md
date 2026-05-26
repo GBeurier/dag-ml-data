@@ -29,6 +29,9 @@ Implemented:
   data handles;
 - in-memory coordinator handle arena that materializes envelopes into opaque
   handle records with run/node/phase/variant/fold/fingerprint traceability;
+- materialized data handles scope coordinator relations to the request
+  `source_ids`, so child views cannot expose observations from sources that
+  were not materialized;
 - identity-filtered view handles from `DataView`, preserving repeated
   observations while allowing sample/source/augmentation selection and honoring
   explicit requested sample order;
@@ -60,6 +63,9 @@ Implemented:
 - typed numeric feature buffers now live in `dag-ml-data-core` as reusable
   column-major `NumericFeatureBuffer` contracts with projection tests, rather
   than being private C ABI fixture logic;
+- typed numeric feature buffers are grouped behind a core
+  `NumericFeatureBufferStore` with deterministic manifests, row/feature/value
+  counts, estimated value bytes and stable buffer fingerprints;
 - provider `feature_arrow` accepts JSON fusion selectors and routes
   source-filtered provider-owned feature buffers through the core feature-fusion
   kernel;
@@ -70,6 +76,8 @@ Implemented:
   including fusion selectors, returning deterministic JSON `NumericTensorBlock`
   or ABI-owned `DagMlDataTensorF64` output without changing the provider vtable
   layout;
+- provider-owned feature-buffer manifests are exported as JSON through the C ABI
+  for binding conformance and lifecycle validation;
 - provider vtable release conformance, including parent data-handle release
   invalidating child view handles;
 - C header and linked C runtime smokes for the provider vtable and Arrow
@@ -86,9 +94,9 @@ Implemented:
 
 Not implemented yet:
 
-- production runtime data providers with real buffer/view lifecycles;
+- production runtime data providers backed by non-fixture buffer arenas;
 - production Arrow feature-buffer provider implementation beyond the current
-  in-memory typed numeric buffer conformance;
+  in-memory typed numeric buffer store conformance;
 - production provider lifecycles for fused feature exports and production tensor
   buffer export beyond the in-memory `DagMlDataTensorF64` conformance;
 - fitted adapter serialization;

@@ -41,6 +41,7 @@ def main() -> None:
         target_tables,
         feature_tables,
     ) as provider:
+        manifests = provider.feature_buffer_manifests()
         data_handle = provider.materialize_file(args.request)
         view_handle = provider.make_view(
             data_handle,
@@ -82,6 +83,10 @@ def main() -> None:
         assert tensor["values"] == [40.0, 10.0, 20.0]
         assert tensor["presence_mask"] == [True, True, True]
         assert tensor["feature_names"] == ["f1"]
+        assert manifests[0]["feature_set_id"] == "x"
+        assert manifests[0]["row_count"] == 4
+        assert manifests[0]["feature_count"] == 2
+        assert len(manifests[0]["buffer_fingerprint"]) == 64
 
         provider.release(view_handle)
         provider.release(data_handle)
@@ -92,6 +97,7 @@ def main() -> None:
                 "identity_rows": len(identity),
                 "target_rows": len(targets),
                 "feature_rows": len(features),
+                "feature_buffers": len(manifests),
                 "tensor_values": len(tensor["values"]),
                 "observations": [row["observation_id"] for row in identity],
             },

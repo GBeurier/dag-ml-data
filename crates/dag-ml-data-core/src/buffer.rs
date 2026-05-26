@@ -1,9 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
 use crate::coordinator::CoordinatorRelationSet;
 use crate::error::{DataError, Result};
 use crate::handle::{CoordinatorFeatureBlock, CoordinatorFeatureTable};
 use crate::ids::{ObservationId, RepresentationId, SourceId};
+
+pub const NUMERIC_FEATURE_BUFFER_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct NumericFeatureBuffer {
@@ -13,6 +18,25 @@ pub struct NumericFeatureBuffer {
     pub observation_ids: Vec<ObservationId>,
     columns: Vec<Vec<Option<f64>>>,
     row_index_by_observation: BTreeMap<ObservationId, usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NumericFeatureBufferManifest {
+    pub schema_version: u32,
+    pub feature_set_id: String,
+    pub representation_id: RepresentationId,
+    pub feature_names: Vec<String>,
+    pub observation_ids: Vec<ObservationId>,
+    pub row_count: usize,
+    pub feature_count: usize,
+    pub value_count: usize,
+    pub estimated_value_bytes: usize,
+    pub buffer_fingerprint: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NumericFeatureBufferStore {
+    buffers: BTreeMap<String, NumericFeatureBuffer>,
 }
 
 impl NumericFeatureBuffer {
@@ -71,6 +95,43 @@ impl NumericFeatureBuffer {
 
     pub fn estimated_value_bytes(&self) -> usize {
         self.value_count() * std::mem::size_of::<f64>()
+    }
+
+    pub fn fingerprint(&self) -> Result<String> {
+        #[derive(Serialize)]
+        struct FingerprintPayload<'a> {
+            feature_set_id: &'a str,
+            representation_id: &'a RepresentationId,
+            feature_names: &'a [String],
+            observation_ids: &'a [ObservationId],
+            columns: &'a [Vec<Option<f64>>],
+        }
+
+        let payload = FingerprintPayload {
+            feature_set_id: &self.feature_set_id,
+            representation_id: &self.representation_id,
+            feature_names: &self.feature_names,
+            observation_ids: &self.observation_ids,
+            columns: &self.columns,
+        };
+        let json = serde_json::to_vec(&payload)?;
+        let digest = Sha256::digest(json);
+        Ok(to_hex(&digest))
+    }
+
+    pub fn manifest(&self) -> Result<NumericFeatureBufferManifest> {
+        Ok(NumericFeatureBufferManifest {
+            schema_version: NUMERIC_FEATURE_BUFFER_MANIFEST_SCHEMA_VERSION,
+            feature_set_id: self.feature_set_id.clone(),
+            representation_id: self.representation_id.clone(),
+            feature_names: self.feature_names.clone(),
+            observation_ids: self.observation_ids.clone(),
+            row_count: self.row_count(),
+            feature_count: self.feature_count(),
+            value_count: self.value_count(),
+            estimated_value_bytes: self.estimated_value_bytes(),
+            buffer_fingerprint: self.fingerprint()?,
+        })
     }
 
     pub fn selected_indices(&self, columns: Option<&[String]>) -> Result<Vec<usize>> {
@@ -164,6 +225,66 @@ impl NumericFeatureBuffer {
     }
 }
 
+impl NumericFeatureBufferStore {
+    pub fn new(buffers: BTreeMap<String, NumericFeatureBuffer>) -> Result<Self> {
+        for (feature_set_id, buffer) in &buffers {
+            if feature_set_id != &buffer.feature_set_id {
+                return Err(DataError::Validation(format!(
+                    "feature buffer store key `{feature_set_id}` does not match buffer feature_set_id `{}`",
+                    buffer.feature_set_id
+                )));
+            }
+        }
+        Ok(Self { buffers })
+    }
+
+    pub fn from_feature_tables(tables: Vec<CoordinatorFeatureTable>) -> Result<Self> {
+        let mut buffers = BTreeMap::new();
+        for table in tables {
+            let feature_set_id = table.feature_set_id.clone();
+            let buffer = NumericFeatureBuffer::from_feature_table(table)?;
+            if buffers.insert(feature_set_id.clone(), buffer).is_some() {
+                return Err(DataError::Validation(format!(
+                    "duplicate feature table `{feature_set_id}`"
+                )));
+            }
+        }
+        Self::new(buffers)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buffers.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.buffers.len()
+    }
+
+    pub fn get(&self, feature_set_id: &str) -> Option<&NumericFeatureBuffer> {
+        self.buffers.get(feature_set_id)
+    }
+
+    pub fn manifests(&self) -> Result<Vec<NumericFeatureBufferManifest>> {
+        self.buffers
+            .values()
+            .map(NumericFeatureBuffer::manifest)
+            .collect()
+    }
+
+    pub fn project_relations(
+        &self,
+        feature_set_id: &str,
+        relations: &CoordinatorRelationSet,
+        source_id: Option<&SourceId>,
+        columns: Option<&[String]>,
+    ) -> Result<CoordinatorFeatureBlock> {
+        let buffer = self.buffers.get(feature_set_id).ok_or_else(|| {
+            DataError::Validation(format!("unknown feature buffer `{feature_set_id}`"))
+        })?;
+        buffer.project_relations(relations, source_id, columns)
+    }
+}
+
 fn numeric_feature_value(
     feature_set_id: &str,
     observation_id: &ObservationId,
@@ -181,6 +302,15 @@ fn numeric_feature_value(
             "feature table `{feature_set_id}` row `{observation_id}` feature `{feature_name}` must be numeric or null"
         ))),
     }
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        write!(&mut out, "{byte:02x}").expect("writing to string cannot fail");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -252,6 +382,16 @@ mod tests {
         assert_eq!(buffer.row_count(), 3);
         assert_eq!(buffer.feature_count(), 2);
         assert_eq!(buffer.value_count(), 6);
+        let manifest = buffer.manifest().unwrap();
+        assert_eq!(
+            manifest.schema_version,
+            NUMERIC_FEATURE_BUFFER_MANIFEST_SCHEMA_VERSION
+        );
+        assert_eq!(manifest.row_count, 3);
+        assert_eq!(manifest.feature_count, 2);
+        assert_eq!(manifest.value_count, 6);
+        assert_eq!(manifest.estimated_value_bytes, 48);
+        assert_eq!(manifest.buffer_fingerprint.len(), 64);
 
         let block = buffer
             .project_relations(
@@ -291,5 +431,33 @@ mod tests {
         };
         let error = buffer.project_relations(&missing, None, None).unwrap_err();
         assert!(format!("{error}").contains("has no row for observation"));
+    }
+
+    #[test]
+    fn store_manifests_and_projects_by_feature_set_id() {
+        let store = NumericFeatureBufferStore::from_feature_tables(vec![table()]).unwrap();
+        assert_eq!(store.len(), 1);
+        assert!(!store.is_empty());
+
+        let manifests = store.manifests().unwrap();
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0].feature_set_id, "x");
+        assert_eq!(manifests[0].feature_names, vec!["f0", "f1"]);
+
+        let block = store
+            .project_relations("x", &relations(), Some(&source("chem")), None)
+            .unwrap();
+        assert_eq!(block.observation_ids, vec![oid("obs.s1.chem")]);
+        assert_eq!(
+            block.values,
+            vec![vec![serde_json::json!(2.0), serde_json::json!(20.0)]]
+        );
+    }
+
+    #[test]
+    fn store_refuses_duplicate_feature_sets() {
+        let error =
+            NumericFeatureBufferStore::from_feature_tables(vec![table(), table()]).unwrap_err();
+        assert!(format!("{error}").contains("duplicate feature table"));
     }
 }

@@ -305,6 +305,10 @@ def validate_dag_ml_data_tensor_header(header: str, label: str) -> None:
         "dagmldata_inmemory_provider_feature_collation_tensor_f64_json" in header,
         f"{label} header must expose provider tensor collation",
     )
+    require(
+        "dagmldata_inmemory_provider_feature_buffer_manifest_json" in header,
+        f"{label} header must expose provider feature-buffer manifests",
+    )
 
 
 def normalize_schema(schema: Any) -> Any:
