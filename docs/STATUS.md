@@ -48,6 +48,8 @@ Implemented:
   export from validated envelopes;
 - Arrow C Data numeric target-table export through materialized view handles;
 - Arrow C Data numeric feature-table export through materialized view handles;
+- Arrow C Data numeric feature-fusion export for aligned multi-source feature
+  blocks;
 - Rust-owned in-memory provider vtable with materialize, make-view,
   view-identity, target, feature, release and destroy callbacks;
 - in-memory provider feature tables are converted once at provider creation
@@ -69,12 +71,11 @@ Not implemented yet:
 - production runtime data providers with real buffer/view lifecycles;
 - production Arrow feature-buffer provider implementation beyond the current
   in-memory typed numeric buffer conformance;
-- provider/runtime wiring for the current feature-fusion kernel and late
-  collation;
+- provider-vtable wiring for fused feature exports and late collation;
 - fitted adapter serialization;
 - nirs4all connector.
 
 Next recommended task:
 
-Attach real production feature-buffer lifecycles and wire the current
-alignment/fusion kernels into provider-backed execution.
+Attach real production feature-buffer lifecycles and wire fused feature exports
+into provider-backed execution.

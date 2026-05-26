@@ -82,6 +82,7 @@ int main(void) {
     table.feature_arrow = feature_arrow;
 
     (void)dagmldata_version();
+    (void)dagmldata_coordinator_feature_fusion_arrow_json((const uint8_t*)"{}", 2, &array, &schema, &error);
     (void)dagmldata_inmemory_provider_new_json((const uint8_t*)"{}", 2, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
     dagmldata_arrow_array_free(array);

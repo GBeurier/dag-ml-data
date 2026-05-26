@@ -4,10 +4,11 @@ use std::os::raw::c_char;
 use std::slice;
 
 use dag_ml_data_core::{
-    schema_fingerprint, CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope,
-    CoordinatorFeatureBlock, CoordinatorFeatureTable, CoordinatorHandleArena,
-    CoordinatorTargetBlock, CoordinatorTargetTable, DataView, DatasetSchema, ObservationId,
-    RepresentationId, SampleId, TargetId,
+    fuse_feature_blocks, schema_fingerprint, CoordinatorDataMaterializationRequest,
+    CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
+    CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
+    DatasetSchema, FeatureFusionPolicy, ObservationId, RepresentationId, SampleAlignmentPlan,
+    SampleId, SourceFeatureBlock, TargetId,
 };
 use serde::Deserialize;
 
@@ -396,6 +397,68 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_arrow_json(
     }
 }
 
+/// Builds an Arrow C Data fused feature table from already materialized
+/// coordinator feature blocks.
+///
+/// The request JSON shape is `{ feature_set_id, sources, alignment, policy? }`,
+/// where `sources` is a list of `{ source_id, block }`. The returned table has
+/// `observation_id`, `sample_id` and one numeric column per fused feature.
+/// Reference-source repetitions are preserved; singleton non-reference rows are
+/// broadcast; ambiguous repeated non-reference rows are rejected.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `out_arrow_array`, `out_arrow_schema` and
+/// `error_out` may be null. Returned Arrow pointers must be released with
+/// `dagmldata_arrow_array_free` and `dagmldata_arrow_schema_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_coordinator_feature_fusion_arrow_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_arrow_array: *mut *mut ArrowArray,
+    out_arrow_schema: *mut *mut ArrowSchema,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_arrow_array(out_arrow_array);
+    clear_arrow_schema(out_arrow_schema);
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_string(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_arrow_array.is_null() || out_arrow_schema.is_null() {
+        set_string(error_out, "arrow output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<CoordinatorFeatureFusionArrowRequest>(json) {
+        Ok(request) => match fuse_feature_blocks(
+            request.feature_set_id,
+            &request.sources,
+            &request.alignment,
+            &request.policy,
+        )
+        .and_then(|block| build_feature_arrow(&block))
+        {
+            Ok((array, schema)) => {
+                *out_arrow_array = Box::into_raw(Box::new(array));
+                *out_arrow_schema = Box::into_raw(Box::new(schema));
+                DagMlDataStatusCode::Ok
+            }
+            Err(error) => {
+                set_string(error_out, error.to_string());
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Creates a Rust-owned in-memory provider and returns its C ABI vtable.
 ///
 /// `envelope_ptr/envelope_len` must encode a `CoordinatorDataPlanEnvelope`.
@@ -593,6 +656,15 @@ struct CoordinatorFeatureArrowRequest {
     feature_table: CoordinatorFeatureTable,
     #[serde(default = "default_owner_controller")]
     owner_controller: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoordinatorFeatureFusionArrowRequest {
+    feature_set_id: String,
+    sources: Vec<SourceFeatureBlock>,
+    alignment: SampleAlignmentPlan,
+    #[serde(default)]
+    policy: FeatureFusionPolicy,
 }
 
 fn default_owner_controller() -> String {
@@ -1803,6 +1875,96 @@ mod tests {
                 ]
             );
             assert_eq!(f64_values(array_children[2]), vec![Some(10.0), Some(20.0)]);
+            dagmldata_arrow_array_free(array);
+            dagmldata_arrow_schema_free(schema);
+        }
+    }
+
+    #[test]
+    fn exports_coordinator_feature_fusion_arrow_over_abi() {
+        let request = serde_json::json!({
+            "feature_set_id": "fused",
+            "sources": [
+                {
+                    "source_id": "nir",
+                    "block": {
+                        "feature_set_id": "nir_x",
+                        "representation_id": "tabular_numeric",
+                        "feature_names": ["n0"],
+                        "observation_ids": ["obs.S001.r1", "obs.S001.r2", "obs.S002.r1"],
+                        "sample_ids": ["S001", "S001", "S002"],
+                        "values": [[1.0], [2.0], [3.0]]
+                    }
+                },
+                {
+                    "source_id": "chem",
+                    "block": {
+                        "feature_set_id": "chem_x",
+                        "representation_id": "tabular_numeric",
+                        "feature_names": ["c0"],
+                        "observation_ids": ["chem.S001", "chem.S002"],
+                        "sample_ids": ["S001", "S002"],
+                        "values": [[10.0], [20.0]]
+                    }
+                }
+            ],
+            "alignment": {
+                "mode": "inner",
+                "sample_ids": ["S001", "S002"],
+                "masks": [
+                    {"source_id": "nir", "sample_ids": ["S001", "S002"], "present": [true, true]},
+                    {"source_id": "chem", "sample_ids": ["S001", "S002"], "present": [true, true]}
+                ]
+            }
+        });
+        let request = serde_json::to_vec(&request).unwrap();
+        let mut array = std::ptr::null_mut();
+        let mut schema = std::ptr::null_mut();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_coordinator_feature_fusion_arrow_json(
+                request.as_ptr(),
+                request.len(),
+                &mut array,
+                &mut schema,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        unsafe {
+            assert_eq!((*array).length, 3);
+            assert_eq!((*array).n_children, 4);
+            let array_children =
+                slice::from_raw_parts((*array).children, (*array).n_children as usize);
+            let schema_children =
+                slice::from_raw_parts((*schema).children, (*schema).n_children as usize);
+            assert_eq!(
+                utf8_values(array_children[0]),
+                vec![
+                    Some("obs.S001.r1".to_string()),
+                    Some("obs.S001.r2".to_string()),
+                    Some("obs.S002.r1".to_string()),
+                ]
+            );
+            assert_eq!(
+                CStr::from_ptr((*schema_children[2]).name).to_str().unwrap(),
+                "nir.n0"
+            );
+            assert_eq!(
+                CStr::from_ptr((*schema_children[3]).name).to_str().unwrap(),
+                "chem.c0"
+            );
+            assert_eq!(
+                f64_values(array_children[2]),
+                vec![Some(1.0), Some(2.0), Some(3.0)]
+            );
+            assert_eq!(
+                f64_values(array_children[3]),
+                vec![Some(10.0), Some(10.0), Some(20.0)]
+            );
             dagmldata_arrow_array_free(array);
             dagmldata_arrow_schema_free(schema);
         }
