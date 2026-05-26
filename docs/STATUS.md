@@ -1,7 +1,8 @@
 # Status
 
-Current state: foundation scaffold plus coordinator data-plan envelope, first
-handle materialization smoke and minimal Arrow identity export.
+Current state: foundation scaffold plus coordinator data-plan envelope,
+materialized data/view handle smokes, target alignment smoke and minimal Arrow
+identity export.
 
 Implemented:
 
@@ -20,6 +21,10 @@ Implemented:
   data handles;
 - in-memory coordinator handle arena that materializes envelopes into opaque
   handle records with run/node/phase/variant/fold/fingerprint traceability;
+- identity-filtered view handles from `DataView`, preserving repeated
+  observations while allowing sample/source/augmentation selection;
+- sample-level target value alignment for view handles with deterministic
+  de-duplication across repeated observations;
 - CLI `materialize-envelope` smoke command;
 - Arrow C Data ABI structs, release helpers and coordinator identity-table
   export from validated envelopes;
@@ -31,6 +36,7 @@ Not implemented yet:
 
 - production runtime data providers with real buffer/view lifecycles;
 - full Arrow buffer/view provider implementation beyond identity-table smoke;
+- Arrow target export;
 - alignment and fusion execution;
 - fitted adapter serialization;
 - nirs4all connector.

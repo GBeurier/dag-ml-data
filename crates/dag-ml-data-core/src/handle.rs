@@ -3,14 +3,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::coordinator::{validate_fingerprint, CoordinatorDataPlanEnvelope};
+use crate::coordinator::{
+    validate_fingerprint, CoordinatorDataPlanEnvelope, CoordinatorRelation, CoordinatorRelationSet,
+};
 use crate::error::{DataError, Result};
-use crate::ids::{RepresentationId, SourceId};
+use crate::ids::{RepresentationId, SampleId, SourceId, TargetId};
+use crate::model::DataView;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoordinatorHandleKind {
     Data,
+    View,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -96,11 +100,63 @@ pub struct CoordinatorDataHandleRecord {
     pub relation_record_count: Option<usize>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorDataViewRecord {
+    pub handle: CoordinatorHandleRef,
+    pub parent_handle: CoordinatorHandleRef,
+    pub view: DataView,
+    pub sample_count: usize,
+    pub relation_record_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorTargetValue {
+    pub sample_id: SampleId,
+    pub value: serde_json::Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorTargetTable {
+    pub target_id: TargetId,
+    pub values: Vec<CoordinatorTargetValue>,
+}
+
+impl CoordinatorTargetTable {
+    pub fn validate(&self) -> Result<()> {
+        if self.values.is_empty() {
+            return Err(DataError::Validation(format!(
+                "target table `{}` contains no values",
+                self.target_id
+            )));
+        }
+        let mut seen = BTreeSet::new();
+        for value in &self.values {
+            if !seen.insert(&value.sample_id) {
+                return Err(DataError::Validation(format!(
+                    "target table `{}` contains duplicate sample `{}`",
+                    self.target_id, value.sample_id
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorTargetBlock {
+    pub target_id: TargetId,
+    pub sample_ids: Vec<SampleId>,
+    pub values: Vec<serde_json::Value>,
+}
+
 #[derive(Debug)]
 pub struct CoordinatorHandleArena {
     owner_controller: String,
     next_handle: RefCell<u64>,
     records: RefCell<BTreeMap<u64, CoordinatorDataHandleRecord>>,
+    data_relations: RefCell<BTreeMap<u64, CoordinatorRelationSet>>,
+    view_records: RefCell<BTreeMap<u64, CoordinatorDataViewRecord>>,
+    view_relations: RefCell<BTreeMap<u64, CoordinatorRelationSet>>,
 }
 
 impl CoordinatorHandleArena {
@@ -111,6 +167,9 @@ impl CoordinatorHandleArena {
             owner_controller,
             next_handle: RefCell::new(1),
             records: RefCell::new(BTreeMap::new()),
+            data_relations: RefCell::new(BTreeMap::new()),
+            view_records: RefCell::new(BTreeMap::new()),
+            view_relations: RefCell::new(BTreeMap::new()),
         })
     }
 
@@ -159,7 +218,117 @@ impl CoordinatorHandleArena {
         self.records
             .borrow_mut()
             .insert(handle.handle, record.clone());
+        if let Some(relations) = envelope.coordinator_relations.clone() {
+            self.data_relations
+                .borrow_mut()
+                .insert(handle.handle, relations);
+        }
         Ok(record)
+    }
+
+    pub fn make_view(
+        &self,
+        data_handle: u64,
+        view: &DataView,
+    ) -> Result<CoordinatorDataViewRecord> {
+        validate_view(view)?;
+        let parent = self
+            .records
+            .borrow()
+            .get(&data_handle)
+            .cloned()
+            .ok_or_else(|| DataError::Validation(format!("unknown data handle `{data_handle}`")))?;
+        let relations = self
+            .data_relations
+            .borrow()
+            .get(&data_handle)
+            .cloned()
+            .ok_or_else(|| {
+                DataError::Validation(format!(
+                    "data handle `{data_handle}` has no coordinator relations"
+                ))
+            })?;
+        let filtered = filter_relations(&relations.records, view)?;
+        let sample_count = unique_sample_count(&filtered);
+        let relation_record_count = filtered.len();
+        let handle = CoordinatorHandleRef {
+            handle: self.next_handle(),
+            kind: CoordinatorHandleKind::View,
+            owner_controller: self.owner_controller.clone(),
+        };
+        let record = CoordinatorDataViewRecord {
+            handle: handle.clone(),
+            parent_handle: parent.handle,
+            view: view.clone(),
+            sample_count,
+            relation_record_count,
+        };
+        self.view_records
+            .borrow_mut()
+            .insert(handle.handle, record.clone());
+        self.view_relations
+            .borrow_mut()
+            .insert(handle.handle, CoordinatorRelationSet { records: filtered });
+        Ok(record)
+    }
+
+    pub fn view_record(&self, handle: u64) -> Option<CoordinatorDataViewRecord> {
+        self.view_records.borrow().get(&handle).cloned()
+    }
+
+    pub fn view_identity(&self, handle: u64) -> Result<CoordinatorRelationSet> {
+        self.view_relations
+            .borrow()
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| DataError::Validation(format!("unknown view handle `{handle}`")))
+    }
+
+    pub fn target_values(
+        &self,
+        view_handle: u64,
+        target_table: &CoordinatorTargetTable,
+    ) -> Result<CoordinatorTargetBlock> {
+        target_table.validate()?;
+        let relations = self.view_identity(view_handle)?;
+        let values_by_sample = target_table
+            .values
+            .iter()
+            .map(|value| (&value.sample_id, &value.value))
+            .collect::<BTreeMap<_, _>>();
+        let mut seen_samples = BTreeSet::new();
+        let mut sample_ids = Vec::new();
+        let mut values = Vec::new();
+        for relation in relations.records.iter().filter(|relation| {
+            relation
+                .target_id
+                .as_ref()
+                .map(|target_id| target_id == &target_table.target_id)
+                .unwrap_or(true)
+        }) {
+            if !seen_samples.insert(&relation.sample_id) {
+                continue;
+            }
+            let value = values_by_sample.get(&relation.sample_id).ok_or_else(|| {
+                DataError::Validation(format!(
+                    "target table `{}` has no value for sample `{}`",
+                    target_table.target_id, relation.sample_id
+                ))
+            })?;
+            sample_ids.push(relation.sample_id.clone());
+            values.push((*value).clone());
+        }
+        if sample_ids.is_empty() {
+            return Err(DataError::Validation(format!(
+                "view `{view_handle}` contains no samples for target `{}`",
+                target_table.target_id
+            )));
+        }
+        Ok(CoordinatorTargetBlock {
+            target_id: target_table.target_id.clone(),
+            sample_ids,
+            values,
+        })
     }
 
     pub fn handle_record(&self, handle: u64) -> Option<CoordinatorDataHandleRecord> {
@@ -241,9 +410,94 @@ fn validate_non_empty(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_view(view: &DataView) -> Result<()> {
+    if let Some(samples) = &view.sample_ids {
+        let unique = samples.iter().collect::<BTreeSet<_>>();
+        if unique.len() != samples.len() {
+            return Err(DataError::Validation(
+                "data view contains duplicate sample ids".to_string(),
+            ));
+        }
+    }
+    if let Some(sources) = &view.source_ids {
+        let unique = sources.iter().collect::<BTreeSet<_>>();
+        if unique.len() != sources.len() {
+            return Err(DataError::Validation(
+                "data view contains duplicate source ids".to_string(),
+            ));
+        }
+    }
+    if let Some(columns) = &view.columns {
+        let unique = columns.iter().collect::<BTreeSet<_>>();
+        if unique.len() != columns.len() {
+            return Err(DataError::Validation(
+                "data view contains duplicate columns".to_string(),
+            ));
+        }
+        if columns.iter().any(|column| column.trim().is_empty()) {
+            return Err(DataError::Validation(
+                "data view contains an empty column".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn filter_relations(
+    relations: &[CoordinatorRelation],
+    view: &DataView,
+) -> Result<Vec<CoordinatorRelation>> {
+    let sample_filter = view
+        .sample_ids
+        .as_ref()
+        .map(|sample_ids| sample_ids.iter().collect::<BTreeSet<_>>());
+    let source_filter = view
+        .source_ids
+        .as_ref()
+        .map(|source_ids| source_ids.iter().collect::<BTreeSet<_>>());
+    let filtered = relations
+        .iter()
+        .filter(|relation| {
+            sample_filter
+                .as_ref()
+                .map(|samples| samples.contains(&relation.sample_id))
+                .unwrap_or(true)
+        })
+        .filter(|relation| {
+            source_filter
+                .as_ref()
+                .map(|sources| {
+                    relation
+                        .source_id
+                        .as_ref()
+                        .map(|source_id| sources.contains(source_id))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|relation| view.include_augmented || !relation.is_augmented)
+        .cloned()
+        .collect::<Vec<_>>();
+    if filtered.is_empty() {
+        return Err(DataError::Validation(
+            "data view selected no coordinator relations".to_string(),
+        ));
+    }
+    Ok(filtered)
+}
+
+fn unique_sample_count(relations: &[CoordinatorRelation]) -> usize {
+    relations
+        .iter()
+        .map(|relation| &relation.sample_id)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn envelope() -> CoordinatorDataPlanEnvelope {
         serde_json::from_str(include_str!(
@@ -281,5 +535,63 @@ mod tests {
         request.plan_fingerprint = "0".repeat(64);
 
         assert!(arena.materialize(&envelope(), &request).is_err());
+    }
+
+    #[test]
+    fn view_filters_augmented_rows_and_preserves_repetition_identity() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view = DataView {
+            sample_ids: Some(vec![SampleId::new("S001").unwrap()]),
+            include_augmented: false,
+            ..Default::default()
+        };
+
+        let view_record = arena.make_view(data.handle.handle, &view).unwrap();
+        let identity = arena.view_identity(view_record.handle.handle).unwrap();
+
+        assert_eq!(view_record.handle.kind, CoordinatorHandleKind::View);
+        assert_eq!(view_record.sample_count, 1);
+        assert_eq!(view_record.relation_record_count, 2);
+        assert_eq!(identity.records.len(), 2);
+        assert_eq!(identity.records[0].observation_id.as_str(), "obs.S001.base");
+        assert_eq!(identity.records[1].observation_id.as_str(), "obs.S001.rep1");
+        assert_eq!(
+            arena.view_record(view_record.handle.handle),
+            Some(view_record)
+        );
+    }
+
+    #[test]
+    fn target_values_are_sample_level_and_dedup_repetitions() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view = DataView {
+            sample_ids: Some(vec![SampleId::new("S001").unwrap()]),
+            include_augmented: false,
+            ..Default::default()
+        };
+        let view_record = arena.make_view(data.handle.handle, &view).unwrap();
+        let target_table = CoordinatorTargetTable {
+            target_id: TargetId::new("y").unwrap(),
+            values: vec![
+                CoordinatorTargetValue {
+                    sample_id: SampleId::new("S001").unwrap(),
+                    value: json!(42.0),
+                },
+                CoordinatorTargetValue {
+                    sample_id: SampleId::new("S002").unwrap(),
+                    value: json!(7.0),
+                },
+            ],
+        };
+
+        let target = arena
+            .target_values(view_record.handle.handle, &target_table)
+            .unwrap();
+
+        assert_eq!(target.target_id.as_str(), "y");
+        assert_eq!(target.sample_ids, vec![SampleId::new("S001").unwrap()]);
+        assert_eq!(target.values, vec![json!(42.0)]);
     }
 }
