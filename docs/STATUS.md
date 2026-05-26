@@ -34,6 +34,8 @@ Implemented:
 - Arrow C Data numeric feature-table export through materialized view handles;
 - Rust-owned in-memory provider vtable with materialize, make-view,
   view-identity, target, feature, release and destroy callbacks;
+- provider vtable release conformance, including parent data-handle release
+  invalidating child view handles;
 - C header and linked C runtime smokes for the provider vtable and Arrow
   signatures;
 - Python `ctypes` smoke for the same provider lifecycle;

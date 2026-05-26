@@ -1811,6 +1811,52 @@ mod tests {
         assert!(released_array.is_null());
         assert!(released_schema.is_null());
 
+        let mut child_view_handle = 0;
+        let status = unsafe {
+            make_view(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: view_json.as_ptr(),
+                    len: view_json.len(),
+                },
+                &mut child_view_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert_ne!(child_view_handle, 0);
+        unsafe {
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+        }
+        let mut child_array = std::ptr::null_mut();
+        let mut child_schema = std::ptr::null_mut();
+        let status = unsafe {
+            view_identity(
+                vtable.user_data,
+                child_view_handle,
+                &mut child_array,
+                &mut child_schema,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(child_array.is_null());
+        assert!(child_schema.is_null());
+
+        let mut orphan_view_handle = 0;
+        let status = unsafe {
+            make_view(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: view_json.as_ptr(),
+                    len: view_json.len(),
+                },
+                &mut orphan_view_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert_eq!(orphan_view_handle, 0);
+
         unsafe {
             dagmldata_inmemory_provider_destroy(&mut vtable);
         }

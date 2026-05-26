@@ -13,7 +13,7 @@
 | Relations | duplicate observations, group consistency, augmentation origin validity |
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability |
 | Views/features/targets | sample/source/augmentation filtering, repetition-preserving identity, observation-level feature alignment, feature-column filtering, sample-level target de-duplication |
-| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature Arrow exports, in-memory provider vtable lifecycle, C header syntax, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
+| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature Arrow exports, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
 
 ## Conformance Tests
 

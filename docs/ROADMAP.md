@@ -40,8 +40,9 @@ The C ABI now exposes a Rust-owned in-memory provider vtable that materializes
 data handles, creates view handles, exports view identity, exports numeric
 targets, exports numeric observation-level features, and supports
 release/destroy callbacks. A stdlib-only Python example now exercises the same
-lifecycle through the public ABI. Next: add native provider conformance against
-that behavior, then attach real feature-buffer lifecycles.
+lifecycle through the public ABI. Native vtable conformance now checks
+materialize/view/export paths plus release behavior, including parent-handle
+release invalidating child views. Next: attach real feature-buffer lifecycles.
 
 ## Phase 3: Alignment And Fusion
 
