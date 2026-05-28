@@ -220,6 +220,8 @@ pub struct DataView {
     pub include_augmented: bool,
     #[serde(default)]
     pub include_excluded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_view: Option<crate::coordinator::CoordinatorBranchView>,
     #[serde(default)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }

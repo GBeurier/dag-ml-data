@@ -31,6 +31,134 @@ pub struct CoordinatorRelation {
     pub is_augmented: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorBranchViewMode {
+    Separation,
+    BySource,
+    ByMetadata,
+    ByTag,
+    ByFilter,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorBranchViewSelector {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_ids: Vec<SourceId>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorBranchView {
+    pub view_id: String,
+    pub branch_id: String,
+    pub mode: CoordinatorBranchViewMode,
+    pub selector: CoordinatorBranchViewSelector,
+    #[serde(default)]
+    pub allow_overlap: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl CoordinatorBranchViewSelector {
+    // Error message phrasings are intentionally more specific than dag-ml's
+    // generic `validate_unique_strings`/`validate_string_list_entries`
+    // helpers; host adapters that present a unified error surface across the
+    // two repos must avoid cross-repo string matching on these messages.
+    pub fn validate(&self, label: &str) -> Result<()> {
+        if self.source_ids.is_empty()
+            && self.metadata.is_empty()
+            && self.tags.is_empty()
+            && self.filter.is_none()
+        {
+            return Err(DataError::Validation(format!(
+                "{label} selector must constrain source_ids, metadata, tags or filter"
+            )));
+        }
+        let mut seen_sources = std::collections::BTreeSet::new();
+        for source_id in &self.source_ids {
+            if !seen_sources.insert(source_id) {
+                return Err(DataError::Validation(format!(
+                    "{label} selector source_ids contains duplicate `{source_id}`"
+                )));
+            }
+        }
+        let mut seen_tags = std::collections::BTreeSet::new();
+        for tag in &self.tags {
+            if tag.trim().is_empty() {
+                return Err(DataError::Validation(format!(
+                    "{label} selector tags contains an empty entry"
+                )));
+            }
+            if !seen_tags.insert(tag) {
+                return Err(DataError::Validation(format!(
+                    "{label} selector tags contains duplicate `{tag}`"
+                )));
+            }
+        }
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DataError::Validation(format!(
+                    "{label} selector contains an empty metadata key"
+                )));
+            }
+        }
+        if matches!(self.filter, Some(serde_json::Value::Null)) {
+            return Err(DataError::Validation(format!(
+                "{label} selector filter must not be null"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl CoordinatorBranchView {
+    pub fn validate(&self) -> Result<()> {
+        if self.view_id.trim().is_empty() {
+            return Err(DataError::Validation(
+                "coordinator branch view view_id is empty".to_string(),
+            ));
+        }
+        if self.branch_id.trim().is_empty() {
+            return Err(DataError::Validation(format!(
+                "coordinator branch view `{}` branch_id is empty",
+                self.view_id
+            )));
+        }
+        let label = format!("coordinator branch view `{}`", self.view_id);
+        self.selector.validate(&label)?;
+        match self.mode {
+            CoordinatorBranchViewMode::BySource if self.selector.source_ids.is_empty() => Err(
+                DataError::Validation(format!("{label} mode=by_source requires source_ids")),
+            ),
+            CoordinatorBranchViewMode::ByMetadata if self.selector.metadata.is_empty() => Err(
+                DataError::Validation(format!("{label} mode=by_metadata requires metadata")),
+            ),
+            CoordinatorBranchViewMode::ByTag if self.selector.tags.is_empty() => Err(
+                DataError::Validation(format!("{label} mode=by_tag requires tags")),
+            ),
+            CoordinatorBranchViewMode::ByFilter if self.selector.filter.is_none() => Err(
+                DataError::Validation(format!("{label} mode=by_filter requires filter")),
+            ),
+            _ => {
+                for key in self.metadata.keys() {
+                    if key.trim().is_empty() {
+                        return Err(DataError::Validation(format!(
+                            "{label} metadata contains an empty key"
+                        )));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CoordinatorRelationSet {
     #[serde(default)]
@@ -287,5 +415,72 @@ mod tests {
             .unwrap()
             .iter()
             .any(|field| field.as_str() == Some("schema_version")));
+    }
+
+    #[test]
+    fn coordinator_branch_view_validates_mode_field_agreement() {
+        let mut view = CoordinatorBranchView {
+            view_id: "branch_view:1".to_string(),
+            branch_id: "branch:1".to_string(),
+            mode: CoordinatorBranchViewMode::BySource,
+            selector: CoordinatorBranchViewSelector {
+                source_ids: vec![SourceId::new("nir").unwrap()],
+                ..Default::default()
+            },
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        };
+        view.validate().unwrap();
+
+        view.selector.source_ids.clear();
+        view.selector.tags = vec!["clean".to_string()];
+        let error = view.validate().unwrap_err();
+        assert!(format!("{error}").contains("mode=by_source requires source_ids"));
+
+        view.mode = CoordinatorBranchViewMode::ByMetadata;
+        view.selector.tags.clear();
+        let error = view.validate().unwrap_err();
+        assert!(format!("{error}").contains("must constrain source_ids, metadata, tags or filter"));
+
+        view.selector
+            .metadata
+            .insert("site".to_string(), serde_json::json!("a"));
+        view.validate().unwrap();
+
+        view.view_id = "".to_string();
+        let error = view.validate().unwrap_err();
+        assert!(format!("{error}").contains("view_id is empty"));
+    }
+
+    #[test]
+    fn coordinator_branch_view_selector_refuses_duplicates_and_empties() {
+        let label = "branch view `branch_view:1`";
+        let selector = CoordinatorBranchViewSelector {
+            source_ids: vec![SourceId::new("nir").unwrap(), SourceId::new("nir").unwrap()],
+            ..Default::default()
+        };
+        let error = selector.validate(label).unwrap_err();
+        assert!(format!("{error}").contains("source_ids contains duplicate"));
+
+        let selector = CoordinatorBranchViewSelector {
+            tags: vec!["clean".to_string(), "clean".to_string()],
+            ..Default::default()
+        };
+        let error = selector.validate(label).unwrap_err();
+        assert!(format!("{error}").contains("tags contains duplicate"));
+
+        let selector = CoordinatorBranchViewSelector {
+            tags: vec!["   ".to_string()],
+            ..Default::default()
+        };
+        let error = selector.validate(label).unwrap_err();
+        assert!(format!("{error}").contains("tags contains an empty entry"));
+
+        let selector = CoordinatorBranchViewSelector {
+            filter: Some(serde_json::Value::Null),
+            ..Default::default()
+        };
+        let error = selector.validate(label).unwrap_err();
+        assert!(format!("{error}").contains("filter must not be null"));
     }
 }

@@ -651,6 +651,9 @@ fn validate_view(view: &DataView) -> Result<()> {
             ));
         }
     }
+    if let Some(branch_view) = &view.branch_view {
+        branch_view.validate()?;
+    }
     Ok(())
 }
 
@@ -666,6 +669,32 @@ fn filter_relations(
         .source_ids
         .as_ref()
         .map(|source_ids| source_ids.iter().collect::<BTreeSet<_>>());
+    // When both `view.source_ids` and `view.branch_view` constrain sources, the
+    // two are composed as intersection: a relation must pass both filters.
+    // `source_ids` is the materialization scope (sources loaded into the parent
+    // handle); the branch selector is the subset this branch cares about.
+    // Intersection prevents a branch from silently widening past what was
+    // actually materialized.
+    let branch_source_filter = match view.branch_view.as_ref() {
+        Some(branch_view) => match branch_view.mode {
+            crate::coordinator::CoordinatorBranchViewMode::BySource => Some(
+                branch_view
+                    .selector
+                    .source_ids
+                    .iter()
+                    .collect::<BTreeSet<_>>(),
+            ),
+            crate::coordinator::CoordinatorBranchViewMode::Separation => None,
+            other_mode => {
+                return Err(DataError::Validation(format!(
+                    "coordinator branch view `{}` mode={:?} requires host-side filtering; \
+                     in-memory arena only natively executes by_source",
+                    branch_view.view_id, other_mode,
+                )));
+            }
+        },
+        None => None,
+    };
     let mut filtered = relations
         .iter()
         .enumerate()
@@ -679,6 +708,19 @@ fn filter_relations(
         .filter(|relation| {
             let relation = relation.1;
             source_filter
+                .as_ref()
+                .map(|sources| {
+                    relation
+                        .source_id
+                        .as_ref()
+                        .map(|source_id| sources.contains(source_id))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|relation| {
+            let relation = relation.1;
+            branch_source_filter
                 .as_ref()
                 .map(|sources| {
                     relation
@@ -884,6 +926,163 @@ mod tests {
             arena.view_record(view_record.handle.handle),
             Some(view_record)
         );
+    }
+
+    #[test]
+    fn branch_view_by_source_filters_relations_to_branch_sources() {
+        use crate::coordinator::{
+            CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
+        };
+
+        let mut envelope = envelope();
+        let chem = SourceId::new("chem").unwrap();
+        envelope.plan.steps.push(crate::plan::DataPlanStep {
+            kind: crate::plan::DataPlanStepKind::Materialize,
+            source_id: Some(chem.clone()),
+            adapter_id: None,
+            input_representation: None,
+            output_representation: Some(RepresentationId::new("tabular_numeric").unwrap()),
+            fit_scope: crate::plan::FitScope::Stateless,
+            requires_user_choice: false,
+            metadata: BTreeMap::new(),
+        });
+        envelope.plan_fingerprint = crate::data_plan_fingerprint(&envelope.plan).unwrap();
+        envelope.relation_fingerprint = None;
+        envelope
+            .coordinator_relations
+            .as_mut()
+            .unwrap()
+            .records
+            .push(CoordinatorRelation {
+                observation_id: ObservationId::new("chem.S001").unwrap(),
+                sample_id: SampleId::new("S001").unwrap(),
+                target_id: Some(TargetId::new("y").unwrap()),
+                group_id: None,
+                origin_sample_id: None,
+                source_id: Some(chem.clone()),
+                is_augmented: false,
+            });
+        envelope.validate().unwrap();
+        let mut request = request();
+        request.plan_fingerprint = envelope.plan_fingerprint.clone();
+        request.relation_fingerprint = None;
+        request.require_relations = false;
+        request.source_ids = vec![SourceId::new("nir").unwrap(), chem.clone()];
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope, &request).unwrap();
+        let view = DataView {
+            branch_view: Some(CoordinatorBranchView {
+                view_id: "branch_view:nir".to_string(),
+                branch_id: "branch:nir_only".to_string(),
+                mode: CoordinatorBranchViewMode::BySource,
+                selector: CoordinatorBranchViewSelector {
+                    source_ids: vec![SourceId::new("nir").unwrap()],
+                    ..Default::default()
+                },
+                allow_overlap: false,
+                metadata: BTreeMap::new(),
+            }),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let view_record = arena.make_view(data.handle.handle, &view).unwrap();
+        let identity = arena.view_identity(view_record.handle.handle).unwrap();
+
+        assert!(identity
+            .records
+            .iter()
+            .all(|record| record.source_id.as_ref() == Some(&SourceId::new("nir").unwrap())));
+        assert!(identity.records.iter().any(|record| record
+            .observation_id
+            .as_str()
+            .starts_with("obs.S001")
+            || record.observation_id.as_str().starts_with("obs.S002")));
+    }
+
+    #[test]
+    fn branch_view_separation_does_not_restrict_relations() {
+        use crate::coordinator::{
+            CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
+        };
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view = DataView {
+            branch_view: Some(CoordinatorBranchView {
+                view_id: "branch_view:separation".to_string(),
+                branch_id: "branch:0".to_string(),
+                mode: CoordinatorBranchViewMode::Separation,
+                selector: CoordinatorBranchViewSelector {
+                    tags: vec!["clean".to_string()],
+                    ..Default::default()
+                },
+                allow_overlap: false,
+                metadata: BTreeMap::new(),
+            }),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let view_record = arena.make_view(data.handle.handle, &view).unwrap();
+        let identity = arena.view_identity(view_record.handle.handle).unwrap();
+        assert!(!identity.records.is_empty());
+    }
+
+    #[test]
+    fn branch_view_by_metadata_tag_filter_modes_require_host_filtering() {
+        use crate::coordinator::{
+            CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
+        };
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        for (mode, selector, label) in [
+            (
+                CoordinatorBranchViewMode::ByMetadata,
+                CoordinatorBranchViewSelector {
+                    metadata: BTreeMap::from([("site".to_string(), serde_json::json!("a"))]),
+                    ..Default::default()
+                },
+                "by_metadata",
+            ),
+            (
+                CoordinatorBranchViewMode::ByTag,
+                CoordinatorBranchViewSelector {
+                    tags: vec!["clean".to_string()],
+                    ..Default::default()
+                },
+                "by_tag",
+            ),
+            (
+                CoordinatorBranchViewMode::ByFilter,
+                CoordinatorBranchViewSelector {
+                    filter: Some(serde_json::json!({"op": "always"})),
+                    ..Default::default()
+                },
+                "by_filter",
+            ),
+        ] {
+            let view = DataView {
+                branch_view: Some(CoordinatorBranchView {
+                    view_id: format!("branch_view:{label}"),
+                    branch_id: "branch:0".to_string(),
+                    mode,
+                    selector,
+                    allow_overlap: false,
+                    metadata: BTreeMap::new(),
+                }),
+                include_augmented: true,
+                ..Default::default()
+            };
+            let error = arena
+                .make_view(data.handle.handle, &view)
+                .expect_err("host-only branch view modes must reject in-memory execution");
+            let message = format!("{error}");
+            assert!(
+                message.contains("requires host-side filtering"),
+                "expected host-filtering error for {label}, got: {message}"
+            );
+        }
     }
 
     #[test]

@@ -113,6 +113,17 @@ Implemented:
   to infinity, or non-finite input). The C ABI exposes
   `DAG_ML_DATA_TENSOR_F32_ABI_VERSION`, `dagmldata_tensor_f32_free` and the
   matching `coordinator`/`inmemory_provider` collation entry points;
+- `DataView` now carries an optional `branch_view` field shaped as
+  `CoordinatorBranchView` (`view_id`, `branch_id`, `mode`, `selector`,
+  `allow_overlap`, `metadata`), mirroring `dag-ml`'s `BranchViewPlan` wire
+  contract. `make_view` validates the mode↔selector field agreement and
+  natively executes `by_source` branch views as an additional intersection
+  over the existing source filter. `separation` mode passes through (the
+  selector annotates branch identity and the host scheduler owns
+  non-overlap), while `by_metadata`, `by_tag` and `by_filter` modes pass
+  validation but are rejected for in-memory execution with a clear
+  `requires host-side filtering` error so production providers can route
+  them to native filter backends without breaking ABI compatibility;
 - data-handle-scoped feature-buffer bindings are exported as JSON through the C
   ABI and become invalid when the parent data handle is released;
 - provider vtable release conformance, including parent data-handle release
@@ -141,7 +152,10 @@ Not implemented yet:
 
 Next recommended task:
 
-Broaden the provider arena beyond the in-memory typed numeric buffer path
-toward production buffer sources (file-backed, mmap-backed, host-callback),
-then start consuming `dag-ml` `branch_view_plans` for selector-driven
-branch-local materialization.
+Publish a standalone `coordinator_branch_view.schema.json` (mirroring the
+`branch_view_plan` shape currently inlined in `dag-ml`'s
+`campaign_spec.schema.json` `$defs`) plus a cross-repo conformance check
+through `scripts/validate_contracts.py`, then add a fitted adapter
+serialization contract (`AdapterStateRef`) so refit replay can carry
+host-stored adapter binaries the same way artifact references already do for
+models.

@@ -67,6 +67,12 @@ memory while exposing deterministic descriptors and identity tables to the core.
 - `dagmldata_inmemory_provider_feature_collation_tensor_f32_json` for ABI-owned
   row-major f32 tensor export from the same provider-owned feature buffers,
   with the same finite-f32 rejection contract as the coordinator entry point;
+- `DataView.branch_view` (a `CoordinatorBranchView` carrying `view_id`,
+  `branch_id`, `mode`, `selector`, `allow_overlap` and `metadata`), letting
+  hosts pass `dag-ml` `BranchViewPlan` records straight through the existing
+  `make_view` selector JSON. The in-memory provider executes `by_source`
+  branch views natively and lets `separation` pass through; `by_metadata`,
+  `by_tag` and `by_filter` are validated but require host-side filtering;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
   The `feature_arrow` hook accepts either a plain feature-set id or a JSON
   feature-fusion selector. The vtable uses the shared
