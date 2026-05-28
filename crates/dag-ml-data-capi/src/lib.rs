@@ -1666,6 +1666,96 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_file(
     }
 }
 
+/// Creates a Rust-owned in-memory provider whose feature buffers are loaded
+/// from an Apache Arrow IPC file on disk. Only available when the
+/// `arrow-ipc` feature is enabled — host bindings opt into the `arrow`
+/// dependency by depending on `dag-ml-data-capi` with that feature on.
+///
+/// `path_ptr/path_len` must encode a UTF-8 filesystem path to an Arrow IPC
+/// file. Each top-level `RecordBatch` becomes one feature buffer; its
+/// schema must declare `dag_ml_data.feature_set_id` and
+/// `dag_ml_data.representation_id` metadata, and expose an
+/// `observation_id` Utf8 column. See `dag-ml-data-arrow` for the full
+/// mapping contract.
+///
+/// # Safety
+///
+/// Non-null byte pointers must point to readable memory for the duration of
+/// the call. `out_vtable` may be null only if the caller is probing error
+/// handling.
+#[cfg(feature = "arrow-ipc")]
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_arrow_ipc(
+    envelope_ptr: *const u8,
+    envelope_len: usize,
+    target_tables_ptr: *const u8,
+    target_tables_len: usize,
+    path_ptr: *const u8,
+    path_len: usize,
+    out_vtable: *mut DagMlDataVTable,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_vtable(out_vtable);
+    clear_string(error_out);
+    if envelope_ptr.is_null() {
+        set_string(error_out, "envelope pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_vtable.is_null() {
+        set_string(error_out, "vtable output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if path_ptr.is_null() {
+        set_string(error_out, "arrow IPC path pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let envelope_json = slice::from_raw_parts(envelope_ptr, envelope_len);
+    let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+        Ok(target_tables) => target_tables,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let path_bytes = slice::from_raw_parts(path_ptr, path_len);
+    let path_str = match std::str::from_utf8(path_bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            set_string(
+                error_out,
+                format!("arrow IPC path is not valid utf-8: {error}"),
+            );
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let path = std::path::Path::new(path_str);
+    let feature_store = match dag_ml_data_arrow::read_buffers_from_ipc_path(path) {
+        Ok(store) => store,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+        Ok(provider) => {
+            *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Destroys a provider vtable returned by `dagmldata_inmemory_provider_new_json`.
 ///
 /// # Safety
@@ -5321,6 +5411,116 @@ mod tests {
             message.contains("failed to read feature buffer store"),
             "unexpected: {message}"
         );
+    }
+
+    #[cfg(feature = "arrow-ipc")]
+    #[test]
+    fn arrow_ipc_provider_loads_buffer_store_from_disk() {
+        use arrow_array::{Float64Array, RecordBatch, StringArray};
+        use arrow_ipc::writer::FileWriter;
+        use arrow_schema::{DataType, Field, Schema};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let mut metadata = HashMap::new();
+        metadata.insert("dag_ml_data.feature_set_id".to_string(), "x".to_string());
+        metadata.insert(
+            "dag_ml_data.representation_id".to_string(),
+            "tabular_numeric".to_string(),
+        );
+        let schema = Arc::new(Schema::new_with_metadata(
+            vec![
+                Field::new("observation_id", DataType::Utf8, false),
+                Field::new("f0", DataType::Float64, true),
+                Field::new("f1", DataType::Float64, true),
+            ],
+            metadata,
+        ));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec![
+                    "obs.S001.base",
+                    "obs.S001.rep1",
+                    "obs.S001.aug0",
+                    "obs.S002.base",
+                ])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0, 40.0])),
+            ],
+        )
+        .unwrap();
+
+        let path = std::env::temp_dir().join(format!(
+            "dag_ml_data_arrow_ipc_provider_{}.arrow",
+            std::process::id()
+        ));
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut writer = FileWriter::try_new(&mut file, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let materialization_request = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        );
+        let target_tables = b"[]";
+        let path_str = path.to_string_lossy().into_owned();
+        let path_bytes = path_str.as_bytes();
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_from_arrow_ipc(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        let mut manifest_json = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
+                &vtable,
+                data_handle,
+                &mut manifest_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        let manifests: serde_json::Value =
+            serde_json::from_str(&unsafe { string_value(manifest_json) }).unwrap();
+        assert_eq!(manifests[0]["feature_set_id"], serde_json::json!("x"));
+
+        unsafe {
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

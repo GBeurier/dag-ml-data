@@ -595,9 +595,9 @@ mod tests {
                     uri: Some(uri.to_string()),
                     ..portable_ref()
                 };
-                let error = value.validate_portable().expect_err(&format!(
-                    "expected `{uri}` to be rejected as non-portable"
-                ));
+                let error = value
+                    .validate_portable()
+                    .expect_err(&format!("expected `{uri}` to be rejected as non-portable"));
                 let message = format!("{error}");
                 assert!(
                     !message.is_empty(),

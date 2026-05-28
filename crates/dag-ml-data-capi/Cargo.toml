@@ -12,7 +12,15 @@ homepage.workspace = true
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[features]
+default = []
+arrow-ipc = ["dep:dag-ml-data-arrow", "dep:arrow-array", "dep:arrow-ipc", "dep:arrow-schema"]
+
 [dependencies]
+arrow-array = { version = "53", optional = true }
+arrow-ipc = { version = "53", optional = true }
+arrow-schema = { version = "53", optional = true }
+dag-ml-data-arrow = { path = "../dag-ml-data-arrow", optional = true }
 dag-ml-data-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true

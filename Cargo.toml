@@ -5,6 +5,7 @@ members = [
     "crates/dag-ml-data",
     "crates/dag-ml-data-capi",
     "crates/dag-ml-data-cli",
+    "crates/dag-ml-data-arrow",
 ]
 
 [workspace.package]

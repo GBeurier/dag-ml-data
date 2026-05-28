@@ -204,6 +204,13 @@ DagMlDataStatusCode dagmldata_inmemory_provider_new_with_f64_features_json(const
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_f64_feature_views(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const DagMlDataFeatureMatrixF64View *feature_matrices, size_t feature_matrices_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_f64_feature_columns(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const DagMlDataFeatureMatrixF64ColumnarView *feature_matrices, size_t feature_matrices_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_from_file(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *path_ptr, size_t path_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
+/* dagmldata_inmemory_provider_new_from_arrow_ipc is only present when the
+   `arrow-ipc` feature is enabled in the dag-ml-data-capi build. Hosts that
+   link a feature-enabled library must define DAG_ML_DATA_ARROW_IPC before
+   including this header, or the call will fail to resolve at link time. */
+#ifdef DAG_ML_DATA_ARROW_IPC
+DagMlDataStatusCode dagmldata_inmemory_provider_new_from_arrow_ipc(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *path_ptr, size_t path_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
+#endif
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_buffer_manifest_json(const DagMlDataVTable *vtable, DagMlDataString *out_json, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_data_feature_buffer_manifest_json(const DagMlDataVTable *vtable, DagMlDataHandle data_handle, DagMlDataString *out_json, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_collation_json(const DagMlDataVTable *vtable, DagMlDataHandle view, DagMlDataBytesView selector_json, DagMlDataString *out_json, DagMlDataString *error_out);

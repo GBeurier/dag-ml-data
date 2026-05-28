@@ -217,11 +217,20 @@ Implemented:
   `dagmldata_inmemory_provider_new_from_file` constructs the same
   `InMemoryProvider` from a `.n4d` file path. Lets hosts persist provider
   feature buffers across processes without re-ingesting the source data;
+- Apache Arrow IPC feature-buffer reader: new optional crate
+  `dag-ml-data-arrow` exposes
+  `read_buffers_from_ipc_stream`/`_file`/`_path` that consume Arrow IPC
+  streams or files and resolve each `RecordBatch` to a
+  `NumericFeatureMatrixF64Columnar`. The mapping requires schema metadata
+  `dag_ml_data.feature_set_id` + `dag_ml_data.representation_id` and an
+  `observation_id` Utf8 column; Float64 feature columns translate
+  validity-aware to `Option<f64>` masks. The capi crate exposes
+  `dagmldata_inmemory_provider_new_from_arrow_ipc` behind the
+  `arrow-ipc` feature flag so core consumers don't pay the Arrow
+  dependency by default;
 
 Not implemented yet:
 
-- production Arrow feature-buffer provider implementation beyond the current
-  in-memory typed numeric buffer arena conformance;
 - host-callback buffer provider (vtable-based lazy fetch) — next slice;
 - production provider arenas for fused feature exports and production tensor
   buffer export beyond the in-memory `DagMlDataTensorF64` and
@@ -230,6 +239,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Add the Arrow IPC feature-buffer reader as a second non-fixture production
-provider, isolated in a new `dag-ml-data-arrow` crate behind a feature flag
-so core consumers don't pay the `arrow` dependency.
+Add the host-callback feature-buffer provider: a vtable that lets the host
+fetch buffer bytes lazily by `(feature_set_id, content_fingerprint)` and
+caches them inside the provider's arena for downstream views.
