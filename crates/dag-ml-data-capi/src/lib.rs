@@ -4814,6 +4814,12 @@ mod tests {
         // Modes other than `by_source`/`separation` require host-side
         // filtering; the arena rejects them with a clear validation
         // error rather than silently returning the unfiltered view.
+        // We first deserialize the *exact same* JSON through
+        // `dag_ml_data_core::DataView` to prove the JSON is
+        // syntactically well-formed; the C ABI's ValidationError must
+        // therefore come from the arena's host-filtered refusal, not
+        // from JSON parse failure.
+        use dag_ml_data_core::DataView;
         let (envelope, materialization_request) = multisource_provider_fixture();
         let target_tables = b"[]";
         let feature_tables = b"[]";
@@ -4862,6 +4868,12 @@ mod tests {
             }
         }))
         .unwrap();
+        // Sanity guard: the JSON parses as a valid DataView at the
+        // core level, so the C ABI's refusal below cannot be a parse
+        // error masquerading as a host-filtered rejection.
+        let parsed: DataView = serde_json::from_slice(&by_metadata_view_json)
+            .expect("by_metadata DataView JSON must parse via dag-ml-data-core");
+        assert!(parsed.branch_view.is_some());
         let mut view_handle = 0;
         let make_view = vtable.make_view.unwrap();
         let status = unsafe {
