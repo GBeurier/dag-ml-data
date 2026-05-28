@@ -246,6 +246,45 @@ impl NumericFeatureBuffer {
         })
     }
 
+    /// Returns the buffer's contents as a `NumericFeatureMatrixF64Columnar`,
+    /// suitable for binary persistence or pass-through to other typed-input
+    /// constructors. The output is the inverse of
+    /// `NumericFeatureBuffer::from_f64_column_matrix`: a round-trip through
+    /// this method and the constructor preserves the buffer fingerprint.
+    pub fn to_f64_column_matrix(&self) -> NumericFeatureMatrixF64Columnar {
+        let row_count = self.row_count();
+        let mut columns = Vec::with_capacity(self.columns.len());
+        let mut masks = Vec::with_capacity(self.columns.len());
+        let mut any_null = false;
+        for column in &self.columns {
+            let mut values = Vec::with_capacity(row_count);
+            let mut mask = Vec::with_capacity(row_count);
+            for cell in column {
+                match cell {
+                    Some(value) => {
+                        values.push(*value);
+                        mask.push(true);
+                    }
+                    None => {
+                        values.push(0.0);
+                        mask.push(false);
+                        any_null = true;
+                    }
+                }
+            }
+            columns.push(values);
+            masks.push(mask);
+        }
+        NumericFeatureMatrixF64Columnar {
+            feature_set_id: self.feature_set_id.clone(),
+            representation_id: self.representation_id.clone(),
+            feature_names: self.feature_names.clone(),
+            observation_ids: self.observation_ids.clone(),
+            columns,
+            validity_masks: any_null.then_some(masks),
+        }
+    }
+
     pub fn selected_indices(&self, columns: Option<&[String]>) -> Result<Vec<usize>> {
         let index_by_name = self
             .feature_names
@@ -528,6 +567,13 @@ impl NumericFeatureBufferStore {
 
     pub fn get(&self, feature_set_id: &str) -> Option<&NumericFeatureBuffer> {
         self.buffers.get(feature_set_id)
+    }
+
+    /// Deterministic iteration over `(feature_set_id, buffer)` pairs in
+    /// ascending `feature_set_id` order. Used by the file-store serializer
+    /// to produce byte-identical output for byte-identical stores.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &NumericFeatureBuffer)> {
+        self.buffers.iter()
     }
 
     pub fn manifests(&self) -> Result<Vec<NumericFeatureBufferManifest>> {

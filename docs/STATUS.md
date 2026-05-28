@@ -204,22 +204,32 @@ Implemented:
   `examples/python`;
 - C ABI schema fingerprint entry point;
 - example schema fixture;
-- CI workflow.
+- CI workflow;
+- file-backed numeric feature buffer persistence: deterministic `.n4d` byte
+  format (`N4DF` magic + LE u32 version/count + per-buffer typed
+  column-major payload + SHA-256 trailer) implemented in
+  `buffer_file_store.rs`. `serialize_columnar_store` / `deserialize_columnar_store`
+  round-trip buffer fingerprints byte-identically across processes;
+  `write_store_to_path` / `read_store_from_path` wrap the same logic with
+  filesystem diagnostics. Rejects unknown magic, unsupported version,
+  truncated payload, SHA-256 mismatch, malformed validity bytes;
+- file-backed provider C ABI entry point
+  `dagmldata_inmemory_provider_new_from_file` constructs the same
+  `InMemoryProvider` from a `.n4d` file path. Lets hosts persist provider
+  feature buffers across processes without re-ingesting the source data;
 
 Not implemented yet:
 
-- production runtime data providers backed by non-fixture buffer arenas;
 - production Arrow feature-buffer provider implementation beyond the current
   in-memory typed numeric buffer arena conformance;
+- host-callback buffer provider (vtable-based lazy fetch) — next slice;
 - production provider arenas for fused feature exports and production tensor
   buffer export beyond the in-memory `DagMlDataTensorF64` and
   `DagMlDataTensorF32` conformance;
-- nirs4all connector.
+- nirs4all connector (descoped — owned by `nirs4all-io`, see ADR-0001).
 
 Next recommended task:
 
-Broaden the provider buffer arenas beyond the in-memory typed numeric buffer
-path toward production sources (file-backed Arrow IPC, mmap-backed,
-host-callback registered through a vtable). The data-handle / arena binding
-contract is already in place; production sources only need a typed input
-path that resolves to `NumericFeatureBufferStore` records.
+Add the Arrow IPC feature-buffer reader as a second non-fixture production
+provider, isolated in a new `dag-ml-data-arrow` crate behind a feature flag
+so core consumers don't pay the `arrow` dependency.

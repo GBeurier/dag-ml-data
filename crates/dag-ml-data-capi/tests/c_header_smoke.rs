@@ -96,6 +96,7 @@ int main(void) {
     (void)dagmldata_inmemory_provider_new_with_f64_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_f64_feature_views((const uint8_t*)"{}", 2, NULL, 0, &matrix, 1, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_f64_feature_columns((const uint8_t*)"{}", 2, NULL, 0, &columnar, 1, &table, &error);
+    (void)dagmldata_inmemory_provider_new_from_file((const uint8_t*)"{}", 2, NULL, 0, (const uint8_t*)"/tmp/nonexistent.n4d", 20, &table, &error);
     (void)dagmldata_inmemory_provider_feature_collation_json(&table, 0, (DagMlDataBytesView){0}, &out, &error);
     (void)dagmldata_inmemory_provider_feature_collation_tensor_f64_json(&table, 0, (DagMlDataBytesView){0}, &tensor, &error);
     (void)dagmldata_inmemory_provider_feature_collation_tensor_f32_json(&table, 0, (DagMlDataBytesView){0}, &tensor_f32, &error);

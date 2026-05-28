@@ -6,6 +6,7 @@
 pub mod adapter;
 pub mod alignment;
 pub mod buffer;
+pub mod buffer_file_store;
 pub mod collation;
 pub mod coordinator;
 pub mod error;
@@ -22,6 +23,7 @@ pub mod relation;
 pub use adapter::*;
 pub use alignment::*;
 pub use buffer::*;
+pub use buffer_file_store::*;
 pub use collation::*;
 pub use coordinator::*;
 pub use error::{DataError, Result};

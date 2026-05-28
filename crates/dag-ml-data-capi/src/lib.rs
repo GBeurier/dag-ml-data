@@ -728,7 +728,10 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_materialize_fitted_adapter_
 ) -> DagMlDataStatusCode {
     clear_string(error_out);
     if vtable.is_null() || (*vtable).user_data.is_null() || json_ptr.is_null() {
-        set_string(error_out, "provider vtable, user_data or json pointer is null");
+        set_string(
+            error_out,
+            "provider vtable, user_data or json pointer is null",
+        );
         return DagMlDataStatusCode::InvalidArgument;
     }
     let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
@@ -1577,6 +1580,92 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_feature_column
     }
 }
 
+/// Creates a Rust-owned in-memory provider whose feature buffers are loaded
+/// from a deterministic `.n4d` binary file produced by the dag-ml-data file
+/// store serializer. Lets a host persist a provider's feature buffers across
+/// processes without re-ingesting the source data.
+///
+/// `path_ptr/path_len` must encode a UTF-8 filesystem path. Loading errors
+/// (truncation, bad magic, unsupported version, SHA-256 mismatch) bubble up
+/// as `ValidationError` with the error string filled in.
+///
+/// # Safety
+///
+/// Non-null byte pointers must point to readable memory for the duration of
+/// the call. `out_vtable` may be null only if the caller is probing error
+/// handling.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_file(
+    envelope_ptr: *const u8,
+    envelope_len: usize,
+    target_tables_ptr: *const u8,
+    target_tables_len: usize,
+    path_ptr: *const u8,
+    path_len: usize,
+    out_vtable: *mut DagMlDataVTable,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_vtable(out_vtable);
+    clear_string(error_out);
+    if envelope_ptr.is_null() {
+        set_string(error_out, "envelope pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_vtable.is_null() {
+        set_string(error_out, "vtable output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if path_ptr.is_null() {
+        set_string(error_out, "buffer-store path pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let envelope_json = slice::from_raw_parts(envelope_ptr, envelope_len);
+    let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+        Ok(target_tables) => target_tables,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let path_bytes = slice::from_raw_parts(path_ptr, path_len);
+    let path_str = match std::str::from_utf8(path_bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            set_string(
+                error_out,
+                format!("buffer-store path is not valid utf-8: {error}"),
+            );
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let path = std::path::Path::new(path_str);
+    let feature_store = match dag_ml_data_core::buffer_file_store::read_store_from_path(path) {
+        Ok(store) => store,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+        Ok(provider) => {
+            *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Destroys a provider vtable returned by `dagmldata_inmemory_provider_new_json`.
 ///
 /// # Safety
@@ -1603,8 +1692,9 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_destroy(vtable: *mut DagMlD
 /// # Safety
 ///
 /// `vtable` must point to a live vtable returned by
-/// `dagmldata_inmemory_provider_new_with_features_json`. Returned strings must
-/// be released with `dagmldata_string_free`.
+/// any `dagmldata_inmemory_provider_new*` constructor (JSON, typed f64,
+/// borrowed views, columnar borrowed views, or file-backed). Returned
+/// strings must be released with `dagmldata_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_buffer_manifest_json(
     vtable: *const DagMlDataVTable,
@@ -1645,8 +1735,9 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_buffer_manifest_jso
 /// # Safety
 ///
 /// `vtable` must point to a live vtable returned by
-/// `dagmldata_inmemory_provider_new_with_features_json`. Returned strings must
-/// be released with `dagmldata_string_free`.
+/// any `dagmldata_inmemory_provider_new*` constructor (JSON, typed f64,
+/// borrowed views, columnar borrowed views, or file-backed). Returned
+/// strings must be released with `dagmldata_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
     vtable: *const DagMlDataVTable,
@@ -1690,7 +1781,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_data_feature_buffer_manifes
 /// # Safety
 ///
 /// `vtable` must point to a live vtable returned by
-/// `dagmldata_inmemory_provider_new_with_features_json`; `selector_json.ptr`
+/// any `dagmldata_inmemory_provider_new*` constructor; `selector_json.ptr`
 /// must point to `selector_json.len` readable bytes. Returned strings must be
 /// released with `dagmldata_string_free`.
 #[no_mangle]
@@ -1745,7 +1836,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_json(
 /// # Safety
 ///
 /// `vtable` must point to a live vtable returned by
-/// `dagmldata_inmemory_provider_new_with_features_json`; `selector_json.ptr`
+/// any `dagmldata_inmemory_provider_new*` constructor; `selector_json.ptr`
 /// must point to `selector_json.len` readable bytes. `out_tensor` must point to
 /// writable memory for one `DagMlDataTensorF64`. `error_out` may be null.
 #[no_mangle]
@@ -1804,7 +1895,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_tensor_f6
 /// # Safety
 ///
 /// `vtable` must point to a live vtable returned by
-/// `dagmldata_inmemory_provider_new_with_features_json`; `selector_json.ptr`
+/// any `dagmldata_inmemory_provider_new*` constructor; `selector_json.ptr`
 /// must point to `selector_json.len` readable bytes. `out_tensor` must point to
 /// writable memory for one `DagMlDataTensorF32`. `error_out` may be null.
 #[no_mangle]
@@ -5112,6 +5203,124 @@ mod tests {
             vtable.release.unwrap()(vtable.user_data, data_handle);
             dagmldata_inmemory_provider_destroy(&mut vtable);
         }
+    }
+
+    #[test]
+    fn file_backed_provider_loads_persisted_buffer_store() {
+        use dag_ml_data_core::buffer::{
+            NumericFeatureBufferStore, NumericFeatureMatrixF64Columnar,
+        };
+        use dag_ml_data_core::ids::{ObservationId, RepresentationId};
+
+        let matrix = NumericFeatureMatrixF64Columnar {
+            feature_set_id: "x".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            feature_names: vec!["f0".to_string(), "f1".to_string()],
+            observation_ids: vec![
+                ObservationId::new("obs.S001.base").unwrap(),
+                ObservationId::new("obs.S001.rep1").unwrap(),
+                ObservationId::new("obs.S001.aug0").unwrap(),
+                ObservationId::new("obs.S002.base").unwrap(),
+            ],
+            columns: vec![vec![1.0, 2.0, 3.0, 4.0], vec![10.0, 20.0, 30.0, 40.0]],
+            validity_masks: None,
+        };
+        let store = NumericFeatureBufferStore::from_f64_column_matrices(vec![matrix]).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "dag_ml_data_file_backed_provider_{}.n4d",
+            std::process::id()
+        ));
+        dag_ml_data_core::buffer_file_store::write_store_to_path(&store, &path).unwrap();
+
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let materialization_request = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        );
+        let target_tables = b"[]";
+        let path_str = path.to_string_lossy().into_owned();
+        let path_bytes = path_str.as_bytes();
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_from_file(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut manifest_json = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
+                &vtable,
+                data_handle,
+                &mut manifest_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        let manifests: serde_json::Value =
+            serde_json::from_str(&unsafe { string_value(manifest_json) }).unwrap();
+        assert_eq!(manifests[0]["feature_set_id"], serde_json::json!("x"));
+
+        unsafe {
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_backed_provider_rejects_missing_path() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let missing_path = b"/tmp/dag_ml_data_definitely_missing.n4d";
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_from_file(
+                envelope.as_ptr(),
+                envelope.len(),
+                b"[]".as_ptr(),
+                2,
+                missing_path.as_ptr(),
+                missing_path.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(vtable.user_data.is_null());
+        let message = unsafe { string_value(error) };
+        assert!(
+            message.contains("failed to read feature buffer store"),
+            "unexpected: {message}"
+        );
     }
 
     #[test]
