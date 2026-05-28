@@ -4694,6 +4694,201 @@ mod tests {
     }
 
     #[test]
+    fn inmemory_provider_make_view_forwards_branch_view_by_source_filter() {
+        // The C ABI provider's `provider_make_view` deserializes a
+        // `DataView` JSON, which carries `branch_view`. The arena
+        // intersects `view.source_ids` (if any) with the branch
+        // selector's `source_ids` (BySource mode) before filtering
+        // relations. This test pins that contract end-to-end through
+        // the C ABI by selecting only the NIR source and asserting
+        // that the chem observation does not appear in view_identity.
+        let (envelope, materialization_request) = multisource_provider_fixture();
+        let target_tables = b"[]";
+        let feature_tables = b"[]";
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_features_json(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                feature_tables.as_ptr(),
+                feature_tables.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let materialize = vtable.materialize.unwrap();
+        let status = unsafe {
+            materialize(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let branch_view_json = serde_json::to_vec(&serde_json::json!({
+            "sample_ids": ["S001", "S002"],
+            "source_ids": ["nir", "chem"],
+            "include_augmented": false,
+            "branch_view": {
+                "view_id": "branch_view:nir-only",
+                "branch_id": "branch:nir",
+                "mode": "by_source",
+                "selector": {
+                    "source_ids": ["nir"]
+                }
+            }
+        }))
+        .unwrap();
+        let mut view_handle = 0;
+        let make_view = vtable.make_view.unwrap();
+        let status = unsafe {
+            make_view(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: branch_view_json.as_ptr(),
+                    len: branch_view_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        assert_eq!(
+            status,
+            DagMlDataStatusCode::Ok,
+            "make_view must accept a by_source branch_view payload"
+        );
+
+        let mut identity_array = std::ptr::null_mut();
+        let mut identity_schema = std::ptr::null_mut();
+        let view_identity = vtable.view_identity.unwrap();
+        let status = unsafe {
+            view_identity(
+                vtable.user_data,
+                view_handle,
+                &mut identity_array,
+                &mut identity_schema,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        unsafe {
+            // NIR fixture has 3 observations across S001 (r1 + r2) and
+            // S002 (r1). The chem observation `chem.S001` must be
+            // filtered out by the branch selector.
+            assert_eq!((*identity_array).length, 3);
+            let array_children = slice::from_raw_parts(
+                (*identity_array).children,
+                (*identity_array).n_children as usize,
+            );
+            let observation_ids = utf8_values(array_children[0]);
+            assert_eq!(
+                observation_ids,
+                vec![
+                    Some("obs.S001.r1".to_string()),
+                    Some("obs.S001.r2".to_string()),
+                    Some("obs.S002.r1".to_string())
+                ],
+                "branch_view by_source must restrict the identity table to the selected source"
+            );
+            dagmldata_arrow_array_free(identity_array);
+            dagmldata_arrow_schema_free(identity_schema);
+            vtable.release.unwrap()(vtable.user_data, view_handle);
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    #[test]
+    fn inmemory_provider_make_view_refuses_branch_view_with_host_filtered_mode() {
+        // Modes other than `by_source`/`separation` require host-side
+        // filtering; the arena rejects them with a clear validation
+        // error rather than silently returning the unfiltered view.
+        let (envelope, materialization_request) = multisource_provider_fixture();
+        let target_tables = b"[]";
+        let feature_tables = b"[]";
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_features_json(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                feature_tables.as_ptr(),
+                feature_tables.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut data_handle = 0;
+        let materialize = vtable.materialize.unwrap();
+        let status = unsafe {
+            materialize(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let by_metadata_view_json = serde_json::to_vec(&serde_json::json!({
+            "sample_ids": ["S001", "S002"],
+            "source_ids": ["nir", "chem"],
+            "include_augmented": false,
+            "branch_view": {
+                "view_id": "branch_view:by-metadata",
+                "branch_id": "branch:metadata",
+                "mode": "by_metadata",
+                "selector": {
+                    "metadata_keys": ["batch"]
+                }
+            }
+        }))
+        .unwrap();
+        let mut view_handle = 0;
+        let make_view = vtable.make_view.unwrap();
+        let status = unsafe {
+            make_view(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: by_metadata_view_json.as_ptr(),
+                    len: by_metadata_view_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        assert_eq!(
+            status,
+            DagMlDataStatusCode::ValidationError,
+            "make_view must refuse host-filtered branch_view modes the arena cannot execute"
+        );
+        assert_eq!(view_handle, 0);
+
+        unsafe {
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    #[test]
     fn inmemory_provider_feature_collation_uses_provider_buffers_and_fusion_selector() {
         let (envelope, materialization_request) = multisource_provider_fixture();
         let target_tables = b"[]";
