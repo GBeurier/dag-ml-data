@@ -14,8 +14,16 @@ memory while exposing deterministic descriptors and identity tables to the core.
   shape, values, optional masks and feature names;
 - `DAG_ML_DATA_TENSOR_F64_ABI_VERSION`, the C-visible ABI version expected in
   each f64 tensor descriptor;
+- `DagMlDataTensorF32`, an owned row-major f32 tensor descriptor mirroring the
+  f64 descriptor for bindings that consume f32 inputs natively (deep-learning
+  frameworks, GPU pipelines);
+- `DAG_ML_DATA_TENSOR_F32_ABI_VERSION`, the C-visible ABI version expected in
+  each f32 tensor descriptor;
 - `DagMlDataFeatureMatrixF64View`, a borrowed C view over one row-major f64
   feature matrix;
+- `DagMlDataFeatureMatrixF64ColumnarView` plus `DagMlDataF64ColumnView`, a
+  borrowed C view over one column-major f64 feature matrix with per-column
+  validity bitmaps, mirroring Arrow/Parquet/NumPy columnar layouts;
 - `dagmldata_coordinator_identity_arrow_json` for identity-table smoke tests
   from a validated coordinator envelope;
 - `dagmldata_coordinator_target_arrow_json` for numeric target-table smoke tests
@@ -30,6 +38,9 @@ memory while exposing deterministic descriptors and identity tables to the core.
   collation smoke tests over coordinator feature blocks;
 - `dagmldata_coordinator_feature_collation_tensor_f64_json` for ABI-owned
   row-major f64 tensor export over coordinator feature blocks;
+- `dagmldata_coordinator_feature_collation_tensor_f32_json` for ABI-owned
+  row-major f32 tensor export over the same coordinator feature blocks, with
+  rejection of values that do not round-trip into a finite f32;
 - `dagmldata_inmemory_provider_new_json` for a Rust-owned provider vtable that
   materializes data handles, creates view handles, exports view identity, exports
   numeric targets and supports release/destroy callbacks;
@@ -40,6 +51,11 @@ memory while exposing deterministic descriptors and identity tables to the core.
 - `dagmldata_inmemory_provider_new_with_f64_feature_views` for the same provider
   plus borrowed C `DagMlDataFeatureMatrixF64View` descriptors, avoiding JSON
   value transport for numeric feature matrices;
+- `dagmldata_inmemory_provider_new_with_f64_feature_columns` for the same
+  provider plus borrowed C `DagMlDataFeatureMatrixF64ColumnarView` descriptors
+  with per-column f64 slices and optional per-column validity bitmaps,
+  avoiding the row-major transpose copy on the production columnar ingestion
+  path;
 - `dagmldata_inmemory_provider_feature_buffer_manifest_json` for deterministic
   JSON manifests of provider-owned numeric feature buffers;
 - `dagmldata_inmemory_provider_data_feature_buffer_manifest_json` for
@@ -48,6 +64,9 @@ memory while exposing deterministic descriptors and identity tables to the core.
   tensor collation from feature buffers owned by the in-memory provider;
 - `dagmldata_inmemory_provider_feature_collation_tensor_f64_json` for ABI-owned
   row-major f64 tensor export from provider-owned feature buffers;
+- `dagmldata_inmemory_provider_feature_collation_tensor_f32_json` for ABI-owned
+  row-major f32 tensor export from the same provider-owned feature buffers,
+  with the same finite-f32 rejection contract as the coordinator entry point;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
   The `feature_arrow` hook accepts either a plain feature-set id or a JSON
   feature-fusion selector. The vtable uses the shared
@@ -70,10 +89,12 @@ fingerprints, identity consistency and materialization-request compatibility.
 | Fitted adapter handle | Host | future fitted-adapter release hook |
 | Rust error/fingerprint string | Rust allocation returned through ABI | `dagmldata_string_free` |
 | Rust-owned f64 tensor descriptor and nested arrays | Rust allocation returned through ABI | `dagmldata_tensor_f64_free` |
+| Rust-owned f32 tensor descriptor and nested arrays | Rust allocation returned through ABI | `dagmldata_tensor_f32_free` |
 | Arrow arrays/schemas returned by Rust helpers | Rust allocation returned through ABI | `dagmldata_arrow_array_free`, `dagmldata_arrow_schema_free` |
 | Arrow arrays produced by host vtables | Producer of the Arrow array | Arrow C Data Interface release callback |
 | Rust-owned in-memory provider vtable | Rust allocation behind `user_data` | `DagMlDataVTable.destroy` or `dagmldata_inmemory_provider_destroy` |
 | Borrowed `DagMlDataFeatureMatrixF64View` inputs | Caller | copied during constructor call; caller may release after return |
+| Borrowed `DagMlDataFeatureMatrixF64ColumnarView` inputs (and nested `DagMlDataF64ColumnView` columns) | Caller | copied during constructor call; caller may release after return |
 
 ## Coordinator Identity Export
 
@@ -119,6 +140,15 @@ result as an ABI-owned `DagMlDataTensorF64` instead of JSON. The tensor carries
 ids, `shape`, contiguous row-major `values`, optional `presence_mask`, optional
 `validity_mask` and optional `feature_names`. Masks are byte arrays with values
 0 or 1. The caller must release the tensor with `dagmldata_tensor_f64_free`.
+
+`dagmldata_coordinator_feature_collation_tensor_f32_json` mirrors that surface
+with a `DagMlDataTensorF32` output. The kernel still runs in f64 to preserve
+canonical numeric semantics; each value is cast to f32 at the ABI boundary and
+the call returns `ValidationError` if any padded value, finite input or
+padding fallback does not round-trip into a finite f32. The caller must
+release the tensor with `dagmldata_tensor_f32_free`. The same f32 entry point
+is available against provider-owned feature buffers through
+`dagmldata_inmemory_provider_feature_collation_tensor_f32_json`.
 
 `dagmldata_inmemory_provider_feature_collation_json` and
 `dagmldata_inmemory_provider_feature_collation_tensor_f64_json` exercise the

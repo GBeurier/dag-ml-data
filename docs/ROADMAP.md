@@ -85,8 +85,11 @@ kernel now produces row-major tensor blocks with deterministic padding,
 truncation, presence masks and value-validity masks. The in-memory provider can
 now route feature-collation JSON selectors, including fused selectors, through
 provider-owned typed buffers and return deterministic `NumericTensorBlock` JSON
-or ABI-owned `DagMlDataTensorF64` buffers. Production provider arenas and
-non-f64 tensor-buffer variants are still pending.
+or ABI-owned `DagMlDataTensorF64` buffers. The collation ABI now also exposes
+owned row-major `DagMlDataTensorF32` buffers beside the f64 path. The kernel
+still operates in f64 to preserve canonical numeric semantics; values are cast
+to f32 at the ABI boundary and the call is rejected when any value would
+round-trip to a non-finite f32. Production provider arenas are still pending.
 
 ## Phase 4: nirs4all Connector
 

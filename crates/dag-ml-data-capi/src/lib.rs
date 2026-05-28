@@ -147,6 +147,22 @@ impl Default for DagMlDataF64Array {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+pub struct DagMlDataF32Array {
+    pub ptr: *mut f32,
+    pub len: usize,
+}
+
+impl Default for DagMlDataF32Array {
+    fn default() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct DagMlDataU8Array {
     pub ptr: *mut u8,
     pub len: usize,
@@ -190,6 +206,42 @@ impl Default for DagMlDataTensorF64 {
             sample_ids: DagMlDataStringArray::default(),
             shape: DagMlDataUSizeArray::default(),
             values: DagMlDataF64Array::default(),
+            presence_mask: DagMlDataU8Array::default(),
+            validity_mask: DagMlDataU8Array::default(),
+            feature_names: DagMlDataStringArray::default(),
+        }
+    }
+}
+
+pub const DAG_ML_DATA_TENSOR_F32_ABI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataTensorF32 {
+    pub abi_version: u32,
+    pub block_id: DagMlDataString,
+    pub representation_id: DagMlDataString,
+    pub batch_container: DagMlDataString,
+    pub observation_ids: DagMlDataStringArray,
+    pub sample_ids: DagMlDataStringArray,
+    pub shape: DagMlDataUSizeArray,
+    pub values: DagMlDataF32Array,
+    pub presence_mask: DagMlDataU8Array,
+    pub validity_mask: DagMlDataU8Array,
+    pub feature_names: DagMlDataStringArray,
+}
+
+impl Default for DagMlDataTensorF32 {
+    fn default() -> Self {
+        Self {
+            abi_version: DAG_ML_DATA_TENSOR_F32_ABI_VERSION,
+            block_id: DagMlDataString::default(),
+            representation_id: DagMlDataString::default(),
+            batch_container: DagMlDataString::default(),
+            observation_ids: DagMlDataStringArray::default(),
+            sample_ids: DagMlDataStringArray::default(),
+            shape: DagMlDataUSizeArray::default(),
+            values: DagMlDataF32Array::default(),
             presence_mask: DagMlDataU8Array::default(),
             validity_mask: DagMlDataU8Array::default(),
             feature_names: DagMlDataStringArray::default(),
@@ -315,6 +367,28 @@ pub unsafe extern "C" fn dagmldata_tensor_f64_free(tensor: DagMlDataTensorF64) {
     free_string_array(tensor.sample_ids);
     free_usize_array(tensor.shape);
     free_f64_array(tensor.values);
+    free_u8_array(tensor.presence_mask);
+    free_u8_array(tensor.validity_mask);
+    free_string_array(tensor.feature_names);
+}
+
+/// Releases an f32 tensor allocated by DAG-ML-DATA.
+///
+/// # Safety
+///
+/// Every pointer inside `tensor` must either be null or come from a
+/// DAG-ML-DATA C ABI function returning `DagMlDataTensorF32`. Passing nested
+/// pointers from any other allocator, or freeing the same tensor twice, is
+/// undefined behavior.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_tensor_f32_free(tensor: DagMlDataTensorF32) {
+    dagmldata_string_free(tensor.block_id);
+    dagmldata_string_free(tensor.representation_id);
+    dagmldata_string_free(tensor.batch_container);
+    free_string_array(tensor.observation_ids);
+    free_string_array(tensor.sample_ids);
+    free_usize_array(tensor.shape);
+    free_f32_array(tensor.values);
     free_u8_array(tensor.presence_mask);
     free_u8_array(tensor.validity_mask);
     free_string_array(tensor.feature_names);
@@ -707,6 +781,60 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_tensor_f64_json
         Ok(request) => match collate_feature_block(&request.feature_block, &request.policy) {
             Ok(tensor) => {
                 *out_tensor = tensor_to_c(tensor);
+                DagMlDataStatusCode::Ok
+            }
+            Err(error) => {
+                set_string(error_out, error.to_string());
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Builds an owned row-major f32 tensor from a coordinator feature block.
+///
+/// The request JSON shape is `{ feature_block, policy? }`, identical to the
+/// f64 entry point. The collation kernel still operates on f64 to preserve the
+/// canonical numeric semantics; each value is cast to f32 at the ABI boundary
+/// and the call is rejected with `ValidationError` if any padded value, finite
+/// input or padding fallback does not round-trip into a finite f32 (overflow
+/// to infinity, or non-finite input). The returned tensor must be released
+/// with `dagmldata_tensor_f32_free`.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `out_tensor` must point to writable memory for one
+/// `DagMlDataTensorF32`. `error_out` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_tensor_f32_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_tensor: *mut DagMlDataTensorF32,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_tensor_f32(out_tensor);
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_string(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_tensor.is_null() {
+        set_string(error_out, "tensor output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<CoordinatorFeatureCollationJsonRequest>(json) {
+        Ok(request) => match collate_feature_block(&request.feature_block, &request.policy)
+            .and_then(tensor_to_c_f32)
+        {
+            Ok(tensor) => {
+                *out_tensor = tensor;
                 DagMlDataStatusCode::Ok
             }
             Err(error) => {
@@ -1272,6 +1400,66 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_tensor_f6
     }
 }
 
+/// Builds an owned row-major f32 tensor from feature buffers owned by the Rust
+/// in-memory provider.
+///
+/// The selector JSON shape matches the f64 entry point. The collation kernel
+/// runs in f64 and each value is cast to f32 at the ABI boundary; the call is
+/// rejected with `ValidationError` if any padded value, finite input or padding
+/// fallback does not round-trip into a finite f32. The returned tensor must be
+/// released with `dagmldata_tensor_f32_free`.
+///
+/// # Safety
+///
+/// `vtable` must point to a live vtable returned by
+/// `dagmldata_inmemory_provider_new_with_features_json`; `selector_json.ptr`
+/// must point to `selector_json.len` readable bytes. `out_tensor` must point to
+/// writable memory for one `DagMlDataTensorF32`. `error_out` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_tensor_f32_json(
+    vtable: *const DagMlDataVTable,
+    view: DagMlDataHandle,
+    selector_json: DagMlDataBytesView,
+    out_tensor: *mut DagMlDataTensorF32,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_tensor_f32(out_tensor);
+    clear_string(error_out);
+    if vtable.is_null()
+        || (*vtable).user_data.is_null()
+        || selector_json.ptr.is_null()
+        || out_tensor.is_null()
+    {
+        set_string(
+            error_out,
+            "provider vtable, user_data, selector pointer or tensor output is null",
+        );
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    let selector = slice::from_raw_parts(selector_json.ptr, selector_json.len);
+    match serde_json::from_slice::<ProviderFeatureCollationJsonRequest>(selector) {
+        Ok(request) => match provider_feature_collation_block(provider, view, &request)
+            .and_then(|block| collate_feature_block(&block, &request.policy))
+            .and_then(tensor_to_c_f32)
+        {
+            Ok(tensor) => {
+                *out_tensor = tensor;
+                DagMlDataStatusCode::Ok
+            }
+            Err(error) => {
+                set_string(error_out, error.to_string());
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 unsafe fn clear_string(out: *mut DagMlDataString) {
     if !out.is_null() {
         *out = DagMlDataString::default();
@@ -1281,6 +1469,12 @@ unsafe fn clear_string(out: *mut DagMlDataString) {
 unsafe fn clear_tensor(out: *mut DagMlDataTensorF64) {
     if !out.is_null() {
         *out = DagMlDataTensorF64::default();
+    }
+}
+
+unsafe fn clear_tensor_f32(out: *mut DagMlDataTensorF32) {
+    if !out.is_null() {
+        *out = DagMlDataTensorF32::default();
     }
 }
 
@@ -1345,6 +1539,53 @@ fn tensor_to_c(tensor: NumericTensorBlock) -> DagMlDataTensorF64 {
     }
 }
 
+fn tensor_to_c_f32(tensor: NumericTensorBlock) -> dag_ml_data_core::Result<DagMlDataTensorF32> {
+    // f64 → f32 cast: reject only when the result is non-finite (overflow to
+    // ±inf, or upstream NaN that survived collation). Subnormal f32 values
+    // are intentionally passed through; consumers running on hardware with
+    // flush-to-zero (GPU default, SSE `DAZ`) should be aware that values
+    // below ~1.2e-38 may flush at use time.
+    let values = tensor
+        .values
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            let cast = *value as f32;
+            if cast.is_finite() {
+                Ok(cast)
+            } else {
+                Err(dag_ml_data_core::DataError::Validation(format!(
+                    "f32 tensor `{}` value at index {idx} ({value}) does not round-trip into a finite f32",
+                    tensor.block_id
+                )))
+            }
+        })
+        .collect::<dag_ml_data_core::Result<Vec<f32>>>()?;
+    Ok(DagMlDataTensorF32 {
+        abi_version: DAG_ML_DATA_TENSOR_F32_ABI_VERSION,
+        block_id: owned_string(tensor.block_id),
+        representation_id: owned_string(tensor.representation_id.as_str()),
+        batch_container: owned_string(tensor.batch_container),
+        observation_ids: owned_string_array(
+            tensor
+                .observation_ids
+                .iter()
+                .map(|observation_id| observation_id.as_str()),
+        ),
+        sample_ids: owned_string_array(
+            tensor.sample_ids.iter().map(|sample_id| sample_id.as_str()),
+        ),
+        shape: owned_usize_array(tensor.shape),
+        values: owned_f32_array(values),
+        presence_mask: owned_bool_array(tensor.presence_mask),
+        validity_mask: owned_bool_array(tensor.validity_mask),
+        feature_names: tensor
+            .feature_names
+            .map(owned_string_array)
+            .unwrap_or_default(),
+    })
+}
+
 fn owned_string_array<I, S>(values: I) -> DagMlDataStringArray
 where
     I: IntoIterator<Item = S>,
@@ -1363,6 +1604,11 @@ fn owned_usize_array(values: Vec<usize>) -> DagMlDataUSizeArray {
 fn owned_f64_array(values: Vec<f64>) -> DagMlDataF64Array {
     let (ptr, len) = boxed_slice_parts(values);
     DagMlDataF64Array { ptr, len }
+}
+
+fn owned_f32_array(values: Vec<f32>) -> DagMlDataF32Array {
+    let (ptr, len) = boxed_slice_parts(values);
+    DagMlDataF32Array { ptr, len }
 }
 
 fn owned_bool_array(values: Option<Vec<bool>>) -> DagMlDataU8Array {
@@ -1403,6 +1649,10 @@ unsafe fn free_usize_array(array: DagMlDataUSizeArray) {
 }
 
 unsafe fn free_f64_array(array: DagMlDataF64Array) {
+    free_boxed_slice(array.ptr, array.len);
+}
+
+unsafe fn free_f32_array(array: DagMlDataF32Array) {
     free_boxed_slice(array.ptr, array.len);
 }
 
@@ -3105,6 +3355,94 @@ mod tests {
     }
 
     #[test]
+    fn exports_coordinator_feature_collation_tensor_f32_over_abi() {
+        let request = serde_json::json!({
+            "feature_block": {
+                "feature_set_id": "x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["f0", "f1"],
+                "observation_ids": ["obs.S001", "obs.S002"],
+                "sample_ids": ["S001", "S002"],
+                "values": [[1.0, null], [3.0, 4.5]]
+            },
+            "policy": {
+                "emit_mask": true
+            }
+        });
+        let request = serde_json::to_vec(&request).unwrap();
+        let mut tensor = DagMlDataTensorF32::default();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_coordinator_feature_collation_tensor_f32_json(
+                request.as_ptr(),
+                request.len(),
+                &mut tensor,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        unsafe {
+            assert_eq!(tensor.abi_version, DAG_ML_DATA_TENSOR_F32_ABI_VERSION);
+            assert_eq!(borrowed_string(&tensor.block_id), "x");
+            assert_eq!(
+                borrowed_string(&tensor.representation_id),
+                "tabular_numeric"
+            );
+            assert_eq!(
+                string_array_values(tensor.observation_ids),
+                vec!["obs.S001", "obs.S002"]
+            );
+            assert_eq!(string_array_values(tensor.sample_ids), vec!["S001", "S002"]);
+            assert_eq!(usize_array_values(tensor.shape), vec![2, 2]);
+            assert_eq!(
+                f32_array_values(tensor.values),
+                vec![1.0_f32, 0.0, 3.0, 4.5]
+            );
+            assert_eq!(u8_array_values(tensor.presence_mask), vec![1, 1, 1, 1]);
+            assert_eq!(u8_array_values(tensor.validity_mask), vec![1, 0, 1, 1]);
+            assert_eq!(string_array_values(tensor.feature_names), vec!["f0", "f1"]);
+            dagmldata_tensor_f32_free(tensor);
+        }
+
+        let overflow_request = serde_json::json!({
+            "feature_block": {
+                "feature_set_id": "x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["f0"],
+                "observation_ids": ["obs.S001"],
+                "sample_ids": ["S001"],
+                "values": [[1.0e40]]
+            },
+            "policy": {"emit_mask": false}
+        });
+        let overflow_request = serde_json::to_vec(&overflow_request).unwrap();
+        let mut overflow_tensor = DagMlDataTensorF32::default();
+        let mut overflow_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_coordinator_feature_collation_tensor_f32_json(
+                overflow_request.as_ptr(),
+                overflow_request.len(),
+                &mut overflow_tensor,
+                &mut overflow_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert_eq!(
+            overflow_tensor.abi_version,
+            DAG_ML_DATA_TENSOR_F32_ABI_VERSION
+        );
+        assert!(overflow_tensor.values.ptr.is_null());
+        let overflow_message = unsafe { string_value(overflow_error) };
+        assert!(
+            overflow_message.contains("does not round-trip into a finite f32"),
+            "unexpected overflow error: {overflow_message}"
+        );
+    }
+
+    #[test]
     fn inmemory_provider_feature_arrow_accepts_fusion_selector_json() {
         let (envelope, materialization_request) = multisource_provider_fixture();
         let target_tables = b"[]";
@@ -4676,6 +5014,13 @@ mod tests {
     }
 
     unsafe fn f64_array_values(array: DagMlDataF64Array) -> Vec<f64> {
+        if array.ptr.is_null() {
+            return Vec::new();
+        }
+        slice::from_raw_parts(array.ptr, array.len).to_vec()
+    }
+
+    unsafe fn f32_array_values(array: DagMlDataF32Array) -> Vec<f32> {
         if array.ptr.is_null() {
             return Vec::new();
         }

@@ -73,6 +73,7 @@ int main(void) {
     DagMlDataString error = {0};
     DagMlDataString out = {0};
     DagMlDataTensorF64 tensor = {0};
+    DagMlDataTensorF32 tensor_f32 = {0};
     DagMlDataFeatureMatrixF64View matrix = {0};
     DagMlDataFeatureMatrixF64ColumnarView columnar = {0};
     ArrowArray *array = NULL;
@@ -89,6 +90,7 @@ int main(void) {
     (void)dagmldata_coordinator_feature_fusion_arrow_json((const uint8_t*)"{}", 2, &array, &schema, &error);
     (void)dagmldata_coordinator_feature_collation_json((const uint8_t*)"{}", 2, &error, &error);
     (void)dagmldata_coordinator_feature_collation_tensor_f64_json((const uint8_t*)"{}", 2, &tensor, &error);
+    (void)dagmldata_coordinator_feature_collation_tensor_f32_json((const uint8_t*)"{}", 2, &tensor_f32, &error);
     (void)dagmldata_inmemory_provider_new_json((const uint8_t*)"{}", 2, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_f64_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
@@ -96,9 +98,11 @@ int main(void) {
     (void)dagmldata_inmemory_provider_new_with_f64_feature_columns((const uint8_t*)"{}", 2, NULL, 0, &columnar, 1, &table, &error);
     (void)dagmldata_inmemory_provider_feature_collation_json(&table, 0, (DagMlDataBytesView){0}, &out, &error);
     (void)dagmldata_inmemory_provider_feature_collation_tensor_f64_json(&table, 0, (DagMlDataBytesView){0}, &tensor, &error);
+    (void)dagmldata_inmemory_provider_feature_collation_tensor_f32_json(&table, 0, (DagMlDataBytesView){0}, &tensor_f32, &error);
     dagmldata_arrow_array_free(array);
     dagmldata_arrow_schema_free(schema);
     dagmldata_tensor_f64_free(tensor);
+    dagmldata_tensor_f32_free(tensor_f32);
     dagmldata_inmemory_provider_destroy(&table);
     return 0;
 }
@@ -159,9 +163,11 @@ int main(void) {
 #endif
     DagMlDataVTable table = {0};
     DagMlDataTensorF64 tensor = {0};
+    DagMlDataTensorF32 tensor_f32 = {0};
     table.abi_version = DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION;
     tensor.abi_version = DAG_ML_DATA_TENSOR_F64_ABI_VERSION;
-    return table.abi_version == 0 || tensor.abi_version == 0;
+    tensor_f32.abi_version = DAG_ML_DATA_TENSOR_F32_ABI_VERSION;
+    return table.abi_version == 0 || tensor.abi_version == 0 || tensor_f32.abi_version == 0;
 }
 "#,
         ),
@@ -177,9 +183,11 @@ int main(void) {
 #endif
     DagMlDataVTable table = {0};
     DagMlDataTensorF64 tensor = {0};
+    DagMlDataTensorF32 tensor_f32 = {0};
     table.abi_version = DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION;
     tensor.abi_version = DAG_ML_DATA_TENSOR_F64_ABI_VERSION;
-    return table.abi_version == 0 || tensor.abi_version == 0;
+    tensor_f32.abi_version = DAG_ML_DATA_TENSOR_F32_ABI_VERSION;
+    return table.abi_version == 0 || tensor.abi_version == 0 || tensor_f32.abi_version == 0;
 }
 "#,
         ),
@@ -326,6 +334,7 @@ int main(int argc, char **argv) {
     ArrowArray *feature_array = NULL;
     ArrowSchema *feature_schema = NULL;
     DagMlDataTensorF64 tensor = {0};
+    DagMlDataTensorF32 tensor_f32 = {0};
     DagMlDataStatusCode status;
 
     if (argc != 3) {
@@ -412,6 +421,24 @@ int main(int argc, char **argv) {
     if (tensor.shape.ptr[0] != 2 || tensor.shape.ptr[1] != 1 || tensor.presence_mask.len != 2) {
         return 17;
     }
+
+    status = dagmldata_inmemory_provider_feature_collation_tensor_f32_json(
+        &vtable,
+        view_handle,
+        (DagMlDataBytesView){tensor_selector, sizeof(tensor_selector) - 1},
+        &tensor_f32,
+        &error
+    );
+    if (status != DAG_ML_DATA_STATUS_OK || tensor_f32.abi_version != DAG_ML_DATA_TENSOR_F32_ABI_VERSION || tensor_f32.shape.len != 2 || tensor_f32.values.len != 2) {
+        return 18;
+    }
+    if (tensor_f32.values.ptr[0] != (float)tensor.values.ptr[0] || tensor_f32.values.ptr[1] != (float)tensor.values.ptr[1]) {
+        return 19;
+    }
+    if (tensor_f32.shape.ptr[0] != tensor.shape.ptr[0] || tensor_f32.shape.ptr[1] != tensor.shape.ptr[1] || tensor_f32.presence_mask.len != tensor.presence_mask.len) {
+        return 20;
+    }
+    dagmldata_tensor_f32_free(tensor_f32);
     dagmldata_tensor_f64_free(tensor);
 
     vtable.release(vtable.user_data, view_handle);

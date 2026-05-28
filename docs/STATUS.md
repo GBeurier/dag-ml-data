@@ -104,6 +104,15 @@ Implemented:
   slices and optional per-column validity bitmaps, mirroring production
   columnar layouts (Arrow IPC, Parquet, NumPy column ndarrays) and avoiding
   the row-major transpose copy paid by the row-major borrowed view path;
+- coordinator and provider-backed feature collation now also return owned
+  row-major `DagMlDataTensorF32` blocks beside the existing
+  `DagMlDataTensorF64` exports. The collation kernel still operates in f64 to
+  preserve canonical numeric semantics; values are cast to f32 at the ABI
+  boundary and rejected with `ValidationError` if any padded value, finite
+  input or padding fallback does not round-trip into a finite f32 (overflow
+  to infinity, or non-finite input). The C ABI exposes
+  `DAG_ML_DATA_TENSOR_F32_ABI_VERSION`, `dagmldata_tensor_f32_free` and the
+  matching `coordinator`/`inmemory_provider` collation entry points;
 - data-handle-scoped feature-buffer bindings are exported as JSON through the C
   ABI and become invalid when the parent data handle is released;
 - provider vtable release conformance, including parent data-handle release
@@ -132,6 +141,7 @@ Not implemented yet:
 
 Next recommended task:
 
-Extend the tensor ABI beyond f64 row-major blocks (for example f32 row-major,
-optionally i32) using the same data-handle binding contract, then broaden the
-provider arena beyond the in-memory typed numeric buffer path.
+Broaden the provider arena beyond the in-memory typed numeric buffer path
+toward production buffer sources (file-backed, mmap-backed, host-callback),
+then start consuming `dag-ml` `branch_view_plans` for selector-driven
+branch-local materialization.
