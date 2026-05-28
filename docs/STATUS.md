@@ -99,6 +99,11 @@ Implemented:
 - provider construction also accepts borrowed C `DagMlDataFeatureMatrixF64View`
   descriptors, copying them into Rust-owned feature buffers during the
   constructor call so bindings can avoid JSON numeric value transport;
+- provider construction also accepts borrowed C
+  `DagMlDataFeatureMatrixF64ColumnarView` descriptors with per-column f64
+  slices and optional per-column validity bitmaps, mirroring production
+  columnar layouts (Arrow IPC, Parquet, NumPy column ndarrays) and avoiding
+  the row-major transpose copy paid by the row-major borrowed view path;
 - data-handle-scoped feature-buffer bindings are exported as JSON through the C
   ABI and become invalid when the parent data handle is released;
 - provider vtable release conformance, including parent data-handle release
@@ -127,6 +132,6 @@ Not implemented yet:
 
 Next recommended task:
 
-Replace the current in-memory fixture buffer store with non-fixture production
-buffer sources using the same data-handle binding contract, then extend the
-tensor ABI beyond f64 row-major blocks as needed.
+Extend the tensor ABI beyond f64 row-major blocks (for example f32 row-major,
+optionally i32) using the same data-handle binding contract, then broaden the
+provider arena beyond the in-memory typed numeric buffer path.

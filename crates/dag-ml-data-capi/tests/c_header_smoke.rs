@@ -74,6 +74,7 @@ int main(void) {
     DagMlDataString out = {0};
     DagMlDataTensorF64 tensor = {0};
     DagMlDataFeatureMatrixF64View matrix = {0};
+    DagMlDataFeatureMatrixF64ColumnarView columnar = {0};
     ArrowArray *array = NULL;
     ArrowSchema *schema = NULL;
 
@@ -92,6 +93,7 @@ int main(void) {
     (void)dagmldata_inmemory_provider_new_with_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_f64_features_json((const uint8_t*)"{}", 2, NULL, 0, NULL, 0, &table, &error);
     (void)dagmldata_inmemory_provider_new_with_f64_feature_views((const uint8_t*)"{}", 2, NULL, 0, &matrix, 1, &table, &error);
+    (void)dagmldata_inmemory_provider_new_with_f64_feature_columns((const uint8_t*)"{}", 2, NULL, 0, &columnar, 1, &table, &error);
     (void)dagmldata_inmemory_provider_feature_collation_json(&table, 0, (DagMlDataBytesView){0}, &out, &error);
     (void)dagmldata_inmemory_provider_feature_collation_tensor_f64_json(&table, 0, (DagMlDataBytesView){0}, &tensor, &error);
     dagmldata_arrow_array_free(array);

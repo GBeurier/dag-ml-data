@@ -12,8 +12,8 @@ use dag_ml_data_core::{
     CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
     CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
     DatasetSchema, FeatureFusionPolicy, NumericFeatureBufferArena, NumericFeatureBufferStore,
-    NumericFeatureMatrixF64, NumericTensorBlock, ObservationId, RepresentationId,
-    SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
+    NumericFeatureMatrixF64, NumericFeatureMatrixF64Columnar, NumericTensorBlock, ObservationId,
+    RepresentationId, SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
 };
 use serde::Deserialize;
 
@@ -73,6 +73,28 @@ pub struct DagMlDataFeatureMatrixF64View {
     pub values_len: usize,
     pub validity_mask: *const u8,
     pub validity_mask_len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataF64ColumnView {
+    pub values: *const f64,
+    pub values_len: usize,
+    pub validity_mask: *const u8,
+    pub validity_mask_len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataFeatureMatrixF64ColumnarView {
+    pub feature_set_id: DagMlDataBytesView,
+    pub representation_id: DagMlDataBytesView,
+    pub feature_names: *const DagMlDataBytesView,
+    pub feature_names_len: usize,
+    pub observation_ids: *const DagMlDataBytesView,
+    pub observation_ids_len: usize,
+    pub columns: *const DagMlDataF64ColumnView,
+    pub columns_len: usize,
 }
 
 #[repr(C)]
@@ -964,6 +986,77 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_feature_views(
     }
 }
 
+/// Creates a Rust-owned in-memory provider with borrowed C column-major f64 feature matrices.
+///
+/// `DagMlDataFeatureMatrixF64ColumnarView` mirrors the production columnar
+/// layout of Arrow/Parquet/NumPy column ndarrays: one f64 slice per feature
+/// column, with optional per-column validity bitmaps. The column slices and
+/// optional validity masks are copied into Rust-owned buffers during this
+/// call, so callers may release them after the function returns and pay no
+/// row-major transpose on the hot ingestion path.
+///
+/// # Safety
+///
+/// Non-null byte pointers and matrix/column pointers must point to readable
+/// memory for the duration of the call. `out_vtable` may be null only if the
+/// caller is probing error handling.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_feature_columns(
+    envelope_ptr: *const u8,
+    envelope_len: usize,
+    target_tables_ptr: *const u8,
+    target_tables_len: usize,
+    feature_matrices_ptr: *const DagMlDataFeatureMatrixF64ColumnarView,
+    feature_matrices_len: usize,
+    out_vtable: *mut DagMlDataVTable,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_vtable(out_vtable);
+    clear_string(error_out);
+    if envelope_ptr.is_null() {
+        set_string(error_out, "envelope pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_vtable.is_null() {
+        set_string(error_out, "vtable output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let envelope_json = slice::from_raw_parts(envelope_ptr, envelope_len);
+    let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+        Ok(target_tables) => target_tables,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let feature_store =
+        match parse_f64_feature_matrix_columnar_views(feature_matrices_ptr, feature_matrices_len) {
+            Ok(feature_store) => feature_store,
+            Err(error) => {
+                set_string(error_out, error.to_string());
+                return DagMlDataStatusCode::ValidationError;
+            }
+        };
+    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+        Ok(provider) => {
+            *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Destroys a provider vtable returned by `dagmldata_inmemory_provider_new_json`.
 ///
 /// # Safety
@@ -1565,6 +1658,131 @@ unsafe fn f64_feature_matrix_view_to_core(
         values,
         validity_mask,
     })
+}
+
+unsafe fn parse_f64_feature_matrix_columnar_views(
+    feature_matrices_ptr: *const DagMlDataFeatureMatrixF64ColumnarView,
+    feature_matrices_len: usize,
+) -> dag_ml_data_core::Result<NumericFeatureBufferStore> {
+    if feature_matrices_ptr.is_null() {
+        if feature_matrices_len != 0 {
+            return Err(dag_ml_data_core::DataError::Validation(
+                "f64 columnar feature matrix views pointer is null".to_string(),
+            ));
+        }
+        return Ok(NumericFeatureBufferStore::default());
+    }
+    if feature_matrices_len == 0 {
+        return Ok(NumericFeatureBufferStore::default());
+    }
+    let views = slice::from_raw_parts(feature_matrices_ptr, feature_matrices_len);
+    let matrices = views
+        .iter()
+        .enumerate()
+        .map(|(idx, view)| f64_feature_matrix_columnar_view_to_core(*view, idx))
+        .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
+    NumericFeatureBufferStore::from_f64_column_matrices(matrices)
+}
+
+unsafe fn f64_feature_matrix_columnar_view_to_core(
+    view: DagMlDataFeatureMatrixF64ColumnarView,
+    index: usize,
+) -> dag_ml_data_core::Result<NumericFeatureMatrixF64Columnar> {
+    let feature_set_id = bytes_view_to_string(
+        view.feature_set_id,
+        &format!("f64 columnar feature matrix view {index} feature_set_id"),
+    )?;
+    let representation = bytes_view_to_string(
+        view.representation_id,
+        &format!("f64 columnar feature matrix view {index} representation_id"),
+    )?;
+    let representation_id = RepresentationId::new(&representation)?;
+    let feature_names = bytes_view_array_to_strings(
+        view.feature_names,
+        view.feature_names_len,
+        &format!("f64 columnar feature matrix view {index} feature_names"),
+    )?;
+    let observation_ids = bytes_view_array_to_strings(
+        view.observation_ids,
+        view.observation_ids_len,
+        &format!("f64 columnar feature matrix view {index} observation_ids"),
+    )?
+    .into_iter()
+    .map(|observation_id| ObservationId::new(&observation_id))
+    .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
+    let (columns, validity_masks) = f64_column_views_to_vecs(
+        view.columns,
+        view.columns_len,
+        &format!("f64 columnar feature matrix view {index}"),
+    )?;
+    Ok(NumericFeatureMatrixF64Columnar {
+        feature_set_id,
+        representation_id,
+        feature_names,
+        observation_ids,
+        columns,
+        validity_masks,
+    })
+}
+
+type ColumnarParseOutput = (Vec<Vec<f64>>, Option<Vec<Vec<bool>>>);
+
+unsafe fn f64_column_views_to_vecs(
+    columns_ptr: *const DagMlDataF64ColumnView,
+    columns_len: usize,
+    label: &str,
+) -> dag_ml_data_core::Result<ColumnarParseOutput> {
+    if columns_ptr.is_null() {
+        if columns_len != 0 {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "{label} columns pointer is null"
+            )));
+        }
+        return Ok((Vec::new(), None));
+    }
+    let column_views = slice::from_raw_parts(columns_ptr, columns_len);
+    let mut columns = Vec::with_capacity(columns_len);
+    let mut masks = Vec::with_capacity(columns_len);
+    let mut any_mask = false;
+    for (idx, column) in column_views.iter().enumerate() {
+        let values = f64_view_to_vec(
+            column.values,
+            column.values_len,
+            &format!("{label} column {idx} values"),
+        )?;
+        columns.push(values);
+        let mask = u8_validity_mask_to_vec(
+            column.validity_mask,
+            column.validity_mask_len,
+            &format!("{label} column {idx} validity_mask"),
+        )?;
+        if let Some(mask) = mask {
+            any_mask = true;
+            masks.push(mask);
+        } else {
+            masks.push(Vec::new());
+        }
+    }
+    if any_mask {
+        for (idx, (mask, column)) in masks.iter().zip(columns.iter()).enumerate() {
+            if mask.is_empty() {
+                return Err(dag_ml_data_core::DataError::Validation(format!(
+                    "{label} column {idx} validity_mask is missing but other columns supply one; \
+                     either all columns must supply a validity_mask or none"
+                )));
+            }
+            if mask.len() != column.len() {
+                return Err(dag_ml_data_core::DataError::Validation(format!(
+                    "{label} column {idx} validity_mask has {} values for {} rows",
+                    mask.len(),
+                    column.len()
+                )));
+            }
+        }
+        Ok((columns, Some(masks)))
+    } else {
+        Ok((columns, None))
+    }
 }
 
 unsafe fn bytes_view_to_string(
@@ -3657,6 +3875,222 @@ mod tests {
         assert!(invalid_vtable.user_data.is_null());
         unsafe {
             dagmldata_string_free(error);
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    #[test]
+    fn inmemory_provider_accepts_borrowed_f64_feature_matrix_columnar_views() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let materialization_request = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        );
+        let target_tables = b"[]";
+        let feature_names = [bytes_view(b"f0"), bytes_view(b"f1")];
+        let observation_ids = [
+            bytes_view(b"obs.S001.base"),
+            bytes_view(b"obs.S001.rep1"),
+            bytes_view(b"obs.S001.aug0"),
+            bytes_view(b"obs.S002.base"),
+        ];
+        let f0_values = [1.0_f64, 2.0, 3.0, 4.0];
+        let f1_values = [10.0_f64, 20.0, 30.0, 0.0];
+        let f0_mask = [1_u8, 1, 1, 1];
+        let f1_mask = [1_u8, 1, 1, 0];
+        let columns = [
+            DagMlDataF64ColumnView {
+                values: f0_values.as_ptr(),
+                values_len: f0_values.len(),
+                validity_mask: f0_mask.as_ptr(),
+                validity_mask_len: f0_mask.len(),
+            },
+            DagMlDataF64ColumnView {
+                values: f1_values.as_ptr(),
+                values_len: f1_values.len(),
+                validity_mask: f1_mask.as_ptr(),
+                validity_mask_len: f1_mask.len(),
+            },
+        ];
+        let matrices = [DagMlDataFeatureMatrixF64ColumnarView {
+            feature_set_id: bytes_view(b"x"),
+            representation_id: bytes_view(b"tabular_numeric"),
+            feature_names: feature_names.as_ptr(),
+            feature_names_len: feature_names.len(),
+            observation_ids: observation_ids.as_ptr(),
+            observation_ids_len: observation_ids.len(),
+            columns: columns.as_ptr(),
+            columns_len: columns.len(),
+        }];
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_f64_feature_columns(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                matrices.as_ptr(),
+                matrices.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut manifest_json = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
+                &vtable,
+                data_handle,
+                &mut manifest_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        let manifests: serde_json::Value =
+            serde_json::from_str(&unsafe { string_value(manifest_json) }).unwrap();
+        assert_eq!(manifests[0]["feature_set_id"], serde_json::json!("x"));
+        assert_eq!(manifests[0]["source_ids"], serde_json::json!(["nir"]));
+
+        let mut invalid_vtable = empty_vtable();
+        let short_column = [1.0_f64, 2.0];
+        let invalid_columns = [DagMlDataF64ColumnView {
+            values: short_column.as_ptr(),
+            values_len: short_column.len(),
+            validity_mask: std::ptr::null(),
+            validity_mask_len: 0,
+        }];
+        let invalid = [DagMlDataFeatureMatrixF64ColumnarView {
+            feature_set_id: bytes_view(b"x"),
+            representation_id: bytes_view(b"tabular_numeric"),
+            feature_names: feature_names.as_ptr(),
+            feature_names_len: 1,
+            observation_ids: observation_ids.as_ptr(),
+            observation_ids_len: observation_ids.len(),
+            columns: invalid_columns.as_ptr(),
+            columns_len: invalid_columns.len(),
+        }];
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_f64_feature_columns(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                invalid.as_ptr(),
+                invalid.len(),
+                &mut invalid_vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(invalid_vtable.user_data.is_null());
+
+        let mut invalid_mask_vtable = empty_vtable();
+        let bad_mask = [2_u8, 1, 1, 1];
+        let bad_mask_columns = [
+            DagMlDataF64ColumnView {
+                values: f0_values.as_ptr(),
+                values_len: f0_values.len(),
+                validity_mask: bad_mask.as_ptr(),
+                validity_mask_len: bad_mask.len(),
+            },
+            DagMlDataF64ColumnView {
+                values: f1_values.as_ptr(),
+                values_len: f1_values.len(),
+                validity_mask: f1_mask.as_ptr(),
+                validity_mask_len: f1_mask.len(),
+            },
+        ];
+        let bad_mask_matrices = [DagMlDataFeatureMatrixF64ColumnarView {
+            feature_set_id: bytes_view(b"x"),
+            representation_id: bytes_view(b"tabular_numeric"),
+            feature_names: feature_names.as_ptr(),
+            feature_names_len: feature_names.len(),
+            observation_ids: observation_ids.as_ptr(),
+            observation_ids_len: observation_ids.len(),
+            columns: bad_mask_columns.as_ptr(),
+            columns_len: bad_mask_columns.len(),
+        }];
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_f64_feature_columns(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                bad_mask_matrices.as_ptr(),
+                bad_mask_matrices.len(),
+                &mut invalid_mask_vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(invalid_mask_vtable.user_data.is_null());
+
+        let mut mixed_mask_vtable = empty_vtable();
+        let mixed_mask_columns = [
+            DagMlDataF64ColumnView {
+                values: f0_values.as_ptr(),
+                values_len: f0_values.len(),
+                validity_mask: std::ptr::null(),
+                validity_mask_len: 0,
+            },
+            DagMlDataF64ColumnView {
+                values: f1_values.as_ptr(),
+                values_len: f1_values.len(),
+                validity_mask: f1_mask.as_ptr(),
+                validity_mask_len: f1_mask.len(),
+            },
+        ];
+        let mixed_mask_matrices = [DagMlDataFeatureMatrixF64ColumnarView {
+            feature_set_id: bytes_view(b"x"),
+            representation_id: bytes_view(b"tabular_numeric"),
+            feature_names: feature_names.as_ptr(),
+            feature_names_len: feature_names.len(),
+            observation_ids: observation_ids.as_ptr(),
+            observation_ids_len: observation_ids.len(),
+            columns: mixed_mask_columns.as_ptr(),
+            columns_len: mixed_mask_columns.len(),
+        }];
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_f64_feature_columns(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                mixed_mask_matrices.as_ptr(),
+                mixed_mask_matrices.len(),
+                &mut mixed_mask_vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(mixed_mask_vtable.user_data.is_null());
+        let mixed_mask_error = unsafe { string_value(error) };
+        assert!(
+            mixed_mask_error.contains("either all columns must supply a validity_mask or none"),
+            "unexpected mixed-mask error: {mixed_mask_error}"
+        );
+
+        unsafe {
             vtable.release.unwrap()(vtable.user_data, data_handle);
             dagmldata_inmemory_provider_destroy(&mut vtable);
         }

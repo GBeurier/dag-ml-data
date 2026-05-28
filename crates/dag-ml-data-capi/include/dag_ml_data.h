@@ -82,6 +82,24 @@ typedef struct DagMlDataFeatureMatrixF64View {
     size_t validity_mask_len;
 } DagMlDataFeatureMatrixF64View;
 
+typedef struct DagMlDataF64ColumnView {
+    const double *values;
+    size_t values_len;
+    const uint8_t *validity_mask;
+    size_t validity_mask_len;
+} DagMlDataF64ColumnView;
+
+typedef struct DagMlDataFeatureMatrixF64ColumnarView {
+    DagMlDataBytesView feature_set_id;
+    DagMlDataBytesView representation_id;
+    const DagMlDataBytesView *feature_names;
+    size_t feature_names_len;
+    const DagMlDataBytesView *observation_ids;
+    size_t observation_ids_len;
+    const DagMlDataF64ColumnView *columns;
+    size_t columns_len;
+} DagMlDataFeatureMatrixF64ColumnarView;
+
 #ifndef ARROW_C_DATA_INTERFACE
 #define ARROW_C_DATA_INTERFACE
 
@@ -147,6 +165,7 @@ DagMlDataStatusCode dagmldata_inmemory_provider_new_json(const uint8_t *envelope
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_features_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *feature_tables_ptr, size_t feature_tables_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_f64_features_json(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *feature_matrices_ptr, size_t feature_matrices_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_f64_feature_views(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const DagMlDataFeatureMatrixF64View *feature_matrices, size_t feature_matrices_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_new_with_f64_feature_columns(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const DagMlDataFeatureMatrixF64ColumnarView *feature_matrices, size_t feature_matrices_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_buffer_manifest_json(const DagMlDataVTable *vtable, DagMlDataString *out_json, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_data_feature_buffer_manifest_json(const DagMlDataVTable *vtable, DagMlDataHandle data_handle, DagMlDataString *out_json, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_collation_json(const DagMlDataVTable *vtable, DagMlDataHandle view, DagMlDataBytesView selector_json, DagMlDataString *out_json, DagMlDataString *error_out);

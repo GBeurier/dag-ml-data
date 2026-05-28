@@ -55,6 +55,17 @@ pub struct NumericFeatureMatrixF64 {
     pub validity_mask: Option<Vec<bool>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NumericFeatureMatrixF64Columnar {
+    pub feature_set_id: String,
+    pub representation_id: RepresentationId,
+    pub feature_names: Vec<String>,
+    pub observation_ids: Vec<ObservationId>,
+    pub columns: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub validity_masks: Option<Vec<Vec<bool>>>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NumericFeatureBufferStore {
     buffers: BTreeMap<String, NumericFeatureBuffer>,
@@ -125,6 +136,40 @@ impl NumericFeatureBuffer {
                     .unwrap_or(true);
                 column.push(is_valid.then_some(matrix.values[flat_idx]));
             }
+        }
+        let row_index_by_observation = matrix
+            .observation_ids
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(idx, observation_id)| (observation_id, idx))
+            .collect();
+
+        Ok(Self {
+            feature_set_id: matrix.feature_set_id,
+            representation_id: matrix.representation_id,
+            feature_names: matrix.feature_names,
+            observation_ids: matrix.observation_ids,
+            columns,
+            row_index_by_observation,
+        })
+    }
+
+    pub fn from_f64_column_matrix(matrix: NumericFeatureMatrixF64Columnar) -> Result<Self> {
+        matrix.validate()?;
+        let row_count = matrix.observation_ids.len();
+        let mut columns = Vec::with_capacity(matrix.feature_names.len());
+        for (feature_idx, column_values) in matrix.columns.into_iter().enumerate() {
+            let mask = matrix
+                .validity_masks
+                .as_ref()
+                .map(|masks| masks[feature_idx].as_slice());
+            let mut column = Vec::with_capacity(row_count);
+            for (row_idx, value) in column_values.into_iter().enumerate() {
+                let is_valid = mask.map(|mask| mask[row_idx]).unwrap_or(true);
+                column.push(is_valid.then_some(value));
+            }
+            columns.push(column);
         }
         let row_index_by_observation = matrix
             .observation_ids
@@ -351,6 +396,71 @@ impl NumericFeatureMatrixF64 {
     }
 }
 
+impl NumericFeatureMatrixF64Columnar {
+    pub fn validate(&self) -> Result<()> {
+        validate_feature_shape(
+            &self.feature_set_id,
+            &self.feature_names,
+            &self.observation_ids,
+        )?;
+        if self.columns.len() != self.feature_names.len() {
+            return Err(DataError::Validation(format!(
+                "f64 columnar feature matrix `{}` has {} columns for {} features",
+                self.feature_set_id,
+                self.columns.len(),
+                self.feature_names.len()
+            )));
+        }
+        if let Some(validity_masks) = &self.validity_masks {
+            if validity_masks.len() != self.feature_names.len() {
+                return Err(DataError::Validation(format!(
+                    "f64 columnar feature matrix `{}` has {} validity_masks for {} features",
+                    self.feature_set_id,
+                    validity_masks.len(),
+                    self.feature_names.len()
+                )));
+            }
+        }
+        let row_count = self.observation_ids.len();
+        for (feature_idx, column) in self.columns.iter().enumerate() {
+            if column.len() != row_count {
+                return Err(DataError::Validation(format!(
+                    "f64 columnar feature matrix `{}` column {} has {} values for {} observations",
+                    self.feature_set_id,
+                    feature_idx,
+                    column.len(),
+                    row_count
+                )));
+            }
+            let mask = self
+                .validity_masks
+                .as_ref()
+                .map(|masks| masks[feature_idx].as_slice());
+            if let Some(mask) = mask {
+                if mask.len() != row_count {
+                    return Err(DataError::Validation(format!(
+                        "f64 columnar feature matrix `{}` column {} validity_mask has {} values for {} observations",
+                        self.feature_set_id,
+                        feature_idx,
+                        mask.len(),
+                        row_count
+                    )));
+                }
+            }
+            for (row_idx, value) in column.iter().enumerate() {
+                let is_valid = mask.map(|mask| mask[row_idx]).unwrap_or(true);
+                if is_valid && !value.is_finite() {
+                    return Err(DataError::Validation(format!(
+                        "f64 columnar feature matrix `{}` column {} row {} is not finite",
+                        self.feature_set_id, feature_idx, row_idx
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl NumericFeatureBufferStore {
     pub fn new(buffers: BTreeMap<String, NumericFeatureBuffer>) -> Result<Self> {
         for (feature_set_id, buffer) in &buffers {
@@ -386,6 +496,22 @@ impl NumericFeatureBufferStore {
             if buffers.insert(feature_set_id.clone(), buffer).is_some() {
                 return Err(DataError::Validation(format!(
                     "duplicate f64 feature matrix `{feature_set_id}`"
+                )));
+            }
+        }
+        Self::new(buffers)
+    }
+
+    pub fn from_f64_column_matrices(
+        matrices: Vec<NumericFeatureMatrixF64Columnar>,
+    ) -> Result<Self> {
+        let mut buffers = BTreeMap::new();
+        for matrix in matrices {
+            let feature_set_id = matrix.feature_set_id.clone();
+            let buffer = NumericFeatureBuffer::from_f64_column_matrix(matrix)?;
+            if buffers.insert(feature_set_id.clone(), buffer).is_some() {
+                return Err(DataError::Validation(format!(
+                    "duplicate f64 columnar feature matrix `{feature_set_id}`"
                 )));
             }
         }
@@ -699,6 +825,17 @@ mod tests {
         }
     }
 
+    fn f64_column_matrix() -> NumericFeatureMatrixF64Columnar {
+        NumericFeatureMatrixF64Columnar {
+            feature_set_id: "x".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            feature_names: vec!["f0".to_string(), "f1".to_string()],
+            observation_ids: vec![oid("obs.s1.nir"), oid("obs.s1.chem"), oid("obs.s2.nir")],
+            columns: vec![vec![1.0, 2.0, 3.0], vec![10.0, 20.0, 0.0]],
+            validity_masks: Some(vec![vec![true, true, true], vec![true, true, false]]),
+        }
+    }
+
     fn relations() -> CoordinatorRelationSet {
         CoordinatorRelationSet {
             records: vec![
@@ -922,5 +1059,90 @@ mod tests {
         let error =
             NumericFeatureBufferStore::from_feature_tables(vec![table(), table()]).unwrap_err();
         assert!(format!("{error}").contains("duplicate feature table"));
+    }
+
+    #[test]
+    fn builds_columnar_buffer_from_column_major_f64_matrix() {
+        let buffer = NumericFeatureBuffer::from_f64_column_matrix(f64_column_matrix()).unwrap();
+        assert_eq!(buffer.row_count(), 3);
+        assert_eq!(buffer.feature_count(), 2);
+
+        let block = buffer
+            .project_relations(&relations(), Some(&source("nir")), None)
+            .unwrap();
+
+        assert_eq!(
+            block.observation_ids,
+            vec![oid("obs.s2.nir"), oid("obs.s1.nir")]
+        );
+        assert_eq!(
+            block.values,
+            vec![
+                vec![serde_json::json!(3.0), serde_json::Value::Null],
+                vec![serde_json::json!(1.0), serde_json::json!(10.0)],
+            ]
+        );
+    }
+
+    #[test]
+    fn column_major_and_row_major_produce_identical_buffer_fingerprints() {
+        let row_major = NumericFeatureBuffer::from_f64_matrix(f64_matrix()).unwrap();
+        let columnar = NumericFeatureBuffer::from_f64_column_matrix(f64_column_matrix()).unwrap();
+        assert_eq!(
+            row_major.fingerprint().unwrap(),
+            columnar.fingerprint().unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_columnar_f64_matrix_shape() {
+        let mut matrix = f64_column_matrix();
+        matrix.columns[0].pop();
+        let error = NumericFeatureBuffer::from_f64_column_matrix(matrix).unwrap_err();
+        assert!(format!("{error}").contains("column 0 has 2 values"));
+
+        let mut matrix = f64_column_matrix();
+        matrix.columns.pop();
+        let error = NumericFeatureBuffer::from_f64_column_matrix(matrix).unwrap_err();
+        assert!(format!("{error}").contains("has 1 columns for 2 features"));
+
+        let mut matrix = f64_column_matrix();
+        matrix.validity_masks = Some(vec![vec![true, true, true]]);
+        let error = NumericFeatureBuffer::from_f64_column_matrix(matrix).unwrap_err();
+        assert!(format!("{error}").contains("has 1 validity_masks for 2 features"));
+
+        let mut matrix = f64_column_matrix();
+        if let Some(masks) = matrix.validity_masks.as_mut() {
+            masks[0].pop();
+        }
+        let error = NumericFeatureBuffer::from_f64_column_matrix(matrix).unwrap_err();
+        assert!(format!("{error}").contains("column 0 validity_mask has 2 values"));
+
+        let mut matrix = f64_column_matrix();
+        matrix.columns[0][0] = f64::NAN;
+        let error = NumericFeatureBuffer::from_f64_column_matrix(matrix).unwrap_err();
+        assert!(format!("{error}").contains("column 0 row 0 is not finite"));
+
+        let mut matrix = f64_column_matrix();
+        matrix.columns[1][2] = f64::NAN;
+        assert!(NumericFeatureBuffer::from_f64_column_matrix(matrix).is_ok());
+    }
+
+    #[test]
+    fn store_accepts_typed_f64_column_matrices() {
+        let store =
+            NumericFeatureBufferStore::from_f64_column_matrices(vec![f64_column_matrix()]).unwrap();
+        let manifests = store.manifests().unwrap();
+
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0].feature_set_id, "x");
+        assert_eq!(manifests[0].value_count, 6);
+
+        let error = NumericFeatureBufferStore::from_f64_column_matrices(vec![
+            f64_column_matrix(),
+            f64_column_matrix(),
+        ])
+        .unwrap_err();
+        assert!(format!("{error}").contains("duplicate f64 columnar feature matrix"));
     }
 }

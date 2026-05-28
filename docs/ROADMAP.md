@@ -53,11 +53,14 @@ through deterministic feature-buffer manifests before Arrow export. The
 preferred numeric conformance inputs are typed row-major
 `NumericFeatureMatrixF64` values and borrowed C `DagMlDataFeatureMatrixF64View`
 descriptors with optional validity masks, avoiding per-cell JSON numeric value
-transport. The arena binds compatible buffers to each materialized data handle
-after source-scoped relations are known, and provider feature/fusion/collation
-exports validate those bindings before exporting Arrow or tensors. Next:
-replace the in-memory typed input path with production buffer sources using the
-same manifest/binding/projection contract.
+transport. The borrowed C path also accepts column-major
+`DagMlDataFeatureMatrixF64ColumnarView` descriptors with per-column f64 slices
+and optional per-column validity bitmaps, mirroring Arrow/Parquet/NumPy
+columnar layouts and avoiding the row-major transpose copy. The arena binds
+compatible buffers to each materialized data handle after source-scoped
+relations are known, and provider feature/fusion/collation exports validate
+those bindings before exporting Arrow or tensors. Next: extend the tensor ABI
+beyond f64 row-major blocks using the same data-handle binding contract.
 
 ## Phase 3: Alignment, Fusion And Collation
 
