@@ -32,6 +32,20 @@ checkout, validates the shared conformance-pack digests, and CI checks out that
 peer explicitly. When development moves into a monorepo, this file should
 become a single generated or shared contract artifact used by both crates.
 
+## Coordinator Branch View v1
+
+Schema: `coordinator_branch_view.schema.json`
+
+Runtime type produced here: `CoordinatorBranchView` (the optional `branch_view`
+field on `DataView`), mirroring `dag-ml`'s `BranchViewPlan` wire shape. The
+schema covers `view_id`, `branch_id`, `mode`
+(`separation`/`by_source`/`by_metadata`/`by_tag`/`by_filter`), `selector`
+(union over `source_ids`/`metadata`/`tags`/`filter`), `allow_overlap` and
+`metadata`. The in-memory arena executes `by_source` natively; the other modes
+validate at the contract layer but require host-side filtering for execution.
+The conformance pack pins the normalized SHA-256 of this schema and
+`scripts/validate_contracts.py` enforces it in both repos.
+
 ## Feature Fusion Selector v1
 
 Schema: `feature_fusion_selector.schema.json`

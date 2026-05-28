@@ -10,6 +10,9 @@ use crate::plan::DataPlan;
 use crate::relation::SampleRelationTable;
 
 pub const COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION: u32 = 1;
+pub const COORDINATOR_BRANCH_VIEW_SCHEMA_VERSION: u32 = 1;
+pub const COORDINATOR_BRANCH_VIEW_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml-data/schemas/coordinator_branch_view.v1.schema.json";
 
 fn default_coordinator_data_plan_envelope_schema_version() -> u32 {
     COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
@@ -450,6 +453,40 @@ mod tests {
         view.view_id = "".to_string();
         let error = view.validate().unwrap_err();
         assert!(format!("{error}").contains("view_id is empty"));
+    }
+
+    #[test]
+    fn published_branch_view_schema_declares_current_id() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/coordinator_branch_view.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            schema["$id"].as_str(),
+            Some(COORDINATOR_BRANCH_VIEW_SCHEMA_ID)
+        );
+        assert!(
+            schema["$id"].as_str().unwrap().ends_with(&format!(
+                "v{COORDINATOR_BRANCH_VIEW_SCHEMA_VERSION}.schema.json"
+            )),
+            "schema $id `{}` must encode version v{COORDINATOR_BRANCH_VIEW_SCHEMA_VERSION}",
+            schema["$id"]
+        );
+        let modes = schema["$defs"]["branch_view_mode"]["enum"]
+            .as_array()
+            .unwrap();
+        for expected in [
+            "separation",
+            "by_source",
+            "by_metadata",
+            "by_tag",
+            "by_filter",
+        ] {
+            assert!(
+                modes.iter().any(|value| value.as_str() == Some(expected)),
+                "schema branch_view_mode is missing `{expected}`"
+            );
+        }
     }
 
     #[test]

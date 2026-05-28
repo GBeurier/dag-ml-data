@@ -22,6 +22,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
+BRANCH_VIEW_SCHEMA_REL = Path("docs/contracts/coordinator_branch_view.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
 LOCAL_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
@@ -42,6 +43,10 @@ LOCAL_SCHEMA_ID = (
 LOCAL_FEATURE_FUSION_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml-data/schemas/"
     "feature_fusion_selector.v1.schema.json"
+)
+LOCAL_BRANCH_VIEW_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml-data/schemas/"
+    "coordinator_branch_view.v1.schema.json"
 )
 SIBLING_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -160,6 +165,37 @@ def validate_feature_fusion_schema_artifact(schema: Any, expected_id: str, label
     require(isinstance(defs, dict), f"{label} feature-fusion $defs are missing")
     for name in ("source", "alignment", "presence_mask"):
         require(name in defs, f"{label} feature-fusion schema misses `{name}` definition")
+
+
+def validate_branch_view_schema_artifact(schema: Any, expected_id: str, label: str) -> None:
+    require(isinstance(schema, dict), f"{label} branch-view schema must be a JSON object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} branch-view schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == expected_id,
+        f"{label} branch-view schema has unexpected $id",
+    )
+    require(schema.get("type") == "object", f"{label} branch-view root must be an object")
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} branch-view required list is missing")
+    for field in ("view_id", "branch_id", "mode", "selector"):
+        require(field in required, f"{label} branch-view schema does not require `{field}`")
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} branch-view $defs are missing")
+    for name in ("branch_view_mode", "branch_view_selector"):
+        require(name in defs, f"{label} branch-view schema misses `{name}` definition")
+    modes = defs.get("branch_view_mode", {}).get("enum")
+    require(
+        isinstance(modes, list),
+        f"{label} branch-view mode enum is missing",
+    )
+    for expected in ("separation", "by_source", "by_metadata", "by_tag", "by_filter"):
+        require(
+            expected in modes,
+            f"{label} branch-view mode enum must include `{expected}`",
+        )
 
 
 def validate_envelope(envelope: Any, label: str) -> None:
@@ -366,6 +402,7 @@ def validate_conformance_pack(
     pack: Any,
     schema: Any,
     feature_fusion_schema: Any,
+    branch_view_schema: Any,
     fixture: Any,
     feature_fusion_fixture: Any,
     header: str,
@@ -390,6 +427,13 @@ def validate_conformance_pack(
         "json_schema",
         1,
         f"{label} feature fusion selector contract",
+    )
+    validate_digest_record(
+        contracts.get("coordinator_branch_view.v1"),
+        canonical_json_sha256(normalize_schema(branch_view_schema)),
+        "json_schema",
+        1,
+        f"{label} coordinator branch view contract",
     )
 
     fixtures = pack.get("fixtures")
@@ -485,6 +529,7 @@ def main() -> int:
     try:
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
+        local_branch_view_schema = load_json(ROOT / BRANCH_VIEW_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
@@ -495,6 +540,11 @@ def main() -> int:
             LOCAL_FEATURE_FUSION_SCHEMA_ID,
             "dag-ml-data",
         )
+        validate_branch_view_schema_artifact(
+            local_branch_view_schema,
+            LOCAL_BRANCH_VIEW_SCHEMA_ID,
+            "dag-ml-data",
+        )
         validate_envelope(local_fixture, "dag-ml-data")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml-data")
         validate_data_provider_header(local_header, "dag-ml-data")
@@ -503,6 +553,7 @@ def main() -> int:
             local_pack,
             local_schema,
             local_feature_fusion_schema,
+            local_branch_view_schema,
             local_fixture,
             local_feature_fusion_fixture,
             local_header,
@@ -531,10 +582,15 @@ def main() -> int:
         validate_envelope(sibling_fixture, "dag-ml")
         validate_feature_fusion_selector(sibling_feature_fusion_fixture, "dag-ml")
         validate_data_provider_header(sibling_header, "dag-ml")
+        # dag-ml does not yet publish a standalone coordinator_branch_view schema —
+        # its `branch_view_plan` lives inline in `campaign_spec.schema.json` $defs.
+        # When dag-ml publishes a standalone schema, mirror the local
+        # `validate_branch_view_schema_artifact` + conformance-pack call here.
         validate_conformance_pack(
             sibling_pack,
             sibling_schema,
             sibling_feature_fusion_schema,
+            local_branch_view_schema,
             sibling_fixture,
             sibling_feature_fusion_fixture,
             sibling_header,

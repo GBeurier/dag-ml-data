@@ -124,6 +124,12 @@ Implemented:
   validation but are rejected for in-memory execution with a clear
   `requires host-side filtering` error so production providers can route
   them to native filter backends without breaking ABI compatibility;
+- published `coordinator_branch_view.schema.json` for that contract, with
+  matching `COORDINATOR_BRANCH_VIEW_SCHEMA_ID` Rust constant, the same digest
+  pinned in both repos' `conformance_pack.v1.json` and
+  `scripts/validate_contracts.py` validating the published schema artifact
+  shape + mode enum coverage in both `dag-ml-data` and the sibling `dag-ml`
+  checkout;
 - fitted adapter serialization contract: `FittedAdapterRef`
   (`adapter_id`, `adapter_version`, `params_fingerprint`, optional
   `backend`/`uri`/`content_fingerprint`/`size_bytes`/`plugin`/`plugin_version`/
