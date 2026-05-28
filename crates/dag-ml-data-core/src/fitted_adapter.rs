@@ -1,5 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -165,6 +167,53 @@ impl FittedAdapterManifest {
     /// across machines or repositories.
     pub fn validate_portable(&self) -> Result<()> {
         self.validate_inner(true)
+    }
+
+    /// Writes the manifest as pretty-printed UTF-8 JSON to `path`.
+    /// `require_portable` toggles between [`Self::validate`] and
+    /// [`Self::validate_portable`] before writing, so a manifest is never
+    /// persisted in a state that would not load cleanly on the other side.
+    pub fn write_to_path(&self, path: &Path, require_portable: bool) -> Result<()> {
+        if require_portable {
+            self.validate_portable()?;
+        } else {
+            self.validate()?;
+        }
+        let payload = serde_json::to_vec_pretty(self).map_err(|error| {
+            DataError::Validation(format!(
+                "failed to serialize fitted adapter manifest to JSON: {error}"
+            ))
+        })?;
+        fs::write(path, payload).map_err(|error| {
+            DataError::Validation(format!(
+                "failed to write fitted adapter manifest to `{}`: {error}",
+                path.display()
+            ))
+        })
+    }
+
+    /// Reads the manifest back from `path`. Applies the same `require_portable`
+    /// gate as [`Self::write_to_path`] so loaded manifests are immediately
+    /// safe to use.
+    pub fn read_from_path(path: &Path, require_portable: bool) -> Result<Self> {
+        let bytes = fs::read(path).map_err(|error| {
+            DataError::Validation(format!(
+                "failed to read fitted adapter manifest from `{}`: {error}",
+                path.display()
+            ))
+        })?;
+        let manifest: Self = serde_json::from_slice(&bytes).map_err(|error| {
+            DataError::Validation(format!(
+                "failed to parse fitted adapter manifest from `{}`: {error}",
+                path.display()
+            ))
+        })?;
+        if require_portable {
+            manifest.validate_portable()?;
+        } else {
+            manifest.validate()?;
+        }
+        Ok(manifest)
     }
 
     fn validate_inner(&self, require_portable: bool) -> Result<()> {
@@ -622,6 +671,61 @@ mod tests {
         manifest.schema_version = FITTED_ADAPTER_MANIFEST_SCHEMA_VERSION + 1;
         let error = manifest.validate().unwrap_err();
         assert!(format!("{error}").contains("unsupported schema_version"));
+    }
+
+    #[test]
+    fn manifest_round_trips_through_file_persistence() {
+        let manifest = FittedAdapterManifest::new(vec![FittedAdapterManifestEntry {
+            adapter_id: "snv".to_string(),
+            fitted_adapter: portable_ref(),
+        }]);
+        let path = std::env::temp_dir().join(format!(
+            "dag_ml_data_fitted_adapter_manifest_roundtrip_{}.json",
+            std::process::id()
+        ));
+        manifest.write_to_path(&path, true).unwrap();
+        let loaded = FittedAdapterManifest::read_from_path(&path, true).unwrap();
+        assert_eq!(loaded, manifest);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn manifest_file_persistence_rejects_inline_when_portable_required() {
+        let manifest = FittedAdapterManifest::new(vec![FittedAdapterManifestEntry {
+            adapter_id: "snv".to_string(),
+            fitted_adapter: FittedAdapterRef {
+                uri: None,
+                backend: None,
+                content_fingerprint: None,
+                plugin: None,
+                plugin_version: None,
+                ..portable_ref()
+            },
+        }]);
+        let path = std::env::temp_dir().join(format!(
+            "dag_ml_data_fitted_adapter_manifest_inline_{}.json",
+            std::process::id()
+        ));
+        let error = manifest.write_to_path(&path, true).unwrap_err();
+        assert!(format!("{error}").contains("is not portable"));
+        manifest.write_to_path(&path, false).unwrap();
+        let loaded_inline = FittedAdapterManifest::read_from_path(&path, false).unwrap();
+        assert_eq!(loaded_inline, manifest);
+        let portable_load_error = FittedAdapterManifest::read_from_path(&path, true).unwrap_err();
+        assert!(format!("{portable_load_error}").contains("is not portable"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn manifest_file_persistence_reports_missing_paths() {
+        let path = std::env::temp_dir().join(format!(
+            "dag_ml_data_fitted_adapter_manifest_missing_{}.json",
+            std::process::id()
+        ));
+        // Ensure path does not exist.
+        let _ = std::fs::remove_file(&path);
+        let error = FittedAdapterManifest::read_from_path(&path, false).unwrap_err();
+        assert!(format!("{error}").contains("failed to read fitted adapter manifest"));
     }
 
     #[test]

@@ -130,6 +130,13 @@ Implemented:
   `scripts/validate_contracts.py` validating the published schema artifact
   shape + mode enum coverage in both `dag-ml-data` and the sibling `dag-ml`
   checkout;
+- file-backed persistence for `FittedAdapterManifest`:
+  `FittedAdapterManifest::write_to_path` writes pretty-printed JSON to disk
+  after running the same `validate`/`validate_portable` gate that
+  `read_from_path` enforces on load. The `require_portable` flag is honored
+  symmetrically so manifests can never be persisted in a state that would
+  not load cleanly on the other side, giving hosts a real cross-process
+  persistence path without taking on a serialization dependency in core;
 - runtime fitted-adapter store: `RuntimeFittedAdapterStore` trait plus the
   in-memory `InMemoryFittedAdapterStore` that registers `FittedAdapterRef`
   records, allocates deterministic opaque u64 handles, and materializes them
