@@ -158,6 +158,17 @@ Implemented:
   carry an owned `DagMlDataString`. Allows non-Rust bindings to drive the
   full register/materialize/release cycle through the ABI without parsing
   JSON inside Rust;
+- the in-memory provider can attach a fitted-adapter store through
+  `dagmldata_inmemory_provider_attach_fitted_adapter_store`, after which
+  host controllers running through the provider's vtable can materialize
+  fitted adapters via
+  `dagmldata_inmemory_provider_materialize_fitted_adapter_json`. The
+  provider holds a `Mutex`-guarded borrowed pointer to the store (the
+  caller keeps ownership), passing a null handle detaches without freeing.
+  Closes the gap where the fitted-adapter contract layer had no
+  scheduler-time consumer: the provider is now the consumer, the same way
+  the artifact store on `dag-ml` is consumed by REFIT-phase controllers
+  going through the runtime provider;
 - published `fitted_adapter_ref.schema.json` for the data-side fitted adapter
   contract, with matching `FITTED_ADAPTER_REF_SCHEMA_ID` Rust constant, the
   same digest pinned in both repos' `conformance_pack.v1.json` and

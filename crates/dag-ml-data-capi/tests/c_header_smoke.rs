@@ -108,6 +108,11 @@ int main(void) {
     (void)dagmldata_inmemory_fitted_adapter_store_register_json(fitted_store, (const uint8_t*)"{}", 2, &fitted_handle, &error);
     (void)dagmldata_inmemory_fitted_adapter_store_materialize_json(fitted_store, (const uint8_t*)"{}", 2, &fitted_handle, &error);
     (void)dagmldata_inmemory_fitted_adapter_store_release(fitted_store, (const uint8_t*)"snv", 3, &fitted_released);
+    (void)dagmldata_inmemory_provider_attach_fitted_adapter_store(&table, fitted_store, &error);
+    {
+        uint64_t adapter_handle = 0;
+        (void)dagmldata_inmemory_provider_materialize_fitted_adapter_json(&table, (const uint8_t*)"{}", 2, &adapter_handle, &error);
+    }
     dagmldata_inmemory_fitted_adapter_store_destroy(fitted_store);
     dagmldata_arrow_array_free(array);
     dagmldata_arrow_schema_free(schema);

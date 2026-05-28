@@ -189,6 +189,8 @@ void dagmldata_inmemory_fitted_adapter_store_destroy(DagMlDataFittedAdapterStore
 DagMlDataStatusCode dagmldata_inmemory_fitted_adapter_store_register_json(DagMlDataFittedAdapterStoreHandle store, const uint8_t *json_ptr, size_t json_len, uint64_t *out_handle, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_fitted_adapter_store_materialize_json(DagMlDataFittedAdapterStoreHandle store, const uint8_t *json_ptr, size_t json_len, uint64_t *out_handle, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_fitted_adapter_store_release(DagMlDataFittedAdapterStoreHandle store, const uint8_t *adapter_id, size_t adapter_id_len, uint8_t *out_released);
+DagMlDataStatusCode dagmldata_inmemory_provider_attach_fitted_adapter_store(const DagMlDataVTable *vtable, DagMlDataFittedAdapterStoreHandle store, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_materialize_fitted_adapter_json(const DagMlDataVTable *vtable, const uint8_t *json_ptr, size_t json_len, uint64_t *out_handle, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_identity_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_target_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_feature_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);

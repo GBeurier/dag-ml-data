@@ -660,6 +660,119 @@ pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_release(
     DagMlDataStatusCode::Ok
 }
 
+/// Attaches a fitted-adapter store handle to a Rust-owned in-memory provider
+/// vtable so the provider's controllers can materialize fitted-adapter
+/// handles through the same lifecycle as the data/view handles. The provider
+/// holds a borrowed pointer to the store; the host must keep the store alive
+/// while it stays attached and must clear the attachment (by attaching a
+/// null handle) before calling `dagmldata_inmemory_fitted_adapter_store_destroy`
+/// on the store. Passing `store.ptr == null` detaches any previously
+/// attached store without freeing it.
+///
+/// # Safety
+///
+/// `vtable` must point to a live `DagMlDataVTable` returned by one of the
+/// `dagmldata_inmemory_provider_new*` constructors. `store.ptr` must either
+/// be null or a live store handle returned by
+/// `dagmldata_inmemory_fitted_adapter_store_new`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_attach_fitted_adapter_store(
+    vtable: *const DagMlDataVTable,
+    store: DagMlDataFittedAdapterStoreHandle,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if vtable.is_null() || (*vtable).user_data.is_null() {
+        set_string(error_out, "provider vtable or user_data is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    let store_ptr = if store.ptr.is_null() {
+        std::ptr::null()
+    } else {
+        store.ptr.cast::<InMemoryFittedAdapterStore>() as *const _
+    };
+    match provider.fitted_adapter_store.lock() {
+        Ok(mut slot) => {
+            *slot = store_ptr;
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(
+                error_out,
+                format!("provider fitted-adapter mutex poisoned: {error}"),
+            );
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Materializes a fitted-adapter handle through the provider's attached
+/// store. Returns `InvalidArgument` if no fitted-adapter store is attached,
+/// `ValidationError` if the request fails, otherwise writes the opaque u64
+/// handle to `out_handle` and returns `Ok`.
+///
+/// # Safety
+///
+/// `vtable` must point to a live provider vtable. `json_ptr` must point to
+/// `json_len` readable bytes encoding a `FittedAdapterMaterializationRequest`.
+/// `out_handle` and `error_out` may be null; returned error strings must be
+/// released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_materialize_fitted_adapter_json(
+    vtable: *const DagMlDataVTable,
+    json_ptr: *const u8,
+    json_len: usize,
+    out_handle: *mut u64,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if vtable.is_null() || (*vtable).user_data.is_null() || json_ptr.is_null() {
+        set_string(error_out, "provider vtable, user_data or json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    let store_ptr = match provider.fitted_adapter_store.lock() {
+        Ok(guard) => *guard,
+        Err(error) => {
+            set_string(
+                error_out,
+                format!("provider fitted-adapter mutex poisoned: {error}"),
+            );
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    if store_ptr.is_null() {
+        set_string(
+            error_out,
+            "provider has no fitted-adapter store attached; \
+             call dagmldata_inmemory_provider_attach_fitted_adapter_store first",
+        );
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let store = &*store_ptr;
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    let request: FittedAdapterMaterializationRequest = match serde_json::from_slice(json) {
+        Ok(request) => request,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match store.materialize(&request) {
+        Ok(handle) => {
+            if !out_handle.is_null() {
+                *out_handle = handle;
+            }
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Validates a JSON `FittedAdapterRef` payload against the published v1
 /// contract (`fitted_adapter_ref.v1`). Returns `Ok` if the payload parses,
 /// passes shape validation and either inline or portable validation as
@@ -1984,7 +2097,20 @@ struct InMemoryProvider {
     envelope: CoordinatorDataPlanEnvelope,
     target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
     feature_arena: RefCell<NumericFeatureBufferArena>,
+    // Borrowed pointer to a host-owned `InMemoryFittedAdapterStore`. The host
+    // is responsible for keeping the store alive while it stays attached to
+    // the provider and for clearing the attachment (by attaching a null
+    // handle) before destroying the store. The pointer is read inside a
+    // `Mutex` guard so concurrent attach/detach from multiple host threads
+    // never race the materialize path.
+    fitted_adapter_store: std::sync::Mutex<*const InMemoryFittedAdapterStore>,
 }
+
+// The fitted-adapter store pointer is only ever dereferenced while the
+// `Mutex` is held, and `InMemoryFittedAdapterStore` is itself `Send + Sync`,
+// so the borrowed pointer is safe to share across threads.
+unsafe impl Send for InMemoryProvider {}
+unsafe impl Sync for InMemoryProvider {}
 
 impl InMemoryProvider {
     fn new(
@@ -1998,6 +2124,7 @@ impl InMemoryProvider {
             envelope,
             target_tables,
             feature_arena: RefCell::new(NumericFeatureBufferArena::new(feature_store)),
+            fitted_adapter_store: std::sync::Mutex::new(std::ptr::null()),
         })
     }
 }
@@ -3373,6 +3500,129 @@ mod tests {
         assert_eq!(released, 1);
 
         unsafe { dagmldata_inmemory_fitted_adapter_store_destroy(store) };
+    }
+
+    #[test]
+    fn provider_attached_fitted_adapter_store_materializes_handles() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let mut provider_vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_json(
+                envelope.as_ptr(),
+                envelope.len(),
+                b"[]".as_ptr(),
+                2,
+                &mut provider_vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut store = DagMlDataFittedAdapterStoreHandle::default();
+        let status = unsafe { dagmldata_inmemory_fitted_adapter_store_new(&mut store) };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(!store.ptr.is_null());
+
+        let ref_payload = br#"{
+  "schema_version": 1,
+  "adapter_id": "snv",
+  "adapter_version": "1.0.0",
+  "params_fingerprint": "12121212121212121212121212121212121212121212121212121212121212ab"
+}"#;
+        let mut adapter_handle: u64 = 0;
+        let status = unsafe {
+            dagmldata_inmemory_fitted_adapter_store_register_json(
+                store,
+                ref_payload.as_ptr(),
+                ref_payload.len(),
+                &mut adapter_handle,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert_eq!(adapter_handle, 1);
+
+        // Materializing through the provider BEFORE attaching the store is rejected.
+        let request_payload = br#"{
+  "adapter_id": "snv",
+  "params_fingerprint": "12121212121212121212121212121212121212121212121212121212121212ab"
+}"#;
+        let mut materialize_handle: u64 = 0;
+        let status = unsafe {
+            dagmldata_inmemory_provider_materialize_fitted_adapter_json(
+                &provider_vtable,
+                request_payload.as_ptr(),
+                request_payload.len(),
+                &mut materialize_handle,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::InvalidArgument);
+        let message = unsafe { string_value(error) };
+        assert!(
+            message.contains("no fitted-adapter store attached"),
+            "unexpected: {message}"
+        );
+
+        // Attach the store, then materialize through the provider succeeds.
+        let mut attach_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_attach_fitted_adapter_store(
+                &provider_vtable,
+                store,
+                &mut attach_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(attach_error.ptr.is_null());
+
+        let mut materialize_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_materialize_fitted_adapter_json(
+                &provider_vtable,
+                request_payload.as_ptr(),
+                request_payload.len(),
+                &mut materialize_handle,
+                &mut materialize_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert_eq!(materialize_handle, 1);
+        assert!(materialize_error.ptr.is_null());
+
+        // Detach by passing a null handle.
+        let null_handle = DagMlDataFittedAdapterStoreHandle::default();
+        let mut detach_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_attach_fitted_adapter_store(
+                &provider_vtable,
+                null_handle,
+                &mut detach_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut detached_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_materialize_fitted_adapter_json(
+                &provider_vtable,
+                request_payload.as_ptr(),
+                request_payload.len(),
+                &mut materialize_handle,
+                &mut detached_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::InvalidArgument);
+        let detached_message = unsafe { string_value(detached_error) };
+        assert!(detached_message.contains("no fitted-adapter store attached"));
+
+        unsafe {
+            dagmldata_inmemory_fitted_adapter_store_destroy(store);
+            dagmldata_inmemory_provider_destroy(&mut provider_vtable);
+        }
     }
 
     #[test]
