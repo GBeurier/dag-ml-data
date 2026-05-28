@@ -1,7 +1,7 @@
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -287,35 +287,53 @@ pub trait RuntimeFittedAdapterStore {
 
 #[derive(Debug, Default)]
 pub struct InMemoryFittedAdapterStore {
-    next_handle: RefCell<u64>,
-    records: RefCell<BTreeMap<String, FittedAdapterHandleRecord>>,
+    state: Mutex<FittedAdapterStoreState>,
+}
+
+#[derive(Debug, Default)]
+struct FittedAdapterStoreState {
+    next_handle: u64,
+    records: BTreeMap<String, FittedAdapterHandleRecord>,
 }
 
 impl InMemoryFittedAdapterStore {
     pub fn new() -> Self {
         Self {
-            next_handle: RefCell::new(1),
-            records: RefCell::new(BTreeMap::new()),
+            state: Mutex::new(FittedAdapterStoreState {
+                next_handle: 1,
+                records: BTreeMap::new(),
+            }),
         }
+    }
+
+    /// Locks the store, propagating poison errors as a validation failure.
+    /// Poisoning happens when another thread panicked while holding the lock;
+    /// for an in-memory contract store the right policy is to surface the
+    /// error rather than silently `recover` from it.
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, FittedAdapterStoreState>> {
+        self.state.lock().map_err(|error| {
+            DataError::Validation(format!("fitted adapter store mutex poisoned: {error}"))
+        })
     }
 
     pub fn register(&self, fitted_adapter: FittedAdapterRef) -> Result<FittedAdapterHandleRecord> {
         fitted_adapter.validate()?;
-        let mut records = self.records.borrow_mut();
-        if records.contains_key(&fitted_adapter.adapter_id) {
+        let mut state = self.lock()?;
+        if state.records.contains_key(&fitted_adapter.adapter_id) {
             return Err(DataError::Validation(format!(
                 "fitted adapter store already has handle for `{}`",
                 fitted_adapter.adapter_id
             )));
         }
-        let mut next_handle = self.next_handle.borrow_mut();
-        let handle = *next_handle;
-        *next_handle += 1;
+        let handle = state.next_handle;
+        state.next_handle += 1;
         let record = FittedAdapterHandleRecord {
             handle,
             fitted_adapter,
         };
-        records.insert(record.fitted_adapter.adapter_id.clone(), record.clone());
+        state
+            .records
+            .insert(record.fitted_adapter.adapter_id.clone(), record.clone());
         Ok(record)
     }
 
@@ -332,27 +350,33 @@ impl InMemoryFittedAdapterStore {
     }
 
     pub fn get(&self, adapter_id: &str) -> Option<FittedAdapterHandleRecord> {
-        self.records.borrow().get(adapter_id).cloned()
+        let state = self.lock().ok()?;
+        state.records.get(adapter_id).cloned()
     }
 
     pub fn release(&self, adapter_id: &str) -> bool {
-        self.records.borrow_mut().remove(adapter_id).is_some()
+        match self.lock() {
+            Ok(mut state) => state.records.remove(adapter_id).is_some(),
+            Err(_) => false,
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.records.borrow().len()
+        self.lock().map(|state| state.records.len()).unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.records.borrow().is_empty()
+        self.lock()
+            .map(|state| state.records.is_empty())
+            .unwrap_or(true)
     }
 }
 
 impl RuntimeFittedAdapterStore for InMemoryFittedAdapterStore {
     fn materialize(&self, request: &FittedAdapterMaterializationRequest) -> Result<u64> {
         request.validate()?;
-        let records = self.records.borrow();
-        let record = records.get(&request.adapter_id).ok_or_else(|| {
+        let state = self.lock()?;
+        let record = state.records.get(&request.adapter_id).ok_or_else(|| {
             DataError::Validation(format!(
                 "fitted adapter store is missing adapter `{}`",
                 request.adapter_id
@@ -726,6 +750,37 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let error = FittedAdapterManifest::read_from_path(&path, false).unwrap_err();
         assert!(format!("{error}").contains("failed to read fitted adapter manifest"));
+    }
+
+    #[test]
+    fn in_memory_store_is_sync_and_handles_concurrent_register_calls() {
+        use std::sync::Arc;
+
+        // Compile-time check: store must be Send + Sync so it can be shared
+        // across host threads through the C ABI handle.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<InMemoryFittedAdapterStore>();
+
+        let store = Arc::new(InMemoryFittedAdapterStore::new());
+        let mut handles = Vec::new();
+        for thread_idx in 0..8 {
+            let store = store.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut record = portable_ref();
+                record.adapter_id = format!("snv:{thread_idx}");
+                store.register(record).unwrap()
+            }));
+        }
+        let records: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(records.len(), 8);
+        assert_eq!(store.len(), 8);
+        let mut handle_ids: Vec<u64> = records.iter().map(|record| record.handle).collect();
+        handle_ids.sort();
+        // Handles are assigned 1..=8 across the threads, no duplicates.
+        assert_eq!(handle_ids, (1..=8).collect::<Vec<u64>>());
     }
 
     #[test]

@@ -145,7 +145,11 @@ Implemented:
   accepts a `FittedAdapterManifest` for bulk registration; the store never
   reads, writes or deserializes adapter payloads — payload materialization
   stays host-side, behind the opaque handle, mirroring the dag-ml
-  `RuntimeArtifactStore` lifecycle for model artifacts;
+  `RuntimeArtifactStore` lifecycle for model artifacts. The store is
+  `Send + Sync` (backed by `std::sync::Mutex`), so the same handle can be
+  shared across host threads through the C ABI without external locking;
+  poisoned-mutex errors surface as validation failures rather than silent
+  recoveries;
 - C ABI for the in-memory fitted-adapter store:
   `DagMlDataFittedAdapterStoreHandle` opaque pointer with
   `dagmldata_inmemory_fitted_adapter_store_new` / `destroy` lifecycle,

@@ -476,6 +476,13 @@ pub unsafe extern "C" fn dagmldata_schema_fingerprint_json(
 /// Opaque handle to a Rust-owned in-memory fitted-adapter store. Callers
 /// receive this from `dagmldata_inmemory_fitted_adapter_store_new` and must
 /// eventually release it with `dagmldata_inmemory_fitted_adapter_store_destroy`.
+///
+/// The underlying Rust store is internally synchronized with a
+/// `std::sync::Mutex`, so the same handle value can be shared across host
+/// threads and concurrent `register`/`materialize`/`release` calls serialize
+/// safely instead of racing. `destroy` is the only operation that must be
+/// externally synchronized: no other call on the handle may overlap with
+/// `destroy`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataFittedAdapterStoreHandle {
