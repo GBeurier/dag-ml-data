@@ -91,13 +91,22 @@ still operates in f64 to preserve canonical numeric semantics; values are cast
 to f32 at the ABI boundary and the call is rejected when any value would
 round-trip to a non-finite f32. Production provider arenas are still pending.
 
-## Phase 4: nirs4all Connector
+## Phase 4: nirs4all Connector — DESCOPED
 
-Definition of done:
+Status: **descoped, owned by `nirs4all-io`**. See
+`docs/ADR-0001-nirs4all-connector-ownership.md` for the rationale.
 
-- `SpectroDataset` connector exposing `SourceDescriptor`;
-- dense signal representations for current NIRS layouts;
-- compatibility tests against current `nirs4all` pipeline behavior.
+`dag-ml-data` retains its NIRS-agnostic invariant; `nirs4all-io` is the
+sole crate that converts `SpectroDataset` into a
+`CoordinatorDataPlanEnvelope` and depends on `dag-ml-data` for the
+envelope contract. The original deliverables (`SpectroDataset`
+connector, dense signal representations, compatibility tests) move to
+`nirs4all-io`'s Phase 2 backlog.
+
+The only `dag-ml-data` change pulled in by this descoping is the
+generic spectroscopy axis `AxisKind::Wavenumber`, which unblocks IR
+and Raman use cases without adding `nirs4all`-specific business
+logic to core.
 
 ## Phase 5: Bundle Replay
 

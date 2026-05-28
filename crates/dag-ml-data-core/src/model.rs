@@ -7,6 +7,7 @@ use crate::ids::{RepresentationId, SampleId, SourceId, TargetId, TypeId};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AxisKind {
     Sample,
     Feature,
@@ -21,6 +22,7 @@ pub enum AxisKind {
     Token,
     Target,
     Wavelength,
+    Wavenumber,
     Frequency,
     Depth,
 }
@@ -303,5 +305,40 @@ mod tests {
         };
 
         assert!(repr.validate().is_ok());
+    }
+
+    #[test]
+    fn axis_kind_wavenumber_serializes_and_round_trips() {
+        let value = AxisKind::Wavenumber;
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(json, "\"wavenumber\"");
+        let decoded: AxisKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn axis_kind_wavenumber_accepted_in_representation_axis() {
+        let axes = vec![
+            sample_axis(),
+            AxisSpec {
+                name: "wavenumber".to_string(),
+                kind: AxisKind::Wavenumber,
+                unit: Some("cm-1".to_string()),
+                size: Some(1024),
+                variable: false,
+                coordinates: None,
+            },
+        ];
+        let repr = RepresentationSpec {
+            id: RepresentationId::new("ftir_spectrum").unwrap(),
+            type_id: TypeId::new("dense_signal").unwrap(),
+            rank: Some(2),
+            axes,
+            container: "ndarray".to_string(),
+            dtype: Some("float64".to_string()),
+            sparse: false,
+            ragged: false,
+        };
+        repr.validate().unwrap();
     }
 }

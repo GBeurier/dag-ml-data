@@ -217,6 +217,14 @@ Implemented:
   `dagmldata_inmemory_provider_new_from_file` constructs the same
   `InMemoryProvider` from a `.n4d` file path. Lets hosts persist provider
   feature buffers across processes without re-ingesting the source data;
+- `AxisKind::Wavenumber` added to `dag-ml-data-core/src/model.rs`. The
+  axis kind serializes as `"wavenumber"` and is accepted by
+  `RepresentationSpec::validate`. Unblocks IR and Raman spectroscopy
+  representations without introducing NIRS-specific business logic;
+- ADR-0001 publishes the official ownership of the
+  `SpectroDataset → CoordinatorDataPlanEnvelope` bridge:
+  **`nirs4all-io` owns the bridge**, `dag-ml-data` ROADMAP Phase 4 is
+  descoped. Resolves the `nirs4all-io` PHASE2_GATE item 7 blocker;
 - host-callback feature-buffer provider: new C ABI vtable
   `DagMlDataBufferFetcherVTable` (single `fetch_columnar` callback +
   destroy) plus `DagMlDataBufferFetchRequest` pair (`feature_set_id`,
@@ -249,7 +257,9 @@ Not implemented yet:
 
 Next recommended task:
 
-Lift the nirs4all connector blocker: add `AxisKind::Wavenumber` (cross-repo
-schema bump) and publish ADR-0001 declaring nirs4all-io as the owner of the
-SpectroDataset → CoordinatorDataPlanEnvelope bridge, descoping ROADMAP
-Phase 4.
+Write the honest host-adapter backlog in `dag-ml/docs/HOST_ADAPTER_BACKLOG.md`:
+process-adapter JSONL pattern is the only stable wire protocol for
+Python/R hosts, persistent pool infrastructure is already shipped, the
+existing sklearn smoke covers ~70% of a production sklearn controller,
+and SpectroChemPy/Orange-Spectroscopy are Python rather than R despite
+the user grouping them as such.
