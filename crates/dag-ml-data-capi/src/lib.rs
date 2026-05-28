@@ -1756,6 +1756,228 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_arrow_ipc(
     }
 }
 
+pub const DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION: u32 = 1;
+
+/// Vtable a host implements so the provider can pull feature buffers on
+/// demand, rather than requiring all bytes up-front in JSON or borrowed C
+/// views.
+///
+/// Lifecycle contract:
+///
+/// - The host owns the bytes pointed to by `out_view` for the duration of
+///   the `fetch_columnar` call only. The provider copies them into
+///   Rust-owned buffers before the call returns; the host may free its
+///   memory immediately after.
+/// - `destroy` is called exactly once per constructor invocation, before
+///   the constructor returns (success or failure). The provider's
+///   internal guard suppresses any accidental second invocation that a
+///   future edit might introduce.
+/// - The `user_data` pointer must not be shared across concurrent
+///   `dagmldata_inmemory_provider_new_with_buffer_fetcher` calls. Each
+///   constructor calls `destroy(user_data)` once; concurrent constructors
+///   would therefore call destroy twice with the same pointer, causing
+///   host-side double-free / UB.
+/// - The host must not populate `error_out` when returning `Ok` — but the
+///   provider defensively frees any error string it observes after the
+///   callback regardless, to avoid silent leaks if a host violates this.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DagMlDataBufferFetcherVTable {
+    pub abi_version: u32,
+    pub user_data: *mut c_void,
+    pub fetch_columnar: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            feature_set_id: DagMlDataBytesView,
+            content_fingerprint: DagMlDataBytesView,
+            out_view: *mut DagMlDataFeatureMatrixF64ColumnarView,
+            error_out: *mut DagMlDataString,
+        ) -> DagMlDataStatusCode,
+    >,
+    pub destroy: Option<unsafe extern "C" fn(user_data: *mut c_void)>,
+}
+
+/// One (feature_set_id, content_fingerprint) pair the fetcher is asked
+/// to materialize. The pair lets the host distinguish the same logical
+/// feature set across different versions.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataBufferFetchRequest {
+    pub feature_set_id: DagMlDataBytesView,
+    pub content_fingerprint: DagMlDataBytesView,
+}
+
+/// Creates a Rust-owned in-memory provider whose feature buffers are
+/// produced by a host-supplied fetcher vtable. Each entry in
+/// `requests` is passed to the fetcher in order; the returned columnar
+/// view is copied into Rust-owned buffers and registered in the
+/// provider. The fetcher's `destroy` callback is invoked exactly once
+/// before the function returns (whether the constructor succeeds or
+/// fails after the first fetch).
+///
+/// # Safety
+///
+/// Non-null byte pointers must point to readable memory for the duration
+/// of the call. `out_vtable` may be null only if the caller is probing
+/// error handling.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_buffer_fetcher(
+    envelope_ptr: *const u8,
+    envelope_len: usize,
+    target_tables_ptr: *const u8,
+    target_tables_len: usize,
+    fetcher: DagMlDataBufferFetcherVTable,
+    requests_ptr: *const DagMlDataBufferFetchRequest,
+    requests_len: usize,
+    out_vtable: *mut DagMlDataVTable,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_vtable(out_vtable);
+    clear_string(error_out);
+    // RAII-style at-most-once guard: turning `Some` into `None` after the
+    // first invocation makes a future `destroy_fetcher()` call a silent
+    // no-op even if a maintainer accidentally double-fires it on a new
+    // error branch. Without this, a host's `destroy` callback could be
+    // invoked twice on the same `user_data`, which is host-side UB
+    // (typically a double-free).
+    let mut destroy_slot = Some(fetcher.destroy);
+    let mut destroy_fetcher = || {
+        if let Some(destroy) = destroy_slot.take().flatten() {
+            destroy(fetcher.user_data);
+        }
+    };
+    if out_vtable.is_null() {
+        set_string(error_out, "vtable output pointer is null");
+        destroy_fetcher();
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if envelope_ptr.is_null() {
+        set_string(error_out, "envelope pointer is null");
+        destroy_fetcher();
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if fetcher.abi_version != DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION {
+        set_string(
+            error_out,
+            format!(
+                "fetcher vtable abi_version {} does not match {DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION}",
+                fetcher.abi_version
+            ),
+        );
+        destroy_fetcher();
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let Some(fetch_callback) = fetcher.fetch_columnar else {
+        set_string(error_out, "fetcher vtable fetch_columnar callback is null");
+        destroy_fetcher();
+        return DagMlDataStatusCode::InvalidArgument;
+    };
+    if requests_ptr.is_null() && requests_len != 0 {
+        set_string(
+            error_out,
+            "fetch requests pointer is null but length is non-zero",
+        );
+        destroy_fetcher();
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let envelope_json = slice::from_raw_parts(envelope_ptr, envelope_len);
+    let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            destroy_fetcher();
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+        Ok(target_tables) => target_tables,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            destroy_fetcher();
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+
+    let requests: &[DagMlDataBufferFetchRequest] = if requests_len == 0 {
+        &[]
+    } else {
+        slice::from_raw_parts(requests_ptr, requests_len)
+    };
+    let mut matrices = Vec::with_capacity(requests.len());
+    for (index, request) in requests.iter().enumerate() {
+        let mut view = DagMlDataFeatureMatrixF64ColumnarView {
+            feature_set_id: DagMlDataBytesView {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            representation_id: DagMlDataBytesView {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            feature_names: std::ptr::null(),
+            feature_names_len: 0,
+            observation_ids: std::ptr::null(),
+            observation_ids_len: 0,
+            columns: std::ptr::null(),
+            columns_len: 0,
+        };
+        let mut fetch_error = DagMlDataString::default();
+        let status = fetch_callback(
+            fetcher.user_data,
+            request.feature_set_id,
+            request.content_fingerprint,
+            &mut view,
+            &mut fetch_error,
+        );
+        // Always consume `fetch_error` regardless of status: a host that
+        // populates the error string on a success-status return would
+        // otherwise leak that allocation forever. `consume_string_message`
+        // safely no-ops on a null/empty string.
+        let fetch_message = consume_string_message(fetch_error);
+        if status != DagMlDataStatusCode::Ok {
+            set_string(
+                error_out,
+                format!(
+                    "fetcher rejected request {index}: status {status:?} message {fetch_message}"
+                ),
+            );
+            destroy_fetcher();
+            return DagMlDataStatusCode::ValidationError;
+        }
+        let matrix = match f64_feature_matrix_columnar_view_to_core(view, index) {
+            Ok(matrix) => matrix,
+            Err(error) => {
+                set_string(
+                    error_out,
+                    format!("fetcher returned invalid matrix for request {index}: {error}"),
+                );
+                destroy_fetcher();
+                return DagMlDataStatusCode::ValidationError;
+            }
+        };
+        matrices.push(matrix);
+    }
+    destroy_fetcher();
+    let feature_store = match NumericFeatureBufferStore::from_f64_column_matrices(matrices) {
+        Ok(store) => store,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+        Ok(provider) => {
+            *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Destroys a provider vtable returned by `dagmldata_inmemory_provider_new_json`.
 ///
 /// # Safety
@@ -2074,6 +2296,20 @@ unsafe fn set_string(out: *mut DagMlDataString, value: impl Into<String>) {
         return;
     }
     *out = owned_string(value);
+}
+
+/// Read a `DagMlDataString` produced by some other function (typically a
+/// host callback), copy it into an owned Rust `String` and free the
+/// original. Returns `"<empty>"` for a null pointer so error formatters
+/// always have something to print.
+unsafe fn consume_string_message(value: DagMlDataString) -> String {
+    if value.ptr.is_null() || value.len == 0 {
+        return "<empty>".to_string();
+    }
+    let bytes = slice::from_raw_parts(value.ptr.cast::<u8>(), value.len);
+    let message = String::from_utf8_lossy(bytes).into_owned();
+    dagmldata_string_free(value);
+    message
 }
 
 fn owned_string(value: impl Into<String>) -> DagMlDataString {
@@ -5411,6 +5647,379 @@ mod tests {
             message.contains("failed to read feature buffer store"),
             "unexpected: {message}"
         );
+    }
+
+    struct FetcherTestState {
+        f0_values: Vec<f64>,
+        f0_mask: Vec<u8>,
+        f1_values: Vec<f64>,
+        f1_mask: Vec<u8>,
+        feature_set_id: Vec<u8>,
+        representation_id: Vec<u8>,
+        feature_names: Vec<DagMlDataBytesView>,
+        observation_ids: Vec<DagMlDataBytesView>,
+        columns_storage: Vec<DagMlDataF64ColumnView>,
+        feature_name_strings: Vec<Vec<u8>>,
+        observation_id_strings: Vec<Vec<u8>>,
+        destroyed: bool,
+    }
+
+    impl FetcherTestState {
+        fn new() -> Self {
+            let feature_name_strings = vec![b"f0".to_vec(), b"f1".to_vec()];
+            let observation_id_strings = vec![
+                b"obs.S001.base".to_vec(),
+                b"obs.S001.rep1".to_vec(),
+                b"obs.S001.aug0".to_vec(),
+                b"obs.S002.base".to_vec(),
+            ];
+            FetcherTestState {
+                f0_values: vec![1.0, 2.0, 3.0, 4.0],
+                f0_mask: vec![1, 1, 1, 1],
+                f1_values: vec![10.0, 20.0, 30.0, 40.0],
+                f1_mask: vec![1, 1, 1, 1],
+                feature_set_id: b"x".to_vec(),
+                representation_id: b"tabular_numeric".to_vec(),
+                feature_names: Vec::new(),
+                observation_ids: Vec::new(),
+                columns_storage: Vec::new(),
+                feature_name_strings,
+                observation_id_strings,
+                destroyed: false,
+            }
+        }
+    }
+
+    unsafe extern "C" fn fetcher_callback(
+        user_data: *mut c_void,
+        feature_set_id: DagMlDataBytesView,
+        _content_fingerprint: DagMlDataBytesView,
+        out_view: *mut DagMlDataFeatureMatrixF64ColumnarView,
+        error_out: *mut DagMlDataString,
+    ) -> DagMlDataStatusCode {
+        let state = &mut *user_data.cast::<FetcherTestState>();
+        let requested = std::slice::from_raw_parts(feature_set_id.ptr, feature_set_id.len);
+        if requested != state.feature_set_id.as_slice() {
+            set_string(error_out, "fetcher saw unexpected feature_set_id");
+            return DagMlDataStatusCode::ValidationError;
+        }
+        state.feature_names = state
+            .feature_name_strings
+            .iter()
+            .map(|name| DagMlDataBytesView {
+                ptr: name.as_ptr(),
+                len: name.len(),
+            })
+            .collect();
+        state.observation_ids = state
+            .observation_id_strings
+            .iter()
+            .map(|id| DagMlDataBytesView {
+                ptr: id.as_ptr(),
+                len: id.len(),
+            })
+            .collect();
+        state.columns_storage = vec![
+            DagMlDataF64ColumnView {
+                values: state.f0_values.as_ptr(),
+                values_len: state.f0_values.len(),
+                validity_mask: state.f0_mask.as_ptr(),
+                validity_mask_len: state.f0_mask.len(),
+            },
+            DagMlDataF64ColumnView {
+                values: state.f1_values.as_ptr(),
+                values_len: state.f1_values.len(),
+                validity_mask: state.f1_mask.as_ptr(),
+                validity_mask_len: state.f1_mask.len(),
+            },
+        ];
+        *out_view = DagMlDataFeatureMatrixF64ColumnarView {
+            feature_set_id: DagMlDataBytesView {
+                ptr: state.feature_set_id.as_ptr(),
+                len: state.feature_set_id.len(),
+            },
+            representation_id: DagMlDataBytesView {
+                ptr: state.representation_id.as_ptr(),
+                len: state.representation_id.len(),
+            },
+            feature_names: state.feature_names.as_ptr(),
+            feature_names_len: state.feature_names.len(),
+            observation_ids: state.observation_ids.as_ptr(),
+            observation_ids_len: state.observation_ids.len(),
+            columns: state.columns_storage.as_ptr(),
+            columns_len: state.columns_storage.len(),
+        };
+        DagMlDataStatusCode::Ok
+    }
+
+    unsafe extern "C" fn fetcher_destroy(user_data: *mut c_void) {
+        let state = &mut *user_data.cast::<FetcherTestState>();
+        state.destroyed = true;
+    }
+
+    unsafe extern "C" fn fetcher_failure(
+        _user_data: *mut c_void,
+        _feature_set_id: DagMlDataBytesView,
+        _content_fingerprint: DagMlDataBytesView,
+        _out_view: *mut DagMlDataFeatureMatrixF64ColumnarView,
+        error_out: *mut DagMlDataString,
+    ) -> DagMlDataStatusCode {
+        set_string(error_out, "fetcher deliberately refused");
+        DagMlDataStatusCode::ValidationError
+    }
+
+    /// Misbehaving callback: writes the columnar view normally AND
+    /// populates `error_out` even though it returns `Ok`. The provider
+    /// must free that error string defensively so we do not leak host
+    /// memory. Verified by inspection rather than a Miri leak check.
+    unsafe extern "C" fn fetcher_ok_with_error_string(
+        user_data: *mut c_void,
+        feature_set_id: DagMlDataBytesView,
+        content_fingerprint: DagMlDataBytesView,
+        out_view: *mut DagMlDataFeatureMatrixF64ColumnarView,
+        error_out: *mut DagMlDataString,
+    ) -> DagMlDataStatusCode {
+        let status = fetcher_callback(
+            user_data,
+            feature_set_id,
+            content_fingerprint,
+            out_view,
+            error_out,
+        );
+        set_string(error_out, "ignored on success");
+        status
+    }
+
+    #[test]
+    fn buffer_fetcher_provider_loads_columnar_matrix_through_callback() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let materialization_request = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        );
+        let mut state = FetcherTestState::new();
+        let fetcher = DagMlDataBufferFetcherVTable {
+            abi_version: DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION,
+            user_data: (&mut state as *mut FetcherTestState).cast::<c_void>(),
+            fetch_columnar: Some(fetcher_callback),
+            destroy: Some(fetcher_destroy),
+        };
+        let feature_set = b"x";
+        let fingerprint = b"deadbeef".to_vec();
+        let requests = [DagMlDataBufferFetchRequest {
+            feature_set_id: DagMlDataBytesView {
+                ptr: feature_set.as_ptr(),
+                len: feature_set.len(),
+            },
+            content_fingerprint: DagMlDataBytesView {
+                ptr: fingerprint.as_ptr(),
+                len: fingerprint.len(),
+            },
+        }];
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_buffer_fetcher(
+                envelope.as_ptr(),
+                envelope.len(),
+                b"[]".as_ptr(),
+                2,
+                fetcher,
+                requests.as_ptr(),
+                requests.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        assert!(
+            state.destroyed,
+            "fetcher destroy must be invoked exactly once"
+        );
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut manifest_json = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
+                &vtable,
+                data_handle,
+                &mut manifest_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        let manifests: serde_json::Value =
+            serde_json::from_str(&unsafe { string_value(manifest_json) }).unwrap();
+        assert_eq!(manifests[0]["feature_set_id"], serde_json::json!("x"));
+
+        unsafe {
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    #[test]
+    fn buffer_fetcher_provider_propagates_callback_failure_and_invokes_destroy() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let mut state = FetcherTestState::new();
+        let fetcher = DagMlDataBufferFetcherVTable {
+            abi_version: DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION,
+            user_data: (&mut state as *mut FetcherTestState).cast::<c_void>(),
+            fetch_columnar: Some(fetcher_failure),
+            destroy: Some(fetcher_destroy),
+        };
+        let feature_set = b"x";
+        let fingerprint = b"deadbeef".to_vec();
+        let requests = [DagMlDataBufferFetchRequest {
+            feature_set_id: DagMlDataBytesView {
+                ptr: feature_set.as_ptr(),
+                len: feature_set.len(),
+            },
+            content_fingerprint: DagMlDataBytesView {
+                ptr: fingerprint.as_ptr(),
+                len: fingerprint.len(),
+            },
+        }];
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_buffer_fetcher(
+                envelope.as_ptr(),
+                envelope.len(),
+                b"[]".as_ptr(),
+                2,
+                fetcher,
+                requests.as_ptr(),
+                requests.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(vtable.user_data.is_null());
+        assert!(state.destroyed, "destroy must run even when fetcher fails");
+        let message = unsafe { string_value(error) };
+        assert!(
+            message.contains("fetcher deliberately refused"),
+            "unexpected: {message}"
+        );
+    }
+
+    #[test]
+    fn buffer_fetcher_provider_frees_error_string_on_success_path() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let materialization_request = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        );
+        let mut state = FetcherTestState::new();
+        let fetcher = DagMlDataBufferFetcherVTable {
+            abi_version: DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION,
+            user_data: (&mut state as *mut FetcherTestState).cast::<c_void>(),
+            fetch_columnar: Some(fetcher_ok_with_error_string),
+            destroy: Some(fetcher_destroy),
+        };
+        let feature_set = b"x";
+        let fingerprint = b"deadbeef".to_vec();
+        let requests = [DagMlDataBufferFetchRequest {
+            feature_set_id: DagMlDataBytesView {
+                ptr: feature_set.as_ptr(),
+                len: feature_set.len(),
+            },
+            content_fingerprint: DagMlDataBytesView {
+                ptr: fingerprint.as_ptr(),
+                len: fingerprint.len(),
+            },
+        }];
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_buffer_fetcher(
+                envelope.as_ptr(),
+                envelope.len(),
+                b"[]".as_ptr(),
+                2,
+                fetcher,
+                requests.as_ptr(),
+                requests.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        // The constructor must have consumed the spurious error string the
+        // callback wrote despite returning Ok; the public `error_out`
+        // remains untouched on the success path.
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        unsafe {
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    #[test]
+    fn buffer_fetcher_provider_rejects_wrong_abi_version() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let mut state = FetcherTestState::new();
+        let fetcher = DagMlDataBufferFetcherVTable {
+            abi_version: DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION + 1,
+            user_data: (&mut state as *mut FetcherTestState).cast::<c_void>(),
+            fetch_columnar: Some(fetcher_callback),
+            destroy: Some(fetcher_destroy),
+        };
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_buffer_fetcher(
+                envelope.as_ptr(),
+                envelope.len(),
+                b"[]".as_ptr(),
+                2,
+                fetcher,
+                std::ptr::null(),
+                0,
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::InvalidArgument);
+        assert!(state.destroyed, "destroy must run on abi version mismatch");
+        let message = unsafe { string_value(error) };
+        assert!(message.contains("abi_version"), "unexpected: {message}");
     }
 
     #[cfg(feature = "arrow-ipc")]

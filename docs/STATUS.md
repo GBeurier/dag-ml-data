@@ -217,6 +217,17 @@ Implemented:
   `dagmldata_inmemory_provider_new_from_file` constructs the same
   `InMemoryProvider` from a `.n4d` file path. Lets hosts persist provider
   feature buffers across processes without re-ingesting the source data;
+- host-callback feature-buffer provider: new C ABI vtable
+  `DagMlDataBufferFetcherVTable` (single `fetch_columnar` callback +
+  destroy) plus `DagMlDataBufferFetchRequest` pair (`feature_set_id`,
+  `content_fingerprint`) so hosts can fetch buffer bytes by id at
+  construction time without packaging them as JSON or borrowed views.
+  The constructor `dagmldata_inmemory_provider_new_with_buffer_fetcher`
+  drives the fetcher for each declared request, copies returned views
+  into Rust-owned buffers via the existing typed columnar path, and
+  invokes the fetcher's `destroy` callback exactly once before
+  returning (success or failure). ABI version macro
+  `DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION = 1`;
 - Apache Arrow IPC feature-buffer reader: new optional crate
   `dag-ml-data-arrow` exposes
   `read_buffers_from_ipc_stream`/`_file`/`_path` that consume Arrow IPC
@@ -231,7 +242,6 @@ Implemented:
 
 Not implemented yet:
 
-- host-callback buffer provider (vtable-based lazy fetch) — next slice;
 - production provider arenas for fused feature exports and production tensor
   buffer export beyond the in-memory `DagMlDataTensorF64` and
   `DagMlDataTensorF32` conformance;
@@ -239,6 +249,7 @@ Not implemented yet:
 
 Next recommended task:
 
-Add the host-callback feature-buffer provider: a vtable that lets the host
-fetch buffer bytes lazily by `(feature_set_id, content_fingerprint)` and
-caches them inside the provider's arena for downstream views.
+Lift the nirs4all connector blocker: add `AxisKind::Wavenumber` (cross-repo
+schema bump) and publish ADR-0001 declaring nirs4all-io as the owner of the
+SpectroDataset → CoordinatorDataPlanEnvelope bridge, descoping ROADMAP
+Phase 4.

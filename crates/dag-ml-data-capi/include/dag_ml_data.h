@@ -211,6 +211,38 @@ DagMlDataStatusCode dagmldata_inmemory_provider_new_from_file(const uint8_t *env
 #ifdef DAG_ML_DATA_ARROW_IPC
 DagMlDataStatusCode dagmldata_inmemory_provider_new_from_arrow_ipc(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *path_ptr, size_t path_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 #endif
+
+#define DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION 1u
+
+/* DagMlDataBufferFetcherVTable: host-implemented vtable used by
+   `dagmldata_inmemory_provider_new_with_buffer_fetcher` to fetch feature
+   buffer bytes on demand.
+
+   Lifecycle: the constructor invokes `destroy(user_data)` exactly once
+   before returning (success or failure). The same `user_data` MUST NOT
+   be shared across concurrent constructor calls — each call destroys
+   the user_data, so concurrent invocations would double-free the host
+   allocation.
+
+   `fetch_columnar` semantics: the host owns the bytes pointed to by
+   `out_view` for the duration of the call only. The provider copies
+   them into Rust-owned buffers before the call returns; the host may
+   release its memory immediately afterwards. The host must not populate
+   `error_out` when returning `DAG_ML_DATA_STATUS_OK`; if it does the
+   provider frees the string defensively to prevent a leak. */
+typedef struct DagMlDataBufferFetcherVTable {
+    uint32_t abi_version;
+    void *user_data;
+    DagMlDataStatusCode (*fetch_columnar)(void *user_data, DagMlDataBytesView feature_set_id, DagMlDataBytesView content_fingerprint, DagMlDataFeatureMatrixF64ColumnarView *out_view, DagMlDataString *error_out);
+    void (*destroy)(void *user_data);
+} DagMlDataBufferFetcherVTable;
+
+typedef struct DagMlDataBufferFetchRequest {
+    DagMlDataBytesView feature_set_id;
+    DagMlDataBytesView content_fingerprint;
+} DagMlDataBufferFetchRequest;
+
+DagMlDataStatusCode dagmldata_inmemory_provider_new_with_buffer_fetcher(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, DagMlDataBufferFetcherVTable fetcher, const DagMlDataBufferFetchRequest *requests, size_t requests_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_buffer_manifest_json(const DagMlDataVTable *vtable, DagMlDataString *out_json, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_data_feature_buffer_manifest_json(const DagMlDataVTable *vtable, DagMlDataHandle data_handle, DagMlDataString *out_json, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_feature_collation_json(const DagMlDataVTable *vtable, DagMlDataHandle view, DagMlDataBytesView selector_json, DagMlDataString *out_json, DagMlDataString *error_out);
