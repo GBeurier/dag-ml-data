@@ -11,9 +11,10 @@ use dag_ml_data_core::{
     CoordinatorDataHandleRecord, CoordinatorDataMaterializationRequest,
     CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
     CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
-    DatasetSchema, FeatureFusionPolicy, NumericFeatureBufferArena, NumericFeatureBufferStore,
-    NumericFeatureMatrixF64, NumericFeatureMatrixF64Columnar, NumericTensorBlock, ObservationId,
-    RepresentationId, SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
+    DatasetSchema, FeatureFusionPolicy, FittedAdapterManifest, FittedAdapterRef,
+    NumericFeatureBufferArena, NumericFeatureBufferStore, NumericFeatureMatrixF64,
+    NumericFeatureMatrixF64Columnar, NumericTensorBlock, ObservationId, RepresentationId,
+    SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
 };
 use serde::Deserialize;
 
@@ -464,6 +465,96 @@ pub unsafe extern "C" fn dagmldata_schema_fingerprint_json(
                 DagMlDataStatusCode::ValidationError
             }
         },
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Validates a JSON `FittedAdapterRef` payload against the published v1
+/// contract (`fitted_adapter_ref.v1`). Returns `Ok` if the payload parses,
+/// passes shape validation and either inline or portable validation as
+/// requested; otherwise returns `ValidationError` and writes an error string.
+///
+/// When `require_portable` is non-zero, the ref must also carry backend, safe
+/// relative URI and content fingerprint (matching `validate_portable`).
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `error_out` may be null; when non-null it must
+/// point to writable memory for one `DagMlDataString`. Returned strings must
+/// be released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_fitted_adapter_ref_validate_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    require_portable: u8,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_string(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    let value: FittedAdapterRef = match serde_json::from_slice(json) {
+        Ok(value) => value,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let result = if require_portable != 0 {
+        value.validate_portable()
+    } else {
+        value.validate()
+    };
+    match result {
+        Ok(()) => DagMlDataStatusCode::Ok,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Validates a JSON `FittedAdapterManifest` payload against the published v1
+/// contract. Same `require_portable` semantics as
+/// `dagmldata_fitted_adapter_ref_validate_json`, applied to every manifest
+/// entry; the manifest enforces unique adapter ids and key-vs-ref consistency.
+///
+/// # Safety
+///
+/// Same pointer ownership rules as `dagmldata_fitted_adapter_ref_validate_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_fitted_adapter_manifest_validate_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    require_portable: u8,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_string(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    let manifest: FittedAdapterManifest = match serde_json::from_slice(json) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let result = if require_portable != 0 {
+        manifest.validate_portable()
+    } else {
+        manifest.validate()
+    };
+    match result {
+        Ok(()) => DagMlDataStatusCode::Ok,
         Err(error) => {
             set_string(error_out, error.to_string());
             DagMlDataStatusCode::ValidationError
@@ -2976,6 +3067,73 @@ mod tests {
         unsafe {
             dagmldata_string_free(fingerprint);
         }
+    }
+
+    #[test]
+    fn validates_fitted_adapter_ref_through_abi() {
+        let payload = br#"{
+  "schema_version": 1,
+  "adapter_id": "snv",
+  "adapter_version": "1.0.0",
+  "params_fingerprint": "12121212121212121212121212121212121212121212121212121212121212ab"
+}"#;
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_fitted_adapter_ref_validate_json(
+                payload.as_ptr(),
+                payload.len(),
+                0,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut portable_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_fitted_adapter_ref_validate_json(
+                payload.as_ptr(),
+                payload.len(),
+                1,
+                &mut portable_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        let message = unsafe { string_value(portable_error) };
+        assert!(message.contains("is not portable"), "unexpected: {message}");
+    }
+
+    #[test]
+    fn rejects_bad_fitted_adapter_manifest_through_abi() {
+        let payload = br#"{
+  "schema_version": 1,
+  "entries": [
+    {
+      "adapter_id": "snv",
+      "fitted_adapter": {
+        "schema_version": 1,
+        "adapter_id": "snv",
+        "adapter_version": "1.0.0",
+        "params_fingerprint": "bad"
+      }
+    }
+  ]
+}"#;
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_fitted_adapter_manifest_validate_json(
+                payload.as_ptr(),
+                payload.len(),
+                0,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        let message = unsafe { string_value(error) };
+        assert!(
+            message.contains("params fingerprint"),
+            "unexpected: {message}"
+        );
     }
 
     #[test]

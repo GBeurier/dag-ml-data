@@ -46,6 +46,21 @@ validate at the contract layer but require host-side filtering for execution.
 The conformance pack pins the normalized SHA-256 of this schema and
 `scripts/validate_contracts.py` enforces it in both repos.
 
+## Fitted Adapter Ref v1
+
+Schema: `fitted_adapter_ref.schema.json`
+
+Runtime type produced here: `FittedAdapterRef` (the adapter persistence
+record returned by host adapters at refit time). The schema covers
+`schema_version`, `adapter_id`, `adapter_version`, `params_fingerprint`,
+optional `backend` (joblib/pickle/json/numpy/onnx/raw), portable `uri`,
+`content_fingerprint`, `size_bytes`, `plugin`/`plugin_version`, and
+arbitrary `metadata`. Two validation modes are exposed: inline
+(`dagmldata_fitted_adapter_ref_validate_json(..., require_portable=0, ...)`)
+and portable (`require_portable=1`), the latter requiring backend, safe
+relative URI and content fingerprint. The same digest is pinned in both
+repos' `conformance_pack.v1.json`.
+
 ## Feature Fusion Selector v1
 
 Schema: `feature_fusion_selector.schema.json`

@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{DataError, Result};
 
 pub const FITTED_ADAPTER_REF_SCHEMA_VERSION: u32 = 1;
+pub const FITTED_ADAPTER_REF_SCHEMA_ID: &str =
+    "https://github.com/GBeurier/dag-ml-data/schemas/fitted_adapter_ref.v1.schema.json";
 pub const FITTED_ADAPTER_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -411,6 +413,32 @@ mod tests {
             assert!(
                 message.contains(&format!("has empty {label}")),
                 "expected empty {label} error, got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn published_fitted_adapter_ref_schema_pins_current_id_and_backends() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/fitted_adapter_ref.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(schema["$id"].as_str(), Some(FITTED_ADAPTER_REF_SCHEMA_ID));
+        assert!(
+            schema["$id"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!("v{FITTED_ADAPTER_REF_SCHEMA_VERSION}.schema.json")),
+            "schema $id `{}` must encode version v{FITTED_ADAPTER_REF_SCHEMA_VERSION}",
+            schema["$id"]
+        );
+        let backends = schema["$defs"]["backend"]["enum"].as_array().unwrap();
+        for expected in ["joblib", "pickle", "json", "numpy", "onnx", "raw"] {
+            assert!(
+                backends
+                    .iter()
+                    .any(|value| value.as_str() == Some(expected)),
+                "fitted_adapter_ref backend enum is missing `{expected}`"
             );
         }
     }

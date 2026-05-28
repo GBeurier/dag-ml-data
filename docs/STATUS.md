@@ -130,6 +130,15 @@ Implemented:
   `scripts/validate_contracts.py` validating the published schema artifact
   shape + mode enum coverage in both `dag-ml-data` and the sibling `dag-ml`
   checkout;
+- published `fitted_adapter_ref.schema.json` for the data-side fitted adapter
+  contract, with matching `FITTED_ADAPTER_REF_SCHEMA_ID` Rust constant, the
+  same digest pinned in both repos' `conformance_pack.v1.json` and
+  `scripts/validate_contracts.py` validating the published schema artifact in
+  both repos. The C ABI exposes `dagmldata_fitted_adapter_ref_validate_json`
+  and `dagmldata_fitted_adapter_manifest_validate_json`; both take a
+  `require_portable` byte flag selecting between inline and portable
+  validation modes and return `ValidationError` plus an error string on
+  failure;
 - fitted adapter serialization contract: `FittedAdapterRef`
   (`adapter_id`, `adapter_version`, `params_fingerprint`, optional
   `backend`/`uri`/`content_fingerprint`/`size_bytes`/`plugin`/`plugin_version`/

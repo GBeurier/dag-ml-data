@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 BRANCH_VIEW_SCHEMA_REL = Path("docs/contracts/coordinator_branch_view.schema.json")
+FITTED_ADAPTER_SCHEMA_REL = Path("docs/contracts/fitted_adapter_ref.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
 LOCAL_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
@@ -47,6 +48,10 @@ LOCAL_FEATURE_FUSION_SCHEMA_ID = (
 LOCAL_BRANCH_VIEW_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml-data/schemas/"
     "coordinator_branch_view.v1.schema.json"
+)
+LOCAL_FITTED_ADAPTER_SCHEMA_ID = (
+    "https://github.com/GBeurier/dag-ml-data/schemas/"
+    "fitted_adapter_ref.v1.schema.json"
 )
 SIBLING_SCHEMA_ID = (
     "https://github.com/GBeurier/dag-ml/schemas/"
@@ -195,6 +200,42 @@ def validate_branch_view_schema_artifact(schema: Any, expected_id: str, label: s
         require(
             expected in modes,
             f"{label} branch-view mode enum must include `{expected}`",
+        )
+
+
+def validate_fitted_adapter_ref_schema_artifact(
+    schema: Any, expected_id: str, label: str
+) -> None:
+    require(isinstance(schema, dict), f"{label} fitted-adapter schema must be a JSON object")
+    require(
+        schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        f"{label} fitted-adapter schema must declare Draft 2020-12",
+    )
+    require(
+        schema.get("$id") == expected_id,
+        f"{label} fitted-adapter schema has unexpected $id",
+    )
+    require(schema.get("type") == "object", f"{label} fitted-adapter root must be an object")
+    required = schema.get("required")
+    require(isinstance(required, list), f"{label} fitted-adapter required list is missing")
+    for field in ("adapter_id", "adapter_version", "params_fingerprint"):
+        require(field in required, f"{label} fitted-adapter schema does not require `{field}`")
+    properties = schema.get("properties")
+    require(isinstance(properties, dict), f"{label} fitted-adapter properties are missing")
+    require(
+        properties.get("schema_version", {}).get("const") == 1,
+        f"{label} fitted-adapter schema_version const must be 1",
+    )
+    defs = schema.get("$defs")
+    require(isinstance(defs, dict), f"{label} fitted-adapter $defs are missing")
+    for name in ("non_empty_id", "hex_fingerprint", "backend"):
+        require(name in defs, f"{label} fitted-adapter schema misses `{name}` definition")
+    backends = defs.get("backend", {}).get("enum")
+    require(isinstance(backends, list), f"{label} fitted-adapter backend enum is missing")
+    for expected in ("joblib", "pickle", "json", "numpy", "onnx", "raw"):
+        require(
+            expected in backends,
+            f"{label} fitted-adapter backend enum must include `{expected}`",
         )
 
 
@@ -403,6 +444,7 @@ def validate_conformance_pack(
     schema: Any,
     feature_fusion_schema: Any,
     branch_view_schema: Any,
+    fitted_adapter_schema: Any,
     fixture: Any,
     feature_fusion_fixture: Any,
     header: str,
@@ -434,6 +476,13 @@ def validate_conformance_pack(
         "json_schema",
         1,
         f"{label} coordinator branch view contract",
+    )
+    validate_digest_record(
+        contracts.get("fitted_adapter_ref.v1"),
+        canonical_json_sha256(normalize_schema(fitted_adapter_schema)),
+        "json_schema",
+        1,
+        f"{label} fitted adapter ref contract",
     )
 
     fixtures = pack.get("fixtures")
@@ -530,6 +579,7 @@ def main() -> int:
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_branch_view_schema = load_json(ROOT / BRANCH_VIEW_SCHEMA_REL)
+        local_fitted_adapter_schema = load_json(ROOT / FITTED_ADAPTER_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
@@ -545,6 +595,11 @@ def main() -> int:
             LOCAL_BRANCH_VIEW_SCHEMA_ID,
             "dag-ml-data",
         )
+        validate_fitted_adapter_ref_schema_artifact(
+            local_fitted_adapter_schema,
+            LOCAL_FITTED_ADAPTER_SCHEMA_ID,
+            "dag-ml-data",
+        )
         validate_envelope(local_fixture, "dag-ml-data")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml-data")
         validate_data_provider_header(local_header, "dag-ml-data")
@@ -554,6 +609,7 @@ def main() -> int:
             local_schema,
             local_feature_fusion_schema,
             local_branch_view_schema,
+            local_fitted_adapter_schema,
             local_fixture,
             local_feature_fusion_fixture,
             local_header,
@@ -591,6 +647,7 @@ def main() -> int:
             sibling_schema,
             sibling_feature_fusion_schema,
             local_branch_view_schema,
+            local_fitted_adapter_schema,
             sibling_fixture,
             sibling_feature_fusion_fixture,
             sibling_header,

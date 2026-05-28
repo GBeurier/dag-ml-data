@@ -99,6 +99,8 @@ int main(void) {
     (void)dagmldata_inmemory_provider_feature_collation_json(&table, 0, (DagMlDataBytesView){0}, &out, &error);
     (void)dagmldata_inmemory_provider_feature_collation_tensor_f64_json(&table, 0, (DagMlDataBytesView){0}, &tensor, &error);
     (void)dagmldata_inmemory_provider_feature_collation_tensor_f32_json(&table, 0, (DagMlDataBytesView){0}, &tensor_f32, &error);
+    (void)dagmldata_fitted_adapter_ref_validate_json((const uint8_t*)"{}", 2, 0, &error);
+    (void)dagmldata_fitted_adapter_manifest_validate_json((const uint8_t*)"{}", 2, 0, &error);
     dagmldata_arrow_array_free(array);
     dagmldata_arrow_schema_free(schema);
     dagmldata_tensor_f64_free(tensor);

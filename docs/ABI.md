@@ -78,9 +78,14 @@ memory while exposing deterministic descriptors and identity tables to the core.
   `validate_portable()` for refs carrying a backend + safe relative URI +
   content fingerprint (the same portability rules as `dag-ml`'s
   `ArtifactRef::validate_portable`). The manifest enforces unique adapter
-  ids and key↔ref consistency. The C ABI does not yet expose validators for
-  this contract; bindings must round-trip through the Rust API. The future
-  C entry point will mirror existing `dagmldata_*_validate_json` shapes;
+  ids and key↔ref consistency;
+- `dagmldata_fitted_adapter_ref_validate_json` and
+  `dagmldata_fitted_adapter_manifest_validate_json` C ABI entry points that
+  parse JSON, run the `validate()` or `validate_portable()` Rust check
+  selected by the `require_portable` byte flag and return either `Ok` or
+  `ValidationError` + an owned error string. The matching
+  `fitted_adapter_ref.v1.schema.json` is published under `docs/contracts`
+  and pinned in `conformance_pack.v1.json` for cross-repo digest equality;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
   The `feature_arrow` hook accepts either a plain feature-set id or a JSON
   feature-fusion selector. The vtable uses the shared

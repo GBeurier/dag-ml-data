@@ -177,6 +177,8 @@ void dagmldata_tensor_f32_free(DagMlDataTensorF32 tensor);
 void dagmldata_arrow_array_free(ArrowArray *array);
 void dagmldata_arrow_schema_free(ArrowSchema *schema);
 DagMlDataStatusCode dagmldata_schema_fingerprint_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *fingerprint_out, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_fitted_adapter_ref_validate_json(const uint8_t *json_ptr, size_t json_len, uint8_t require_portable, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_fitted_adapter_manifest_validate_json(const uint8_t *json_ptr, size_t json_len, uint8_t require_portable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_identity_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_target_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_feature_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
