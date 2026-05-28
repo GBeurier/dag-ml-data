@@ -541,6 +541,11 @@ def validate_conformance_pack(
         for symbol in data_symbols:
             require_non_empty_string(symbol, f"{label} dag-ml-data symbol")
             require(symbol in header, f"{label} header must expose `{symbol}`")
+    if "DagMlDataTensorF32" in header:
+        require(
+            c_abi.get("data_tensor_f32_abi_version") == 1,
+            f"{label} f32 tensor ABI version must be 1",
+        )
 
     cross_repo = pack.get("cross_repo_conformance")
     require(isinstance(cross_repo, dict), f"{label} cross_repo_conformance must be an object")
