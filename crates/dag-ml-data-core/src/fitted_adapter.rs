@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -194,6 +195,129 @@ impl FittedAdapterManifest {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FittedAdapterMaterializationRequest {
+    pub adapter_id: String,
+    pub params_fingerprint: String,
+}
+
+impl FittedAdapterMaterializationRequest {
+    pub fn validate(&self) -> Result<()> {
+        if self.adapter_id.trim().is_empty() {
+            return Err(DataError::Validation(
+                "fitted adapter materialization request has empty adapter_id".to_string(),
+            ));
+        }
+        validate_fingerprint(
+            "fitted adapter materialization params",
+            &self.params_fingerprint,
+            &self.adapter_id,
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FittedAdapterHandleRecord {
+    pub handle: u64,
+    pub fitted_adapter: FittedAdapterRef,
+}
+
+/// Runtime contract for materializing opaque host-owned fitted-adapter
+/// handles from a previously registered `FittedAdapterRef`. The store
+/// validates the request's `params_fingerprint` against the registered ref
+/// and returns the opaque handle id. It never reads, writes or deserializes
+/// adapter payloads — payload materialization happens host-side, behind the
+/// opaque handle.
+pub trait RuntimeFittedAdapterStore {
+    fn materialize(&self, request: &FittedAdapterMaterializationRequest) -> Result<u64>;
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryFittedAdapterStore {
+    next_handle: RefCell<u64>,
+    records: RefCell<BTreeMap<String, FittedAdapterHandleRecord>>,
+}
+
+impl InMemoryFittedAdapterStore {
+    pub fn new() -> Self {
+        Self {
+            next_handle: RefCell::new(1),
+            records: RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn register(&self, fitted_adapter: FittedAdapterRef) -> Result<FittedAdapterHandleRecord> {
+        fitted_adapter.validate()?;
+        let mut records = self.records.borrow_mut();
+        if records.contains_key(&fitted_adapter.adapter_id) {
+            return Err(DataError::Validation(format!(
+                "fitted adapter store already has handle for `{}`",
+                fitted_adapter.adapter_id
+            )));
+        }
+        let mut next_handle = self.next_handle.borrow_mut();
+        let handle = *next_handle;
+        *next_handle += 1;
+        let record = FittedAdapterHandleRecord {
+            handle,
+            fitted_adapter,
+        };
+        records.insert(record.fitted_adapter.adapter_id.clone(), record.clone());
+        Ok(record)
+    }
+
+    pub fn register_manifest(
+        &self,
+        manifest: &FittedAdapterManifest,
+    ) -> Result<Vec<FittedAdapterHandleRecord>> {
+        manifest.validate()?;
+        manifest
+            .entries
+            .iter()
+            .map(|entry| self.register(entry.fitted_adapter.clone()))
+            .collect()
+    }
+
+    pub fn get(&self, adapter_id: &str) -> Option<FittedAdapterHandleRecord> {
+        self.records.borrow().get(adapter_id).cloned()
+    }
+
+    pub fn release(&self, adapter_id: &str) -> bool {
+        self.records.borrow_mut().remove(adapter_id).is_some()
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.borrow().is_empty()
+    }
+}
+
+impl RuntimeFittedAdapterStore for InMemoryFittedAdapterStore {
+    fn materialize(&self, request: &FittedAdapterMaterializationRequest) -> Result<u64> {
+        request.validate()?;
+        let records = self.records.borrow();
+        let record = records.get(&request.adapter_id).ok_or_else(|| {
+            DataError::Validation(format!(
+                "fitted adapter store is missing adapter `{}`",
+                request.adapter_id
+            ))
+        })?;
+        if record.fitted_adapter.params_fingerprint != request.params_fingerprint {
+            return Err(DataError::Validation(format!(
+                "fitted adapter `{}` params fingerprint mismatch: store has `{}` but request asks for `{}`",
+                request.adapter_id,
+                record.fitted_adapter.params_fingerprint,
+                request.params_fingerprint
+            )));
+        }
+        Ok(record.handle)
     }
 }
 
@@ -498,6 +622,81 @@ mod tests {
         manifest.schema_version = FITTED_ADAPTER_MANIFEST_SCHEMA_VERSION + 1;
         let error = manifest.validate().unwrap_err();
         assert!(format!("{error}").contains("unsupported schema_version"));
+    }
+
+    #[test]
+    fn in_memory_store_registers_and_materializes_adapter_handles() {
+        let store = InMemoryFittedAdapterStore::new();
+        assert!(store.is_empty());
+
+        let record = store.register(portable_ref()).unwrap();
+        assert_eq!(record.handle, 1);
+        assert_eq!(record.fitted_adapter.adapter_id, "snv");
+        assert_eq!(store.len(), 1);
+
+        let request = FittedAdapterMaterializationRequest {
+            adapter_id: "snv".to_string(),
+            params_fingerprint: portable_ref().params_fingerprint,
+        };
+        let handle = store.materialize(&request).unwrap();
+        assert_eq!(handle, 1);
+
+        let duplicate = store.register(portable_ref()).unwrap_err();
+        assert!(format!("{duplicate}").contains("already has handle for"));
+
+        let mismatch_request = FittedAdapterMaterializationRequest {
+            adapter_id: "snv".to_string(),
+            params_fingerprint: fingerprint(0x55),
+        };
+        let error = store.materialize(&mismatch_request).unwrap_err();
+        assert!(
+            format!("{error}").contains("params fingerprint mismatch"),
+            "unexpected: {error}"
+        );
+
+        let missing_request = FittedAdapterMaterializationRequest {
+            adapter_id: "msc".to_string(),
+            params_fingerprint: portable_ref().params_fingerprint,
+        };
+        let error = store.materialize(&missing_request).unwrap_err();
+        assert!(format!("{error}").contains("missing adapter"));
+
+        assert!(store.release("snv"));
+        assert!(store.is_empty());
+        assert!(store.materialize(&request).is_err());
+    }
+
+    #[test]
+    fn store_register_manifest_returns_handles_for_each_entry() {
+        let store = InMemoryFittedAdapterStore::new();
+        let mut second = portable_ref();
+        second.adapter_id = "msc".to_string();
+        let manifest = FittedAdapterManifest::new(vec![
+            FittedAdapterManifestEntry {
+                adapter_id: "snv".to_string(),
+                fitted_adapter: portable_ref(),
+            },
+            FittedAdapterManifestEntry {
+                adapter_id: "msc".to_string(),
+                fitted_adapter: second,
+            },
+        ]);
+        let records = store.register_manifest(&manifest).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].handle, 1);
+        assert_eq!(records[1].handle, 2);
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn store_materialize_rejects_invalid_request_fingerprint() {
+        let store = InMemoryFittedAdapterStore::new();
+        let request = FittedAdapterMaterializationRequest {
+            adapter_id: "snv".to_string(),
+            params_fingerprint: "not-a-fingerprint".to_string(),
+        };
+        let error = store.materialize(&request).unwrap_err();
+        assert!(format!("{error}").contains("params fingerprint"));
     }
 
     #[test]

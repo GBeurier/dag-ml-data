@@ -130,6 +130,15 @@ Implemented:
   `scripts/validate_contracts.py` validating the published schema artifact
   shape + mode enum coverage in both `dag-ml-data` and the sibling `dag-ml`
   checkout;
+- runtime fitted-adapter store: `RuntimeFittedAdapterStore` trait plus the
+  in-memory `InMemoryFittedAdapterStore` that registers `FittedAdapterRef`
+  records, allocates deterministic opaque u64 handles, and materializes them
+  on request after validating the request's `adapter_id` and
+  `params_fingerprint` against the registered ref. `register_manifest`
+  accepts a `FittedAdapterManifest` for bulk registration; the store never
+  reads, writes or deserializes adapter payloads — payload materialization
+  stays host-side, behind the opaque handle, mirroring the dag-ml
+  `RuntimeArtifactStore` lifecycle for model artifacts;
 - published `fitted_adapter_ref.schema.json` for the data-side fitted adapter
   contract, with matching `FITTED_ADAPTER_REF_SCHEMA_ID` Rust constant, the
   same digest pinned in both repos' `conformance_pack.v1.json` and
@@ -175,15 +184,16 @@ Not implemented yet:
 - production provider arenas for fused feature exports and production tensor
   buffer export beyond the in-memory `DagMlDataTensorF64` and
   `DagMlDataTensorF32` conformance;
-- a runtime fitted-adapter store that materializes opaque adapter handles
-  from `FittedAdapterRef` payloads alongside `RuntimeArtifactStore`;
+- C ABI exposure of the runtime fitted-adapter store (the in-memory store is
+  Rust-only today; bindings can validate refs via
+  `dagmldata_fitted_adapter_*_validate_json` but materialization happens via
+  the Rust API);
 - nirs4all connector.
 
 Next recommended task:
 
-Publish JSON Schemas for `CoordinatorBranchView` and `FittedAdapterRef`/
-`FittedAdapterManifest` alongside the existing coordinator envelope schema,
-add cross-repo conformance checks through `scripts/validate_contracts.py`,
-and expose the schemas through the C ABI contract-discovery surface so
-non-Rust bindings can preflight host-emitted JSON before invoking the
-provider lifecycle.
+Expose `RuntimeFittedAdapterStore` over the C ABI (vtable + opaque handle
+allocation) so non-Rust host bindings can register fitted-adapter refs and
+materialize handles without round-tripping through the Rust API. Then start
+broadening provider buffer arenas beyond the in-memory typed numeric buffer
+path toward file-backed / mmap-backed / host-callback sources.
