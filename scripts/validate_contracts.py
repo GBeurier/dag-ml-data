@@ -559,6 +559,54 @@ def validate_conformance_pack(
         require(test_id in required_tests, f"{label} conformance pack must require `{test_id}`")
 
 
+def extract_function_body(source: str, signature_substring: str, label: str) -> str:
+    """Locate a Rust `fn <signature>` and return its body (text between the
+    opening `{` and the matching `}`). Used to compare the byte-copied
+    `validate_relative_uri` / `validate_relative_artifact_uri` helpers across
+    repos: any drift in the rule set is caught here even if the rest of the
+    file changes."""
+    start = source.find(signature_substring)
+    if start == -1:
+        raise ContractError(f"{label}: could not locate `{signature_substring}`")
+    brace_open = source.find("{", start)
+    if brace_open == -1:
+        raise ContractError(f"{label}: `{signature_substring}` has no body")
+    depth = 0
+    for index in range(brace_open, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace_open + 1 : index]
+    raise ContractError(f"{label}: unbalanced braces in `{signature_substring}`")
+
+
+def validate_relative_uri_rule_parity(local_body: str, sibling_body: str) -> None:
+    """Assert that both portable-URI validators implement the same rule set.
+    The check looks for distinctive code fragments that encode the safety
+    rules; if one side adds or removes a rule the check fails before any
+    silent divergence reaches users."""
+    required_fragments = [
+        ("control characters guard", "chars().any(char::is_control)"),
+        ("absolute path guard", "starts_with('/')"),
+        ("backslash absolute guard", "starts_with('\\\\')"),
+        ("drive prefix guard", "is_ascii_alphabetic()"),
+        ("scheme guard via first segment", "first_segment.contains(':')"),
+        ("traversal guard", 'segment == ".."'),
+    ]
+    for label, fragment in required_fragments:
+        require(
+            fragment in local_body,
+            f"dag-ml-data validate_relative_uri is missing `{label}` ({fragment!r})",
+        )
+        require(
+            fragment in sibling_body,
+            f"dag-ml validate_relative_artifact_uri is missing `{label}` ({fragment!r})",
+        )
+
+
 def candidate_sibling_roots() -> list[Path]:
     candidates = []
     env_path = os.environ.get("DAG_ML_REPO")
@@ -643,6 +691,22 @@ def main() -> int:
         validate_envelope(sibling_fixture, "dag-ml")
         validate_feature_fusion_selector(sibling_feature_fusion_fixture, "dag-ml")
         validate_data_provider_header(sibling_header, "dag-ml")
+
+        local_fitted_adapter_source = load_text(
+            ROOT / "crates/dag-ml-data-core/src/fitted_adapter.rs"
+        )
+        sibling_runtime_source = load_text(sibling / "crates/dag-ml-core/src/runtime.rs")
+        local_uri_body = extract_function_body(
+            local_fitted_adapter_source,
+            "fn validate_relative_uri(",
+            "dag-ml-data fitted_adapter.rs",
+        )
+        sibling_uri_body = extract_function_body(
+            sibling_runtime_source,
+            "fn validate_relative_artifact_uri(",
+            "dag-ml runtime.rs",
+        )
+        validate_relative_uri_rule_parity(local_uri_body, sibling_uri_body)
         # dag-ml does not yet publish a standalone coordinator_branch_view schema —
         # its `branch_view_plan` lives inline in `campaign_spec.schema.json` $defs.
         # When dag-ml publishes a standalone schema, mirror the local

@@ -544,6 +544,69 @@ mod tests {
         assert!(format!("{error}").contains("has plugin_version without plugin"));
     }
 
+    /// Locks down the exact accept/reject behaviour of the portable URI
+    /// rules so the byte-for-byte copy in dag-ml's
+    /// `validate_relative_artifact_uri` can be cross-checked. Any change to
+    /// either function must also update this fixture; the script-level check
+    /// in `scripts/validate_contracts.py` reads both function bodies and
+    /// asserts textual equivalence as a second line of defense.
+    #[test]
+    fn portable_uri_rules_are_locked_to_a_shared_fixture() {
+        let accept = [
+            "snv.joblib",
+            "fitted/snv.joblib",
+            "nested/dir.name/file-v1.bin",
+            "alpha_beta/gamma.json",
+            "a.b/c.d",
+        ];
+        let reject_absolute = ["/abs/path.joblib", "\\abs\\path.joblib"];
+        let reject_drive = ["C:\\fitted\\snv.joblib", "Z:/path"];
+        let reject_schemes = [
+            "http://example.com/x.bin",
+            "s3://bucket/x.bin",
+            "file:///x.bin",
+            "scheme:relative",
+        ];
+        let reject_traversal = [
+            "../escape.bin",
+            "fitted/../escape.bin",
+            "ok/../../escape.bin",
+        ];
+        let reject_empty_or_control = ["", "ctrl/\u{0001}path", "\n/path"];
+
+        for uri in accept {
+            let value = FittedAdapterRef {
+                uri: Some(uri.to_string()),
+                ..portable_ref()
+            };
+            if let Err(error) = value.validate_portable() {
+                panic!("expected `{uri}` to validate portable: {error}");
+            }
+        }
+        for group in [
+            &reject_absolute[..],
+            &reject_drive[..],
+            &reject_schemes[..],
+            &reject_traversal[..],
+            &reject_empty_or_control[..],
+        ] {
+            for uri in group {
+                let value = FittedAdapterRef {
+                    uri: Some(uri.to_string()),
+                    ..portable_ref()
+                };
+                let error = value.validate_portable().expect_err(&format!(
+                    "expected `{uri}` to be rejected as non-portable"
+                ));
+                let message = format!("{error}");
+                assert!(
+                    !message.is_empty(),
+                    "rejection of `{uri}` must carry a non-empty error message"
+                );
+            }
+        }
+    }
+
     #[test]
     fn rejects_non_portable_uris() {
         for uri in [
