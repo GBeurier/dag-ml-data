@@ -139,6 +139,14 @@ Implemented:
   reads, writes or deserializes adapter payloads — payload materialization
   stays host-side, behind the opaque handle, mirroring the dag-ml
   `RuntimeArtifactStore` lifecycle for model artifacts;
+- C ABI for the in-memory fitted-adapter store:
+  `DagMlDataFittedAdapterStoreHandle` opaque pointer with
+  `dagmldata_inmemory_fitted_adapter_store_new` / `destroy` lifecycle,
+  `register_json` / `materialize_json` for JSON round-trips through the
+  Rust runtime store and `release` for adapter-id-keyed teardown. Errors
+  carry an owned `DagMlDataString`. Allows non-Rust bindings to drive the
+  full register/materialize/release cycle through the ABI without parsing
+  JSON inside Rust;
 - published `fitted_adapter_ref.schema.json` for the data-side fitted adapter
   contract, with matching `FITTED_ADAPTER_REF_SCHEMA_ID` Rust constant, the
   same digest pinned in both repos' `conformance_pack.v1.json` and
@@ -184,16 +192,12 @@ Not implemented yet:
 - production provider arenas for fused feature exports and production tensor
   buffer export beyond the in-memory `DagMlDataTensorF64` and
   `DagMlDataTensorF32` conformance;
-- C ABI exposure of the runtime fitted-adapter store (the in-memory store is
-  Rust-only today; bindings can validate refs via
-  `dagmldata_fitted_adapter_*_validate_json` but materialization happens via
-  the Rust API);
 - nirs4all connector.
 
 Next recommended task:
 
-Expose `RuntimeFittedAdapterStore` over the C ABI (vtable + opaque handle
-allocation) so non-Rust host bindings can register fitted-adapter refs and
-materialize handles without round-tripping through the Rust API. Then start
-broadening provider buffer arenas beyond the in-memory typed numeric buffer
-path toward file-backed / mmap-backed / host-callback sources.
+Broaden the provider buffer arenas beyond the in-memory typed numeric buffer
+path toward production sources (file-backed Arrow IPC, mmap-backed,
+host-callback registered through a vtable). The data-handle / arena binding
+contract is already in place; production sources only need a typed input
+path that resolves to `NumericFeatureBufferStore` records.

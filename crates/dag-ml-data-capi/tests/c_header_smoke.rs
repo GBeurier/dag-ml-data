@@ -101,6 +101,14 @@ int main(void) {
     (void)dagmldata_inmemory_provider_feature_collation_tensor_f32_json(&table, 0, (DagMlDataBytesView){0}, &tensor_f32, &error);
     (void)dagmldata_fitted_adapter_ref_validate_json((const uint8_t*)"{}", 2, 0, &error);
     (void)dagmldata_fitted_adapter_manifest_validate_json((const uint8_t*)"{}", 2, 0, &error);
+    DagMlDataFittedAdapterStoreHandle fitted_store = {0};
+    uint64_t fitted_handle = 0;
+    uint8_t fitted_released = 0;
+    (void)dagmldata_inmemory_fitted_adapter_store_new(&fitted_store);
+    (void)dagmldata_inmemory_fitted_adapter_store_register_json(fitted_store, (const uint8_t*)"{}", 2, &fitted_handle, &error);
+    (void)dagmldata_inmemory_fitted_adapter_store_materialize_json(fitted_store, (const uint8_t*)"{}", 2, &fitted_handle, &error);
+    (void)dagmldata_inmemory_fitted_adapter_store_release(fitted_store, (const uint8_t*)"snv", 3, &fitted_released);
+    dagmldata_inmemory_fitted_adapter_store_destroy(fitted_store);
     dagmldata_arrow_array_free(array);
     dagmldata_arrow_schema_free(schema);
     dagmldata_tensor_f64_free(tensor);

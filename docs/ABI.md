@@ -86,6 +86,13 @@ memory while exposing deterministic descriptors and identity tables to the core.
   `ValidationError` + an owned error string. The matching
   `fitted_adapter_ref.v1.schema.json` is published under `docs/contracts`
   and pinned in `conformance_pack.v1.json` for cross-repo digest equality;
+- `DagMlDataFittedAdapterStoreHandle` opaque pointer plus
+  `dagmldata_inmemory_fitted_adapter_store_new` / `destroy` /
+  `register_json` / `materialize_json` / `release` entry points exposing
+  the Rust `InMemoryFittedAdapterStore` to non-Rust bindings. Host callers
+  receive a `u64` handle from register / materialize and own its release
+  through `dagmldata_inmemory_fitted_adapter_store_release` (by adapter
+  id) and the store-level `destroy` call;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
   The `feature_arrow` hook accepts either a plain feature-set id or a JSON
   feature-fusion selector. The vtable uses the shared

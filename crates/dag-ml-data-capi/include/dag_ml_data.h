@@ -179,6 +179,16 @@ void dagmldata_arrow_schema_free(ArrowSchema *schema);
 DagMlDataStatusCode dagmldata_schema_fingerprint_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *fingerprint_out, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_fitted_adapter_ref_validate_json(const uint8_t *json_ptr, size_t json_len, uint8_t require_portable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_fitted_adapter_manifest_validate_json(const uint8_t *json_ptr, size_t json_len, uint8_t require_portable, DagMlDataString *error_out);
+
+typedef struct DagMlDataFittedAdapterStoreHandle {
+    void *ptr;
+} DagMlDataFittedAdapterStoreHandle;
+
+DagMlDataStatusCode dagmldata_inmemory_fitted_adapter_store_new(DagMlDataFittedAdapterStoreHandle *out_store);
+void dagmldata_inmemory_fitted_adapter_store_destroy(DagMlDataFittedAdapterStoreHandle store);
+DagMlDataStatusCode dagmldata_inmemory_fitted_adapter_store_register_json(DagMlDataFittedAdapterStoreHandle store, const uint8_t *json_ptr, size_t json_len, uint64_t *out_handle, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_fitted_adapter_store_materialize_json(DagMlDataFittedAdapterStoreHandle store, const uint8_t *json_ptr, size_t json_len, uint64_t *out_handle, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_fitted_adapter_store_release(DagMlDataFittedAdapterStoreHandle store, const uint8_t *adapter_id, size_t adapter_id_len, uint8_t *out_released);
 DagMlDataStatusCode dagmldata_coordinator_identity_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_target_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_feature_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);

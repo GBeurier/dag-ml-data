@@ -11,9 +11,10 @@ use dag_ml_data_core::{
     CoordinatorDataHandleRecord, CoordinatorDataMaterializationRequest,
     CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
     CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
-    DatasetSchema, FeatureFusionPolicy, FittedAdapterManifest, FittedAdapterRef,
-    NumericFeatureBufferArena, NumericFeatureBufferStore, NumericFeatureMatrixF64,
-    NumericFeatureMatrixF64Columnar, NumericTensorBlock, ObservationId, RepresentationId,
+    DatasetSchema, FeatureFusionPolicy, FittedAdapterManifest, FittedAdapterMaterializationRequest,
+    FittedAdapterRef, InMemoryFittedAdapterStore, NumericFeatureBufferArena,
+    NumericFeatureBufferStore, NumericFeatureMatrixF64, NumericFeatureMatrixF64Columnar,
+    NumericTensorBlock, ObservationId, RepresentationId, RuntimeFittedAdapterStore,
     SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
 };
 use serde::Deserialize;
@@ -470,6 +471,186 @@ pub unsafe extern "C" fn dagmldata_schema_fingerprint_json(
             DagMlDataStatusCode::ValidationError
         }
     }
+}
+
+/// Opaque handle to a Rust-owned in-memory fitted-adapter store. Callers
+/// receive this from `dagmldata_inmemory_fitted_adapter_store_new` and must
+/// eventually release it with `dagmldata_inmemory_fitted_adapter_store_destroy`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataFittedAdapterStoreHandle {
+    pub ptr: *mut c_void,
+}
+
+impl Default for DagMlDataFittedAdapterStoreHandle {
+    fn default() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Creates a Rust-owned in-memory fitted-adapter store. The returned handle
+/// must be released with `dagmldata_inmemory_fitted_adapter_store_destroy`.
+///
+/// # Safety
+///
+/// `out_store` must point to writable memory for one
+/// `DagMlDataFittedAdapterStoreHandle`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_new(
+    out_store: *mut DagMlDataFittedAdapterStoreHandle,
+) -> DagMlDataStatusCode {
+    if out_store.is_null() {
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let store = Box::new(InMemoryFittedAdapterStore::new());
+    *out_store = DagMlDataFittedAdapterStoreHandle {
+        ptr: Box::into_raw(store).cast::<c_void>(),
+    };
+    DagMlDataStatusCode::Ok
+}
+
+/// Destroys a fitted-adapter store handle previously returned by
+/// `dagmldata_inmemory_fitted_adapter_store_new`.
+///
+/// # Safety
+///
+/// `store.ptr` must either be null or point to a store handle returned by
+/// `dagmldata_inmemory_fitted_adapter_store_new` and not already destroyed.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_destroy(
+    store: DagMlDataFittedAdapterStoreHandle,
+) {
+    if !store.ptr.is_null() {
+        drop(Box::from_raw(
+            store.ptr.cast::<InMemoryFittedAdapterStore>(),
+        ));
+    }
+}
+
+/// Registers a JSON `FittedAdapterRef` in the store. On success writes the
+/// allocated u64 handle to `out_handle`. Returns `ValidationError` if the ref
+/// fails validation or if an adapter with the same `adapter_id` is already
+/// registered.
+///
+/// # Safety
+///
+/// `store.ptr` must point to a live store handle. `json_ptr` must point to
+/// `json_len` readable bytes. `out_handle` and `error_out` may be null; any
+/// returned error string must be released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_register_json(
+    store: DagMlDataFittedAdapterStoreHandle,
+    json_ptr: *const u8,
+    json_len: usize,
+    out_handle: *mut u64,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if store.ptr.is_null() || json_ptr.is_null() {
+        set_string(error_out, "store or json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let store_ref = &*store.ptr.cast::<InMemoryFittedAdapterStore>();
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    let value: FittedAdapterRef = match serde_json::from_slice(json) {
+        Ok(value) => value,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match store_ref.register(value) {
+        Ok(record) => {
+            if !out_handle.is_null() {
+                *out_handle = record.handle;
+            }
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Materializes an opaque handle for a previously registered fitted adapter
+/// from a JSON `FittedAdapterMaterializationRequest`. Writes the handle id to
+/// `out_handle` on success. Returns `ValidationError` if the request fails
+/// validation, the adapter is missing, or the request's `params_fingerprint`
+/// does not match the registered ref's fingerprint.
+///
+/// # Safety
+///
+/// Same pointer ownership rules as
+/// `dagmldata_inmemory_fitted_adapter_store_register_json`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_materialize_json(
+    store: DagMlDataFittedAdapterStoreHandle,
+    json_ptr: *const u8,
+    json_len: usize,
+    out_handle: *mut u64,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if store.ptr.is_null() || json_ptr.is_null() {
+        set_string(error_out, "store or json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let store_ref = &*store.ptr.cast::<InMemoryFittedAdapterStore>();
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    let request: FittedAdapterMaterializationRequest = match serde_json::from_slice(json) {
+        Ok(request) => request,
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match store_ref.materialize(&request) {
+        Ok(handle) => {
+            if !out_handle.is_null() {
+                *out_handle = handle;
+            }
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_string(error_out, error.to_string());
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Releases a registered fitted-adapter handle by `adapter_id`. Returns
+/// `Ok` whether the adapter existed or not; callers can inspect
+/// `out_released` (non-zero if a record was removed) when non-null.
+///
+/// # Safety
+///
+/// `store.ptr` must point to a live store handle. `adapter_id` must point to
+/// `adapter_id_len` UTF-8 bytes for the duration of the call. `out_released`
+/// may be null.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_release(
+    store: DagMlDataFittedAdapterStoreHandle,
+    adapter_id: *const u8,
+    adapter_id_len: usize,
+    out_released: *mut u8,
+) -> DagMlDataStatusCode {
+    if store.ptr.is_null() || adapter_id.is_null() {
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let store_ref = &*store.ptr.cast::<InMemoryFittedAdapterStore>();
+    let adapter_id_bytes = slice::from_raw_parts(adapter_id, adapter_id_len);
+    let adapter_id_str = match std::str::from_utf8(adapter_id_bytes) {
+        Ok(value) => value,
+        Err(_) => return DagMlDataStatusCode::InvalidArgument,
+    };
+    let released = store_ref.release(adapter_id_str);
+    if !out_released.is_null() {
+        *out_released = u8::from(released);
+    }
+    DagMlDataStatusCode::Ok
 }
 
 /// Validates a JSON `FittedAdapterRef` payload against the published v1
@@ -3101,6 +3282,90 @@ mod tests {
         assert_eq!(status, DagMlDataStatusCode::ValidationError);
         let message = unsafe { string_value(portable_error) };
         assert!(message.contains("is not portable"), "unexpected: {message}");
+    }
+
+    #[test]
+    fn fitted_adapter_store_register_materialize_release_round_trips_through_abi() {
+        let mut store = DagMlDataFittedAdapterStoreHandle::default();
+        let status = unsafe { dagmldata_inmemory_fitted_adapter_store_new(&mut store) };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(!store.ptr.is_null());
+
+        let ref_payload = br#"{
+  "schema_version": 1,
+  "adapter_id": "snv",
+  "adapter_version": "1.0.0",
+  "params_fingerprint": "12121212121212121212121212121212121212121212121212121212121212ab"
+}"#;
+        let mut register_handle: u64 = 0;
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_fitted_adapter_store_register_json(
+                store,
+                ref_payload.as_ptr(),
+                ref_payload.len(),
+                &mut register_handle,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        assert_eq!(register_handle, 1);
+
+        let request_payload = br#"{
+  "adapter_id": "snv",
+  "params_fingerprint": "12121212121212121212121212121212121212121212121212121212121212ab"
+}"#;
+        let mut materialize_handle: u64 = 0;
+        let mut materialize_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_fitted_adapter_store_materialize_json(
+                store,
+                request_payload.as_ptr(),
+                request_payload.len(),
+                &mut materialize_handle,
+                &mut materialize_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(materialize_error.ptr.is_null());
+        assert_eq!(materialize_handle, register_handle);
+
+        let bad_request = br#"{
+  "adapter_id": "snv",
+  "params_fingerprint": "5555555555555555555555555555555555555555555555555555555555555555"
+}"#;
+        let mut bad_handle: u64 = 0;
+        let mut bad_error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_fitted_adapter_store_materialize_json(
+                store,
+                bad_request.as_ptr(),
+                bad_request.len(),
+                &mut bad_handle,
+                &mut bad_error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        let message = unsafe { string_value(bad_error) };
+        assert!(
+            message.contains("params fingerprint mismatch"),
+            "unexpected: {message}"
+        );
+
+        let mut released: u8 = 0;
+        let status = unsafe {
+            dagmldata_inmemory_fitted_adapter_store_release(
+                store,
+                b"snv".as_ptr(),
+                3,
+                &mut released,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert_eq!(released, 1);
+
+        unsafe { dagmldata_inmemory_fitted_adapter_store_destroy(store) };
     }
 
     #[test]
