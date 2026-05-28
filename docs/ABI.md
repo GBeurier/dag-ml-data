@@ -73,6 +73,14 @@ memory while exposing deterministic descriptors and identity tables to the core.
   `make_view` selector JSON. The in-memory provider executes `by_source`
   branch views natively and lets `separation` pass through; `by_metadata`,
   `by_tag` and `by_filter` are validated but require host-side filtering;
+- `FittedAdapterRef` and `FittedAdapterManifest`, a JSON-serializable
+  fitted-adapter persistence contract with `validate()` for inline refs and
+  `validate_portable()` for refs carrying a backend + safe relative URI +
+  content fingerprint (the same portability rules as `dag-ml`'s
+  `ArtifactRef::validate_portable`). The manifest enforces unique adapter
+  ids and key↔ref consistency. The C ABI does not yet expose validators for
+  this contract; bindings must round-trip through the Rust API. The future
+  C entry point will mirror existing `dagmldata_*_validate_json` shapes;
 - `DagMlDataVTable` with materialize/view/identity/target/feature/release hooks.
   The `feature_arrow` hook accepts either a plain feature-set id or a JSON
   feature-fusion selector. The vtable uses the shared

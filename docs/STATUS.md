@@ -124,6 +124,18 @@ Implemented:
   validation but are rejected for in-memory execution with a clear
   `requires host-side filtering` error so production providers can route
   them to native filter backends without breaking ABI compatibility;
+- fitted adapter serialization contract: `FittedAdapterRef`
+  (`adapter_id`, `adapter_version`, `params_fingerprint`, optional
+  `backend`/`uri`/`content_fingerprint`/`size_bytes`/`plugin`/`plugin_version`/
+  `metadata`) plus `FittedAdapterBackend` (joblib/pickle/json/numpy/onnx/raw)
+  and `FittedAdapterManifest` (versioned collection of refs). Validation has
+  two modes: `validate()` accepts inline refs while `validate_portable()`
+  requires backend + safe relative URI + content fingerprint, refusing
+  absolute paths, Windows drive prefixes, URI schemes, colons in the first
+  path segment and `..` traversal. The manifest enforces unique adapter ids
+  and key-vs-ref consistency. This lets `dag-ml` replay restore stateful
+  data-side adapters the same way `ArtifactRef` already covers fitted
+  models, without serializing adapter binaries inside the core;
 - data-handle-scoped feature-buffer bindings are exported as JSON through the C
   ABI and become invalid when the parent data handle is released;
 - provider vtable release conformance, including parent data-handle release
@@ -146,16 +158,17 @@ Not implemented yet:
 - production Arrow feature-buffer provider implementation beyond the current
   in-memory typed numeric buffer arena conformance;
 - production provider arenas for fused feature exports and production tensor
-  buffer export beyond the in-memory `DagMlDataTensorF64` conformance;
-- fitted adapter serialization;
+  buffer export beyond the in-memory `DagMlDataTensorF64` and
+  `DagMlDataTensorF32` conformance;
+- a runtime fitted-adapter store that materializes opaque adapter handles
+  from `FittedAdapterRef` payloads alongside `RuntimeArtifactStore`;
 - nirs4all connector.
 
 Next recommended task:
 
-Publish a standalone `coordinator_branch_view.schema.json` (mirroring the
-`branch_view_plan` shape currently inlined in `dag-ml`'s
-`campaign_spec.schema.json` `$defs`) plus a cross-repo conformance check
-through `scripts/validate_contracts.py`, then add a fitted adapter
-serialization contract (`AdapterStateRef`) so refit replay can carry
-host-stored adapter binaries the same way artifact references already do for
-models.
+Publish JSON Schemas for `CoordinatorBranchView` and `FittedAdapterRef`/
+`FittedAdapterManifest` alongside the existing coordinator envelope schema,
+add cross-repo conformance checks through `scripts/validate_contracts.py`,
+and expose the schemas through the C ABI contract-discovery surface so
+non-Rust bindings can preflight host-emitted JSON before invoking the
+provider lifecycle.
