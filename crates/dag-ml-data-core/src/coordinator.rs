@@ -240,10 +240,11 @@ impl CoordinatorDataPlanEnvelope {
         self.plan.validate()?;
         let actual_plan = data_plan_fingerprint(&self.plan)?;
         if actual_plan != self.plan_fingerprint {
-            return Err(DataError::Validation(format!(
-                "data plan fingerprint mismatch: envelope has {}, actual is {}",
-                self.plan_fingerprint, actual_plan
-            )));
+            return Err(DataError::FingerprintMismatch {
+                kind: "plan",
+                expected: self.plan_fingerprint.clone(),
+                actual: actual_plan,
+            });
         }
         if let Some(relations) = &self.coordinator_relations {
             relations.validate()?;

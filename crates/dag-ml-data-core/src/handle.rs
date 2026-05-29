@@ -317,12 +317,15 @@ impl CoordinatorHandleArena {
         view: &DataView,
     ) -> Result<CoordinatorDataViewRecord> {
         validate_view(view)?;
-        let parent = self
-            .records
-            .borrow()
-            .get(&data_handle)
-            .cloned()
-            .ok_or_else(|| DataError::Validation(format!("unknown data handle `{data_handle}`")))?;
+        let parent =
+            self.records
+                .borrow()
+                .get(&data_handle)
+                .cloned()
+                .ok_or(DataError::UnknownHandle {
+                    kind: "data",
+                    handle: data_handle,
+                })?;
         let relations = self
             .data_relations
             .borrow()
@@ -366,15 +369,32 @@ impl CoordinatorHandleArena {
             .borrow()
             .get(&handle)
             .cloned()
-            .ok_or_else(|| DataError::Validation(format!("unknown view handle `{handle}`")))
+            .ok_or(DataError::UnknownHandle {
+                kind: "view",
+                handle,
+            })
     }
 
     pub fn data_identity(&self, handle: u64) -> Result<CoordinatorRelationSet> {
+        // A handle is only "unknown" if it is absent from the data-handle
+        // registry. A live handle materialized without scoped relations is
+        // present in `records` but has no `data_relations` entry — that is a
+        // missing-relations contract error, not an unknown/stale handle.
+        if !self.records.borrow().contains_key(&handle) {
+            return Err(DataError::UnknownHandle {
+                kind: "data",
+                handle,
+            });
+        }
         self.data_relations
             .borrow()
             .get(&handle)
             .cloned()
-            .ok_or_else(|| DataError::Validation(format!("unknown data handle `{handle}`")))
+            .ok_or_else(|| {
+                DataError::Validation(format!(
+                    "data handle `{handle}` has no coordinator relations"
+                ))
+            })
     }
 
     pub fn release_handle(&self, handle: u64) -> bool {
@@ -539,17 +559,18 @@ impl CoordinatorHandleArena {
             .borrow()
             .get(&view_handle)
             .cloned()
-            .ok_or_else(|| DataError::Validation(format!("unknown view handle `{view_handle}`")))?;
+            .ok_or(DataError::UnknownHandle {
+                kind: "view",
+                handle: view_handle,
+            })?;
         let parent_record = self
             .records
             .borrow()
             .get(&view_record.parent_handle.handle)
             .cloned()
-            .ok_or_else(|| {
-                DataError::Validation(format!(
-                    "view `{view_handle}` parent data handle `{}` is not live",
-                    view_record.parent_handle.handle
-                ))
+            .ok_or(DataError::UnknownHandle {
+                kind: "data",
+                handle: view_record.parent_handle.handle,
             })?;
         if feature_table.representation_id != parent_record.output_representation {
             return Err(DataError::Validation(format!(
@@ -621,22 +642,26 @@ fn validate_request_against_envelope(
     request: &CoordinatorDataMaterializationRequest,
 ) -> Result<()> {
     if request.schema_fingerprint != envelope.schema_fingerprint {
-        return Err(DataError::Validation(format!(
-            "materialization request `{}` on `{}` schema fingerprint mismatch",
-            request.input_name, request.node_id
-        )));
+        return Err(DataError::FingerprintMismatch {
+            kind: "schema",
+            expected: envelope.schema_fingerprint.clone(),
+            actual: request.schema_fingerprint.clone(),
+        });
     }
     if request.plan_fingerprint != envelope.plan_fingerprint {
-        return Err(DataError::Validation(format!(
-            "materialization request `{}` on `{}` plan fingerprint mismatch",
-            request.input_name, request.node_id
-        )));
+        return Err(DataError::FingerprintMismatch {
+            kind: "plan",
+            expected: envelope.plan_fingerprint.clone(),
+            actual: request.plan_fingerprint.clone(),
+        });
     }
     if request.relation_fingerprint != envelope.relation_fingerprint {
-        return Err(DataError::Validation(format!(
-            "materialization request `{}` on `{}` relation fingerprint mismatch",
-            request.input_name, request.node_id
-        )));
+        let none = || "<none>".to_string();
+        return Err(DataError::FingerprintMismatch {
+            kind: "relation",
+            expected: envelope.relation_fingerprint.clone().unwrap_or_else(none),
+            actual: request.relation_fingerprint.clone().unwrap_or_else(none),
+        });
     }
     if request.require_relations && envelope.coordinator_relations.is_none() {
         return Err(DataError::Validation(format!(

@@ -29,6 +29,26 @@ pub enum DataError {
     #[error("data contract validation failed: {0}")]
     Validation(String),
 
+    /// A recomputed or declared fingerprint did not match the expected value
+    /// (`schema`, `plan`, `relation` or `params`) — a replay/compatibility
+    /// failure that a host can route differently from a plain validation error.
+    #[error("{kind} fingerprint mismatch: expected {expected}, actual {actual}")]
+    FingerprintMismatch {
+        kind: &'static str,
+        expected: String,
+        actual: String,
+    },
+
+    /// A data, view or fitted-adapter handle was released or never issued; the
+    /// caller is using a stale or unknown handle against the coordinator arena.
+    #[error("unknown {kind} handle `{handle}`")]
+    UnknownHandle { kind: &'static str, handle: u64 },
+
+    /// A supplied fold set leaks a repetition group or augmentation origin
+    /// across the train/validation boundary (the ADR-05 safety invariant).
+    #[error("relation boundary violation ({kind}): {detail}")]
+    RelationBoundaryViolation { kind: &'static str, detail: String },
+
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 }
@@ -58,6 +78,15 @@ impl DataError {
             Self::Validation(_) => {
                 "Fix the data contract inputs, schema, handles or coordinator request before retrying."
             }
+            Self::FingerprintMismatch { .. } => {
+                "Recompute the fingerprint from the current schema/plan/relations, or replay against the contract version that produced it."
+            }
+            Self::UnknownHandle { .. } => {
+                "Use a live handle returned by materialize/make_view; released or never-issued handles cannot be reused."
+            }
+            Self::RelationBoundaryViolation { .. } => {
+                "Keep every repetition group and augmentation origin within a single fold; the supplied fold set leaks across the train/validation boundary."
+            }
             Self::Serialization(_) => {
                 "Check that the JSON payload matches the supported dag-ml-data contract version."
             }
@@ -73,6 +102,23 @@ impl DataError {
                 context.insert("reason".to_string(), json!(reason));
             }
             Self::Validation(detail) => {
+                context.insert("detail".to_string(), json!(detail));
+            }
+            Self::FingerprintMismatch {
+                kind,
+                expected,
+                actual,
+            } => {
+                context.insert("kind".to_string(), json!(kind));
+                context.insert("expected".to_string(), json!(expected));
+                context.insert("actual".to_string(), json!(actual));
+            }
+            Self::UnknownHandle { kind, handle } => {
+                context.insert("kind".to_string(), json!(kind));
+                context.insert("handle".to_string(), json!(handle));
+            }
+            Self::RelationBoundaryViolation { kind, detail } => {
+                context.insert("kind".to_string(), json!(kind));
                 context.insert("detail".to_string(), json!(detail));
             }
             Self::Serialization(error) => {
@@ -113,6 +159,11 @@ impl DataError {
         match self {
             Self::InvalidIdentifier { .. } => ("validation", "invalid_identifier", "error"),
             Self::Validation(_) => ("data", "data_contract_validation", "error"),
+            Self::FingerprintMismatch { .. } => ("compatibility", "fingerprint_mismatch", "error"),
+            Self::UnknownHandle { .. } => ("runtime", "unknown_handle", "error"),
+            Self::RelationBoundaryViolation { .. } => {
+                ("data", "relation_boundary_violation", "error")
+            }
             Self::Serialization(_) => ("compatibility", "serialization_error", "error"),
         }
     }
@@ -129,6 +180,9 @@ impl DataError {
         match self {
             Self::InvalidIdentifier { .. } => (0, 1),
             Self::Validation(_) => (2, 1),
+            Self::RelationBoundaryViolation { .. } => (2, 2),
+            Self::UnknownHandle { .. } => (1, 1),
+            Self::FingerprintMismatch { .. } => (8, 2),
             Self::Serialization(_) => (8, 1),
         }
     }
@@ -196,6 +250,39 @@ mod tests {
         assert!(descriptor
             .message
             .contains("data contract validation failed"));
+    }
+
+    #[test]
+    fn routeable_variants_carry_distinct_taxonomy_and_codes() {
+        let fingerprint = DataError::FingerprintMismatch {
+            kind: "plan",
+            expected: "aaa".to_string(),
+            actual: "bbb".to_string(),
+        };
+        assert_eq!(fingerprint.category(), "compatibility");
+        assert_eq!(fingerprint.code(), "fingerprint_mismatch");
+        assert_eq!(fingerprint.error_code(), 0x0008_0002);
+        assert_eq!(fingerprint.context()["kind"], json!("plan"));
+        assert_eq!(fingerprint.context()["expected"], json!("aaa"));
+
+        let handle = DataError::UnknownHandle {
+            kind: "view",
+            handle: 7,
+        };
+        assert_eq!(handle.category(), "runtime");
+        assert_eq!(handle.code(), "unknown_handle");
+        assert_eq!(handle.error_code(), 0x0001_0001);
+        assert_eq!(handle.context()["handle"], json!(7));
+
+        let leak = DataError::RelationBoundaryViolation {
+            kind: "group",
+            detail: "fold `f0` leaks group `g1`".to_string(),
+        };
+        assert_eq!(leak.category(), "data");
+        assert_eq!(leak.code(), "relation_boundary_violation");
+        // distinct from the generic data validation code 0x0002_0001
+        assert_eq!(leak.error_code(), 0x0002_0002);
+        assert_eq!(leak.context()["kind"], json!("group"));
     }
 
     #[test]

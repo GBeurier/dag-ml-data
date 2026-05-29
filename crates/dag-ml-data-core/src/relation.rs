@@ -343,9 +343,12 @@ fn validate_group_boundary(
     for sample_id in validation {
         if let Some(group_id) = sample_groups.get(*sample_id) {
             if train_groups.contains(group_id) {
-                return Err(DataError::Validation(format!(
-                    "fold `{fold_id}` leaks group `{group_id}` across train/validation"
-                )));
+                return Err(DataError::RelationBoundaryViolation {
+                    kind: "group",
+                    detail: format!(
+                        "fold `{fold_id}` leaks group `{group_id}` across train/validation"
+                    ),
+                });
             }
         }
     }
@@ -371,14 +374,20 @@ fn validate_origin_boundary(
             continue;
         };
         if train.contains(&row.sample_id) && validation.contains(origin_sample_id) {
-            return Err(DataError::Validation(format!(
-                "fold `{fold_id}` leaks augmentation origin `{origin_id}` across train/validation"
-            )));
+            return Err(DataError::RelationBoundaryViolation {
+                kind: "origin",
+                detail: format!(
+                    "fold `{fold_id}` leaks augmentation origin `{origin_id}` across train/validation"
+                ),
+            });
         }
         if validation.contains(&row.sample_id) && train.contains(origin_sample_id) {
-            return Err(DataError::Validation(format!(
-                "fold `{fold_id}` leaks augmentation origin `{origin_id}` across train/validation"
-            )));
+            return Err(DataError::RelationBoundaryViolation {
+                kind: "origin",
+                detail: format!(
+                    "fold `{fold_id}` leaks augmentation origin `{origin_id}` across train/validation"
+                ),
+            });
         }
     }
     Ok(())

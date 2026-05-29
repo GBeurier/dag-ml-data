@@ -383,12 +383,11 @@ impl RuntimeFittedAdapterStore for InMemoryFittedAdapterStore {
             ))
         })?;
         if record.fitted_adapter.params_fingerprint != request.params_fingerprint {
-            return Err(DataError::Validation(format!(
-                "fitted adapter `{}` params fingerprint mismatch: store has `{}` but request asks for `{}`",
-                request.adapter_id,
-                record.fitted_adapter.params_fingerprint,
-                request.params_fingerprint
-            )));
+            return Err(DataError::FingerprintMismatch {
+                kind: "params",
+                expected: record.fitted_adapter.params_fingerprint.clone(),
+                actual: request.params_fingerprint.clone(),
+            });
         }
         Ok(record.handle)
     }

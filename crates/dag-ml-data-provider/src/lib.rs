@@ -193,18 +193,20 @@ impl InMemoryProvider {
         columns: Option<&[String]>,
     ) -> Result<CoordinatorFeatureBlock> {
         let arenas = self.lock_arenas()?;
-        let view_record = arenas
-            .handles
-            .view_record(view_handle)
-            .ok_or_else(|| DataError::Validation(format!("unknown view handle `{view_handle}`")))?;
+        let view_record =
+            arenas
+                .handles
+                .view_record(view_handle)
+                .ok_or(DataError::UnknownHandle {
+                    kind: "view",
+                    handle: view_handle,
+                })?;
         let parent_record = arenas
             .handles
             .handle_record(view_record.parent_handle.handle)
-            .ok_or_else(|| {
-                DataError::Validation(format!(
-                    "view `{view_handle}` parent data handle `{}` is not live",
-                    view_record.parent_handle.handle
-                ))
+            .ok_or(DataError::UnknownHandle {
+                kind: "data",
+                handle: view_record.parent_handle.handle,
             })?;
         let relations = arenas.handles.view_identity(view_handle)?;
         let selected_columns: Option<Vec<String>> = if source_id.is_some() {
@@ -293,9 +295,14 @@ impl InMemoryProvider {
         &self,
         data_handle: u64,
     ) -> Result<Vec<NumericFeatureBufferBinding>> {
-        self.lock_arenas()?
-            .features
-            .bindings_for_data_handle(data_handle)
+        let arenas = self.lock_arenas()?;
+        if arenas.handles.handle_record(data_handle).is_none() {
+            return Err(DataError::UnknownHandle {
+                kind: "data",
+                handle: data_handle,
+            });
+        }
+        arenas.features.bindings_for_data_handle(data_handle)
     }
 
     /// Returns the provider-wide N-D tensor manifests.
@@ -305,9 +312,14 @@ impl InMemoryProvider {
 
     /// Returns the N-D tensor bindings scoped to one materialized data handle.
     pub fn data_nd_tensor_bindings(&self, data_handle: u64) -> Result<Vec<NdTensorBinding>> {
-        self.lock_arenas()?
-            .nd_tensors
-            .bindings_for_data_handle(data_handle)
+        let arenas = self.lock_arenas()?;
+        if arenas.handles.handle_record(data_handle).is_none() {
+            return Err(DataError::UnknownHandle {
+                kind: "data",
+                handle: data_handle,
+            });
+        }
+        arenas.nd_tensors.bindings_for_data_handle(data_handle)
     }
 
     /// Projects a bound N-D tensor over a view (axis-0 gather by observation id),
@@ -319,18 +331,20 @@ impl InMemoryProvider {
         source_id: Option<&SourceId>,
     ) -> Result<NdTensorBlock> {
         let arenas = self.lock_arenas()?;
-        let view_record = arenas
-            .handles
-            .view_record(view_handle)
-            .ok_or_else(|| DataError::Validation(format!("unknown view handle `{view_handle}`")))?;
+        let view_record =
+            arenas
+                .handles
+                .view_record(view_handle)
+                .ok_or(DataError::UnknownHandle {
+                    kind: "view",
+                    handle: view_handle,
+                })?;
         let parent_record = arenas
             .handles
             .handle_record(view_record.parent_handle.handle)
-            .ok_or_else(|| {
-                DataError::Validation(format!(
-                    "view `{view_handle}` parent data handle `{}` is not live",
-                    view_record.parent_handle.handle
-                ))
+            .ok_or(DataError::UnknownHandle {
+                kind: "data",
+                handle: view_record.parent_handle.handle,
             })?;
         let relations = arenas.handles.view_identity(view_handle)?;
         arenas.nd_tensors.project_bound_relations(
