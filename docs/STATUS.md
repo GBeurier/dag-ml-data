@@ -324,11 +324,40 @@ Implemented:
   (numeric / categorical / datetime dtype, `ordered`, explicit list or numeric
   regular grid) replaces the untyped `coordinates`, with full validation and
   `deny_unknown_fields`;
+- discriminated, host-routable `DataError` variants (ADR-11 granularity):
+  `FingerprintMismatch` (compatibility), `UnknownHandle` (runtime),
+  `RelationBoundaryViolation` and `IncompatibleReducer` (data),
+  `SignalTypeMismatch` (compatibility) — each with a stable numeric code, so a
+  host can route a fingerprint/leakage/handle/signal failure instead of one
+  opaque validation code;
+- ADR-07 aggregation reducer contract (`aggregation.rs`): flat
+  `deny_unknown_fields` `AggregationPolicy` (mean / weighted_mean / median / vote
+  / robust_mean / exclude_outliers / custom) with per-reducer parameter and
+  cross-parameter validation and `validate_for_task` (vote is classification
+  only). Exposed over the C ABI as `dagmldata_aggregation_policy_validate_json`.
+  No reducer math in core (the bridge owns it);
+- ADR-06 signal-type validation: `SignalKind::as_str` +
+  `require_signal_type_match(expected, actual, allow_unknown)` reusable contract
+  helper (caller-decided `Unknown` policy: tolerated at train, refused at
+  predict);
+- CI hardening: an AddressSanitizer lane over the C-ABI `--lib` unsafe surface,
+  the capi `arrow-ipc` feature compiled+tested, the WASM `provider` feature
+  built, and the stdlib-only ctypes provider package pip-installed + smoked. The
+  public-doc ratchet floor is raised to the measured value (31%).
 
 Not implemented yet:
 
 - production provider arenas for fused feature exports (the borrowed N-D tensor
   transport is now implemented; fused-feature exports remain in-memory-only);
+- reconcile the ADR-07 aggregation drift: dag-ml's coordinator-level
+  `aggregation_policy.method` enum omits `robust_mean` / `exclude_outliers` and
+  carries coordinator-only modes (`none`, `custom_controller`). The two layers
+  are intentionally distinct for now (no shared schema); a follow-up should add
+  canonical-reducer support / an explicit mapping in dag-ml and publish a shared
+  `aggregation_reducer_policy.v1` schema;
+- wire `require_signal_type_match` into materialize/predict — blocked on a paired
+  `dag-ml` lineage/bundle change that carries the expected signal type (no
+  speculative `expected_signal_type` request field added);
 - nirs4all connector (descoped — owned by `nirs4all-io`, see ADR-0001).
 
 Next recommended task:
