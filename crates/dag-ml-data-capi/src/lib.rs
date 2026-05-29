@@ -11,9 +11,10 @@ use dag_ml_data_core::{
     CoordinatorMultiTargetBlock, CoordinatorTargetBlock, CoordinatorTargetTable, DataError,
     DataView, DatasetSchema, FeatureFusionPolicy, FittedAdapterManifest,
     FittedAdapterMaterializationRequest, FittedAdapterRef, FoldSet, InMemoryFittedAdapterStore,
-    NumericFeatureBufferStore, NumericFeatureMatrixF64, NumericFeatureMatrixF64Columnar,
-    NumericTensorBlock, ObservationId, RepresentationId, RuntimeFittedAdapterStore,
-    SampleAlignmentPlan, SampleRelationTable, SourceFeatureBlock, TargetId,
+    NdTensorBlock, NdTensorInput, NdTensorStore, NumericFeatureBufferStore,
+    NumericFeatureMatrixF64, NumericFeatureMatrixF64Columnar, NumericTensorBlock, ObservationId,
+    RepresentationId, RuntimeFittedAdapterStore, SampleAlignmentPlan, SampleRelationTable,
+    SourceFeatureBlock, TargetId,
 };
 #[cfg(test)]
 use dag_ml_data_core::{SampleId, SourceId};
@@ -251,6 +252,109 @@ impl Default for DagMlDataTensorF32 {
             presence_mask: DagMlDataU8Array::default(),
             validity_mask: DagMlDataU8Array::default(),
             feature_names: DagMlDataStringArray::default(),
+        }
+    }
+}
+
+pub const DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION: u32 = 1;
+pub const DAG_ML_DATA_OWNED_TENSOR_ABI_VERSION: u32 = 1;
+
+/// Element dtype of an N-D tensor; discriminants are stable ABI.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DagMlDataTensorDType {
+    F64 = 0,
+    F32 = 1,
+    U8 = 2,
+    I32 = 3,
+    Bool = 4,
+}
+
+impl DagMlDataTensorDType {
+    /// Maps a raw inbound dtype code (carried as `u32` on the borrowed view so an
+    /// invalid value is a clean error, never an out-of-range enum discriminant /
+    /// UB).
+    fn from_code(value: u32) -> dag_ml_data_core::Result<dag_ml_data_core::NdTensorDType> {
+        Ok(match value {
+            0 => dag_ml_data_core::NdTensorDType::F64,
+            1 => dag_ml_data_core::NdTensorDType::F32,
+            2 => dag_ml_data_core::NdTensorDType::U8,
+            3 => dag_ml_data_core::NdTensorDType::I32,
+            4 => dag_ml_data_core::NdTensorDType::Bool,
+            other => {
+                return Err(dag_ml_data_core::DataError::Validation(format!(
+                    "unknown tensor dtype code {other}"
+                )))
+            }
+        })
+    }
+
+    fn from_core(dtype: dag_ml_data_core::NdTensorDType) -> Self {
+        match dtype {
+            dag_ml_data_core::NdTensorDType::F64 => DagMlDataTensorDType::F64,
+            dag_ml_data_core::NdTensorDType::F32 => DagMlDataTensorDType::F32,
+            dag_ml_data_core::NdTensorDType::U8 => DagMlDataTensorDType::U8,
+            dag_ml_data_core::NdTensorDType::I32 => DagMlDataTensorDType::I32,
+            dag_ml_data_core::NdTensorDType::Bool => DagMlDataTensorDType::Bool,
+        }
+    }
+}
+
+/// Borrowed (host-owned) N-D tensor view. Axis 0 is the sample/observation axis;
+/// `shape[0] == ids_len`. `dtype` is a raw `DagMlDataTensorDType` code (u32) so
+/// an invalid value is rejected rather than producing UB. `strides_bytes` may be
+/// null (contiguous row-major) or positive byte strides; the constructor copies
+/// into canonical row-major bytes and discards strides. All pointers are
+/// borrowed for the duration of the constructor call only.
+#[repr(C)]
+pub struct DagMlDataBorrowedTensorView {
+    pub abi_version: u32,
+    pub tensor_id: DagMlDataBytesView,
+    pub representation_id: DagMlDataBytesView,
+    pub container: DagMlDataBytesView,
+    pub dtype: u32,
+    pub data: *const u8,
+    pub data_len: usize,
+    pub shape: *const usize,
+    pub strides_bytes: *const isize,
+    pub rank: usize,
+    pub observation_ids: *const DagMlDataBytesView,
+    pub sample_ids: *const DagMlDataBytesView,
+    pub ids_len: usize,
+    pub row_presence_mask: *const u8,
+    pub row_presence_len: usize,
+}
+
+/// Rust-owned, contiguous row-major N-D tensor returned by the ND export. Free
+/// with `dagmldata_nd_tensor_free`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DagMlDataOwnedTensor {
+    pub abi_version: u32,
+    pub tensor_id: DagMlDataString,
+    pub representation_id: DagMlDataString,
+    pub container: DagMlDataString,
+    pub dtype: DagMlDataTensorDType,
+    pub observation_ids: DagMlDataStringArray,
+    pub sample_ids: DagMlDataStringArray,
+    pub shape: DagMlDataUSizeArray,
+    pub data: DagMlDataU8Array,
+    pub row_presence_mask: DagMlDataU8Array,
+}
+
+impl Default for DagMlDataOwnedTensor {
+    fn default() -> Self {
+        Self {
+            abi_version: DAG_ML_DATA_OWNED_TENSOR_ABI_VERSION,
+            tensor_id: DagMlDataString::default(),
+            representation_id: DagMlDataString::default(),
+            container: DagMlDataString::default(),
+            dtype: DagMlDataTensorDType::F64,
+            observation_ids: DagMlDataStringArray::default(),
+            sample_ids: DagMlDataStringArray::default(),
+            shape: DagMlDataUSizeArray::default(),
+            data: DagMlDataU8Array::default(),
+            row_presence_mask: DagMlDataU8Array::default(),
         }
     }
 }
@@ -1687,6 +1791,74 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_features_json(
     }
 }
 
+/// Creates a Rust-owned in-memory provider that serves borrowed N-D tensors
+/// (RGB images, hyperspectral cubes, ...). The borrowed views are copied into
+/// canonical row-major storage during this call; callers keep ownership of all
+/// input pointers and may release them after the function returns.
+///
+/// # Safety
+///
+/// Non-null byte/tensor pointers must point to readable memory for the duration
+/// of the call. `out_vtable` may be null only if the caller is probing error
+/// handling.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_tensor_views(
+    envelope_ptr: *const u8,
+    envelope_len: usize,
+    target_tables_ptr: *const u8,
+    target_tables_len: usize,
+    tensor_views_ptr: *const DagMlDataBorrowedTensorView,
+    tensor_views_len: usize,
+    out_vtable: *mut DagMlDataVTable,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_vtable(out_vtable);
+    clear_string(error_out);
+    if envelope_ptr.is_null() {
+        set_error_message(error_out, "envelope pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_vtable.is_null() {
+        set_error_message(error_out, "vtable output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let envelope_json = slice::from_raw_parts(envelope_ptr, envelope_len);
+    let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            set_display_error(error_out, error);
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len, error_out) {
+        Ok(target_tables) => target_tables,
+        Err(status) => return status,
+    };
+    let nd_tensor_store = match parse_borrowed_tensor_views(tensor_views_ptr, tensor_views_len) {
+        Ok(store) => store,
+        Err(error) => {
+            set_display_error(error_out, error);
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match InMemoryProviderState::new_with_tensors(
+        envelope,
+        target_tables,
+        NumericFeatureBufferStore::default(),
+        nd_tensor_store,
+    ) {
+        Ok(provider) => {
+            *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_display_error(error_out, error);
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
 /// Creates a Rust-owned in-memory provider with borrowed C f64 feature matrices.
 ///
 /// The borrowed `DagMlDataFeatureMatrixF64View` descriptors are copied into
@@ -2312,6 +2484,168 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_data_feature_buffer_manifes
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct NdTensorExportSelector {
+    tensor_id: String,
+    #[serde(default)]
+    source_id: Option<String>,
+}
+
+/// Returns the provider-wide N-D tensor manifests as JSON (no payload bytes).
+///
+/// # Safety
+///
+/// `vtable` must point to a live provider vtable; returned strings must be
+/// released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_nd_tensor_manifest_json(
+    vtable: *const DagMlDataVTable,
+    out_json: *mut DagMlDataString,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(out_json);
+    clear_string(error_out);
+    if vtable.is_null() || (*vtable).user_data.is_null() {
+        set_error_message(error_out, "provider vtable or user_data is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
+    match state
+        .provider
+        .nd_tensor_manifests()
+        .and_then(|manifests| serde_json::to_string(&manifests).map_err(Into::into))
+    {
+        Ok(json) => {
+            set_string(out_json, json);
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_display_error(error_out, error);
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Returns the N-D tensor bindings for one live materialized data handle as JSON.
+///
+/// # Safety
+///
+/// `vtable` must point to a live provider vtable; returned strings must be
+/// released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_data_nd_tensor_manifest_json(
+    vtable: *const DagMlDataVTable,
+    data_handle: DagMlDataHandle,
+    out_json: *mut DagMlDataString,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(out_json);
+    clear_string(error_out);
+    if vtable.is_null() || (*vtable).user_data.is_null() {
+        set_error_message(error_out, "provider vtable or user_data is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
+    match state
+        .provider
+        .data_nd_tensor_bindings(data_handle)
+        .and_then(|bindings| serde_json::to_string(&bindings).map_err(Into::into))
+    {
+        Ok(json) => {
+            set_string(out_json, json);
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_display_error(error_out, error);
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Exports a view-filtered, contiguous row-major N-D tensor as an owned
+/// [`DagMlDataOwnedTensor`]. The selector JSON is `{ tensor_id, source_id? }`;
+/// axis 0 is gathered in the view's relation order.
+///
+/// # Safety
+///
+/// `vtable` must point to a live provider vtable; `selector_json.ptr` must point
+/// to `selector_json.len` readable bytes; `out_tensor` must be non-null. The
+/// returned tensor must be released with `dagmldata_nd_tensor_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_inmemory_provider_nd_tensor_export_json(
+    vtable: *const DagMlDataVTable,
+    view: DagMlDataHandle,
+    selector_json: DagMlDataBytesView,
+    out_tensor: *mut DagMlDataOwnedTensor,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if !out_tensor.is_null() {
+        *out_tensor = DagMlDataOwnedTensor::default();
+    }
+    if vtable.is_null()
+        || (*vtable).user_data.is_null()
+        || selector_json.ptr.is_null()
+        || out_tensor.is_null()
+    {
+        set_error_message(
+            error_out,
+            "provider vtable, user_data, selector or out_tensor pointer is null",
+        );
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
+    let selector_bytes = slice::from_raw_parts(selector_json.ptr, selector_json.len);
+    let selector = match serde_json::from_slice::<NdTensorExportSelector>(selector_bytes) {
+        Ok(selector) => selector,
+        Err(error) => {
+            set_display_error(error_out, error);
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let source_id = match selector.source_id.as_deref() {
+        Some(value) => match dag_ml_data_core::SourceId::new(value) {
+            Ok(id) => Some(id),
+            Err(error) => {
+                set_display_error(error_out, error);
+                return DagMlDataStatusCode::ValidationError;
+            }
+        },
+        None => None,
+    };
+    match state
+        .provider
+        .nd_tensor_block(view, &selector.tensor_id, source_id.as_ref())
+    {
+        Ok(block) => {
+            *out_tensor = owned_tensor_from_block(block);
+            DagMlDataStatusCode::Ok
+        }
+        Err(error) => {
+            set_display_error(error_out, error);
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Frees a [`DagMlDataOwnedTensor`] returned by the ND export.
+///
+/// # Safety
+///
+/// `tensor` must have been returned by
+/// `dagmldata_inmemory_provider_nd_tensor_export_json` and not already freed.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_nd_tensor_free(tensor: DagMlDataOwnedTensor) {
+    dagmldata_string_free(tensor.tensor_id);
+    dagmldata_string_free(tensor.representation_id);
+    dagmldata_string_free(tensor.container);
+    free_string_array(tensor.observation_ids);
+    free_string_array(tensor.sample_ids);
+    free_usize_array(tensor.shape);
+    free_u8_array(tensor.data);
+    free_u8_array(tensor.row_presence_mask);
+}
+
 /// Builds a JSON row-major tensor from feature buffers owned by the Rust
 /// in-memory provider.
 ///
@@ -2759,6 +3093,31 @@ fn owned_bool_array(values: Option<Vec<bool>>) -> DagMlDataU8Array {
     DagMlDataU8Array { ptr, len }
 }
 
+fn owned_u8_array(values: Vec<u8>) -> DagMlDataU8Array {
+    let (ptr, len) = boxed_slice_parts(values);
+    DagMlDataU8Array { ptr, len }
+}
+
+fn owned_tensor_from_block(block: NdTensorBlock) -> DagMlDataOwnedTensor {
+    DagMlDataOwnedTensor {
+        abi_version: DAG_ML_DATA_OWNED_TENSOR_ABI_VERSION,
+        tensor_id: owned_string(block.tensor_id),
+        representation_id: owned_string(block.representation_id.as_str()),
+        container: owned_string(block.container),
+        dtype: DagMlDataTensorDType::from_core(block.dtype),
+        observation_ids: owned_string_array(
+            block
+                .observation_ids
+                .iter()
+                .map(|id| id.as_str().to_string()),
+        ),
+        sample_ids: owned_string_array(block.sample_ids.iter().map(|id| id.as_str().to_string())),
+        shape: owned_usize_array(block.shape),
+        data: owned_u8_array(block.data),
+        row_presence_mask: owned_bool_array(block.row_presence),
+    }
+}
+
 fn boxed_slice_parts<T>(values: Vec<T>) -> (*mut T, usize) {
     if values.is_empty() {
         return (std::ptr::null_mut(), 0);
@@ -2873,6 +3232,23 @@ impl InMemoryProviderState {
     ) -> dag_ml_data_core::Result<Self> {
         Ok(Self {
             provider: InMemoryProvider::new(envelope, target_tables, feature_store)?,
+            fitted_adapter_store: std::sync::Mutex::new(std::ptr::null()),
+        })
+    }
+
+    fn new_with_tensors(
+        envelope: CoordinatorDataPlanEnvelope,
+        target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
+        feature_store: NumericFeatureBufferStore,
+        nd_tensor_store: NdTensorStore,
+    ) -> dag_ml_data_core::Result<Self> {
+        Ok(Self {
+            provider: InMemoryProvider::new_with_tensors(
+                envelope,
+                target_tables,
+                feature_store,
+                nd_tensor_store,
+            )?,
             fitted_adapter_store: std::sync::Mutex::new(std::ptr::null()),
         })
     }
@@ -2998,6 +3374,257 @@ unsafe fn parse_f64_feature_matrix_views(
         .map(|(idx, view)| f64_feature_matrix_view_to_core(*view, idx))
         .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
     NumericFeatureBufferStore::from_f64_matrices(matrices)
+}
+
+unsafe fn parse_borrowed_tensor_views(
+    views_ptr: *const DagMlDataBorrowedTensorView,
+    views_len: usize,
+) -> dag_ml_data_core::Result<NdTensorStore> {
+    if views_ptr.is_null() {
+        if views_len != 0 {
+            return Err(dag_ml_data_core::DataError::Validation(
+                "borrowed tensor views pointer is null".to_string(),
+            ));
+        }
+        return Ok(NdTensorStore::default());
+    }
+    if views_len == 0 {
+        return Ok(NdTensorStore::default());
+    }
+    let inputs = slice::from_raw_parts(views_ptr, views_len)
+        .iter()
+        .enumerate()
+        .map(|(idx, view)| borrowed_tensor_view_to_input(view, idx))
+        .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
+    NdTensorStore::from_inputs(inputs)
+}
+
+/// Converts a borrowed (possibly strided) N-D tensor view into a canonical
+/// row-major [`NdTensorInput`], copying the payload. Strides must be null
+/// (contiguous) or strictly positive; the gather is bounds-checked against
+/// `data_len`.
+unsafe fn borrowed_tensor_view_to_input(
+    view: &DagMlDataBorrowedTensorView,
+    index: usize,
+) -> dag_ml_data_core::Result<NdTensorInput> {
+    let label = format!("borrowed tensor view {index}");
+    if view.abi_version != DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "{label} abi_version {} is not {DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION}",
+            view.abi_version
+        )));
+    }
+    let tensor_id = bytes_view_to_string(view.tensor_id, &format!("{label} tensor_id"))?;
+    let representation_id = RepresentationId::new(bytes_view_to_string(
+        view.representation_id,
+        &format!("{label} representation_id"),
+    )?)?;
+    let container = bytes_view_to_string(view.container, &format!("{label} container"))?;
+    let dtype = DagMlDataTensorDType::from_code(view.dtype)?;
+    let element_size = dtype.element_size();
+
+    if view.rank == 0 || view.rank > dag_ml_data_core::ND_TENSOR_MAX_RANK {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "{label} rank {} is not in 1..={}",
+            view.rank,
+            dag_ml_data_core::ND_TENSOR_MAX_RANK
+        )));
+    }
+    if view.shape.is_null() {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "{label} shape pointer is null"
+        )));
+    }
+    let shape = slice::from_raw_parts(view.shape, view.rank).to_vec();
+    if shape.contains(&0) {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "{label} has a zero dimension in shape {shape:?}"
+        )));
+    }
+    if shape[0] != view.ids_len {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "{label} axis-0 size {} does not match ids_len {}",
+            shape[0], view.ids_len
+        )));
+    }
+
+    let observation_ids = bytes_view_array_to_strings(
+        view.observation_ids,
+        view.ids_len,
+        &format!("{label} observation_ids"),
+    )?
+    .into_iter()
+    .map(ObservationId::new)
+    .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
+    let sample_ids = if view.sample_ids.is_null() {
+        None
+    } else {
+        Some(
+            bytes_view_array_to_strings(
+                view.sample_ids,
+                view.ids_len,
+                &format!("{label} sample_ids"),
+            )?
+            .into_iter()
+            .map(dag_ml_data_core::SampleId::new)
+            .collect::<dag_ml_data_core::Result<Vec<_>>>()?,
+        )
+    };
+
+    let total_elements = checked_product(&label, &shape)?;
+    let canonical_bytes = total_elements.checked_mul(element_size).ok_or_else(|| {
+        dag_ml_data_core::DataError::Validation(format!("{label} byte size overflows usize"))
+    })?;
+    let data = if view.data.is_null() {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "{label} data pointer is null"
+        )));
+    } else if view.strides_bytes.is_null() {
+        // Contiguous row-major: the payload is already canonical.
+        if view.data_len != canonical_bytes {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "{label} contiguous data has {} bytes for shape {shape:?} dtype {dtype:?} ({canonical_bytes} expected)",
+                view.data_len
+            )));
+        }
+        ensure_addressable(&label, canonical_bytes)?;
+        slice::from_raw_parts(view.data, canonical_bytes).to_vec()
+    } else {
+        gather_strided_tensor(
+            view,
+            &label,
+            &shape,
+            element_size,
+            total_elements,
+            canonical_bytes,
+        )?
+    };
+
+    let row_presence = if view.row_presence_mask.is_null() {
+        if view.row_presence_len != 0 {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "{label} row presence mask pointer is null but length is {}",
+                view.row_presence_len
+            )));
+        }
+        None
+    } else {
+        // Validate the length against axis-0 BEFORE reading, so a too-large
+        // length can never cause an out-of-bounds read.
+        if view.row_presence_len != shape[0] {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "{label} row presence mask has {} flags for axis-0 size {}",
+                view.row_presence_len, shape[0]
+            )));
+        }
+        let bytes = slice::from_raw_parts(view.row_presence_mask, view.row_presence_len);
+        let mut presence = Vec::with_capacity(bytes.len());
+        for byte in bytes {
+            if *byte > 1 {
+                return Err(dag_ml_data_core::DataError::Validation(format!(
+                    "{label} row presence mask contains a byte that is not 0 or 1"
+                )));
+            }
+            presence.push(*byte == 1);
+        }
+        Some(presence)
+    };
+
+    Ok(NdTensorInput {
+        tensor_id,
+        representation_id,
+        container,
+        dtype,
+        shape,
+        observation_ids,
+        sample_ids,
+        data,
+        row_presence,
+    })
+}
+
+/// Gathers a strided borrowed tensor into canonical row-major bytes, bounds
+/// checking every addressed element against `data_len`. Strides must be > 0.
+unsafe fn gather_strided_tensor(
+    view: &DagMlDataBorrowedTensorView,
+    label: &str,
+    shape: &[usize],
+    element_size: usize,
+    total_elements: usize,
+    canonical_bytes: usize,
+) -> dag_ml_data_core::Result<Vec<u8>> {
+    let strides = slice::from_raw_parts(view.strides_bytes, view.rank);
+    let mut strides_usize = Vec::with_capacity(view.rank);
+    for stride in strides {
+        if *stride <= 0 {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "{label} has a non-positive byte stride {stride} (v1 supports null or positive strides)"
+            )));
+        }
+        strides_usize.push(*stride as usize);
+    }
+    // Highest addressed byte = sum (dim-1)*stride + element_size; must fit in data_len.
+    let mut max_offset: usize = 0;
+    for (dim, stride) in shape.iter().zip(strides_usize.iter()) {
+        let span = (dim - 1).checked_mul(*stride).ok_or_else(|| {
+            dag_ml_data_core::DataError::Validation(format!("{label} stride span overflows usize"))
+        })?;
+        max_offset = max_offset.checked_add(span).ok_or_else(|| {
+            dag_ml_data_core::DataError::Validation(format!(
+                "{label} stride offset overflows usize"
+            ))
+        })?;
+    }
+    let max_byte = max_offset.checked_add(element_size).ok_or_else(|| {
+        dag_ml_data_core::DataError::Validation(format!("{label} addressed byte overflows usize"))
+    })?;
+    if view.data_len < max_byte {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "{label} strided data has {} bytes but addresses up to {max_byte}",
+            view.data_len
+        )));
+    }
+    // Slice only the proven-addressable range (never the caller-controlled
+    // `data_len`, which may be exaggerated).
+    ensure_addressable(label, max_byte)?;
+    let data = slice::from_raw_parts(view.data, max_byte);
+    let mut canonical = Vec::with_capacity(canonical_bytes);
+    for flat in 0..total_elements {
+        // Decompose `flat` row-major (last axis fastest) and compute the strided
+        // byte offset.
+        let mut remainder = flat;
+        let mut offset = 0usize;
+        for (dim, stride) in shape.iter().zip(strides_usize.iter()).rev() {
+            let coord = remainder % dim;
+            remainder /= dim;
+            offset += coord * stride;
+        }
+        canonical.extend_from_slice(&data[offset..offset + element_size]);
+    }
+    Ok(canonical)
+}
+
+fn checked_product(label: &str, shape: &[usize]) -> dag_ml_data_core::Result<usize> {
+    let mut product: usize = 1;
+    for dim in shape {
+        product = product.checked_mul(*dim).ok_or_else(|| {
+            dag_ml_data_core::DataError::Validation(format!(
+                "{label} shape product overflows usize"
+            ))
+        })?;
+    }
+    Ok(product)
+}
+
+/// Guards `slice::from_raw_parts` of `u8`: the length (in bytes) must not exceed
+/// `isize::MAX`, which is a soundness precondition of the call.
+fn ensure_addressable(label: &str, len: usize) -> dag_ml_data_core::Result<()> {
+    if len > isize::MAX as usize {
+        return Err(dag_ml_data_core::DataError::Validation(format!(
+            "{label} byte length {len} exceeds isize::MAX"
+        )));
+    }
+    Ok(())
 }
 
 unsafe fn f64_feature_matrix_view_to_core(
@@ -5695,6 +6322,464 @@ mod tests {
             vtable.release.unwrap()(vtable.user_data, view_handle);
             vtable.release.unwrap()(vtable.user_data, data_handle);
             dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    /// Phase B: a contiguous uint8 RGB ND tensor `[N,H,W]` round-trips through
+    /// the provider — constructed from a borrowed view, bound at materialize,
+    /// and exported view-filtered + axis-0-gathered in relation order.
+    #[test]
+    fn inmemory_provider_new_with_tensor_views_contiguous_u8_round_trips() {
+        use dag_ml_data_core::{AxisKind, AxisSpec, RepresentationSpec, TypeId};
+
+        let representation_id = RepresentationId::new("rgb_image").unwrap();
+        let native_representation = RepresentationSpec {
+            id: representation_id.clone(),
+            type_id: TypeId::new("image").unwrap(),
+            rank: Some(2),
+            axes: vec![
+                AxisSpec {
+                    name: "sample".to_string(),
+                    kind: AxisKind::Sample,
+                    unit: None,
+                    size: Some(3),
+                    variable: false,
+                    coordinates: None,
+                },
+                AxisSpec {
+                    name: "pixel".to_string(),
+                    kind: AxisKind::Feature,
+                    unit: None,
+                    size: Some(4),
+                    variable: false,
+                    coordinates: None,
+                },
+            ],
+            container: "pil_image_batch".to_string(),
+            dtype: Some("uint8".to_string()),
+            sparse: false,
+            ragged: false,
+            signal_type: None,
+        };
+        let schema = single_source_dataset_schema("image", "image", native_representation);
+        let (envelope, materialization_request) =
+            single_modality_provider_fixture(&schema, &representation_id);
+
+        // [3, 2, 2] contiguous uint8 tensor over obs.s1..s3.
+        let tensor_id = bytes_view(b"rgb");
+        let repr = bytes_view(b"rgb_image");
+        let container = bytes_view(b"pil_image_batch");
+        let observation_ids = [
+            bytes_view(b"obs.s1"),
+            bytes_view(b"obs.s2"),
+            bytes_view(b"obs.s3"),
+        ];
+        let shape = [3usize, 2, 2];
+        let data: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+        let views = [DagMlDataBorrowedTensorView {
+            abi_version: DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION,
+            tensor_id,
+            representation_id: repr,
+            container,
+            dtype: DagMlDataTensorDType::U8 as u32,
+            data: data.as_ptr(),
+            data_len: data.len(),
+            shape: shape.as_ptr(),
+            strides_bytes: std::ptr::null(),
+            rank: shape.len(),
+            observation_ids: observation_ids.as_ptr(),
+            sample_ids: std::ptr::null(),
+            ids_len: observation_ids.len(),
+            row_presence_mask: std::ptr::null(),
+            row_presence_len: 0,
+        }];
+        let target_tables = b"[]";
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_tensor_views(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                views.as_ptr(),
+                views.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        // View selects s3 then s1; the export gathers those axis-0 rows in order.
+        let view_json = serde_json::to_vec(&serde_json::json!({
+            "sample_ids": ["s3", "s1"],
+            "include_augmented": false
+        }))
+        .unwrap();
+        let mut view_handle = 0;
+        let status = unsafe {
+            vtable.make_view.unwrap()(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: view_json.as_ptr(),
+                    len: view_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let selector = serde_json::to_vec(&serde_json::json!({"tensor_id": "rgb"})).unwrap();
+        let mut tensor = DagMlDataOwnedTensor::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_nd_tensor_export_json(
+                &vtable,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: selector.as_ptr(),
+                    len: selector.len(),
+                },
+                &mut tensor,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        unsafe {
+            assert_eq!(tensor.dtype, DagMlDataTensorDType::U8);
+            assert_eq!(usize_array_values(tensor.shape), vec![2, 2, 2]);
+            // s3 row (bytes 8..12) then s1 row (0..4).
+            assert_eq!(u8_array_values(tensor.data), vec![8, 9, 10, 11, 0, 1, 2, 3]);
+            assert_eq!(
+                string_array_values(tensor.observation_ids),
+                vec!["obs.s3", "obs.s1"]
+            );
+            assert_eq!(string_array_values(tensor.sample_ids), vec!["s3", "s1"]);
+            dagmldata_nd_tensor_free(tensor);
+            vtable.release.unwrap()(vtable.user_data, view_handle);
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    /// Phase B: a STRIDED borrowed tensor is gathered into canonical row-major
+    /// bytes (strides discarded). [3,2] u8 with a 1-byte row pad.
+    #[test]
+    fn inmemory_provider_new_with_tensor_views_gathers_strided_input() {
+        use dag_ml_data_core::{AxisKind, AxisSpec, RepresentationSpec, TypeId};
+
+        let representation_id = RepresentationId::new("rgb_image").unwrap();
+        let native_representation = RepresentationSpec {
+            id: representation_id.clone(),
+            type_id: TypeId::new("image").unwrap(),
+            rank: Some(2),
+            axes: vec![
+                AxisSpec {
+                    name: "sample".to_string(),
+                    kind: AxisKind::Sample,
+                    unit: None,
+                    size: Some(3),
+                    variable: false,
+                    coordinates: None,
+                },
+                AxisSpec {
+                    name: "pixel".to_string(),
+                    kind: AxisKind::Feature,
+                    unit: None,
+                    size: Some(2),
+                    variable: false,
+                    coordinates: None,
+                },
+            ],
+            container: "ndarray".to_string(),
+            dtype: Some("uint8".to_string()),
+            sparse: false,
+            ragged: false,
+            signal_type: None,
+        };
+        let schema = single_source_dataset_schema("image", "image", native_representation);
+        let (envelope, materialization_request) =
+            single_modality_provider_fixture(&schema, &representation_id);
+
+        let observation_ids = [
+            bytes_view(b"obs.s1"),
+            bytes_view(b"obs.s2"),
+            bytes_view(b"obs.s3"),
+        ];
+        let shape = [3usize, 2];
+        // Row stride 3 (1 byte trailing pad), element stride 1: rows are
+        // [10,11,_], [20,21,_], [30,31,_].
+        let strides = [3isize, 1];
+        let data: [u8; 9] = [10, 11, 99, 20, 21, 99, 30, 31, 99];
+        let views = [DagMlDataBorrowedTensorView {
+            abi_version: DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION,
+            tensor_id: bytes_view(b"rgb"),
+            representation_id: bytes_view(b"rgb_image"),
+            container: bytes_view(b"ndarray"),
+            dtype: DagMlDataTensorDType::U8 as u32,
+            data: data.as_ptr(),
+            data_len: data.len(),
+            shape: shape.as_ptr(),
+            strides_bytes: strides.as_ptr(),
+            rank: shape.len(),
+            observation_ids: observation_ids.as_ptr(),
+            sample_ids: std::ptr::null(),
+            ids_len: observation_ids.len(),
+            row_presence_mask: std::ptr::null(),
+            row_presence_len: 0,
+        }];
+        let target_tables = b"[]";
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_tensor_views(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                views.as_ptr(),
+                views.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut data_handle = 0;
+        unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        let view_json = serde_json::to_vec(&serde_json::json!({
+            "sample_ids": ["s1", "s2", "s3"],
+            "include_augmented": false
+        }))
+        .unwrap();
+        let mut view_handle = 0;
+        unsafe {
+            vtable.make_view.unwrap()(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: view_json.as_ptr(),
+                    len: view_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        let selector = serde_json::to_vec(&serde_json::json!({"tensor_id": "rgb"})).unwrap();
+        let mut tensor = DagMlDataOwnedTensor::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_nd_tensor_export_json(
+                &vtable,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: selector.as_ptr(),
+                    len: selector.len(),
+                },
+                &mut tensor,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        unsafe {
+            assert_eq!(usize_array_values(tensor.shape), vec![3, 2]);
+            // Strides discarded: canonical contiguous bytes, no pad byte 99.
+            assert_eq!(u8_array_values(tensor.data), vec![10, 11, 20, 21, 30, 31]);
+            dagmldata_nd_tensor_free(tensor);
+            vtable.release.unwrap()(vtable.user_data, view_handle);
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
+    /// Phase B: the constructor rejects a contiguous view whose data length does
+    /// not match `shape * element_size`.
+    #[test]
+    fn inmemory_provider_new_with_tensor_views_rejects_bad_data_len() {
+        let observation_ids = [bytes_view(b"obs.s1"), bytes_view(b"obs.s2")];
+        let shape = [2usize, 2];
+        let data: [u8; 3] = [1, 2, 3]; // expected 4 bytes
+        let views = [DagMlDataBorrowedTensorView {
+            abi_version: DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION,
+            tensor_id: bytes_view(b"rgb"),
+            representation_id: bytes_view(b"rgb_image"),
+            container: bytes_view(b"ndarray"),
+            dtype: DagMlDataTensorDType::U8 as u32,
+            data: data.as_ptr(),
+            data_len: data.len(),
+            shape: shape.as_ptr(),
+            strides_bytes: std::ptr::null(),
+            rank: shape.len(),
+            observation_ids: observation_ids.as_ptr(),
+            sample_ids: std::ptr::null(),
+            ids_len: observation_ids.len(),
+            row_presence_mask: std::ptr::null(),
+            row_presence_len: 0,
+        }];
+        let representation_id = RepresentationId::new("rgb_image").unwrap();
+        let schema = {
+            use dag_ml_data_core::{AxisKind, AxisSpec, RepresentationSpec, TypeId};
+            single_source_dataset_schema(
+                "image",
+                "image",
+                RepresentationSpec {
+                    id: representation_id.clone(),
+                    type_id: TypeId::new("image").unwrap(),
+                    rank: Some(2),
+                    axes: vec![
+                        AxisSpec {
+                            name: "sample".to_string(),
+                            kind: AxisKind::Sample,
+                            unit: None,
+                            size: Some(3),
+                            variable: false,
+                            coordinates: None,
+                        },
+                        AxisSpec {
+                            name: "pixel".to_string(),
+                            kind: AxisKind::Feature,
+                            unit: None,
+                            size: Some(2),
+                            variable: false,
+                            coordinates: None,
+                        },
+                    ],
+                    container: "ndarray".to_string(),
+                    dtype: Some("uint8".to_string()),
+                    sparse: false,
+                    ragged: false,
+                    signal_type: None,
+                },
+            )
+        };
+        let (envelope, _request) = single_modality_provider_fixture(&schema, &representation_id);
+        let target_tables = b"[]";
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_tensor_views(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                views.as_ptr(),
+                views.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(vtable.user_data.is_null());
+        unsafe {
+            dagmldata_string_free(error);
+        }
+    }
+
+    /// Phase B: an out-of-range dtype code is rejected (not UB) — the borrowed
+    /// view carries `dtype` as a raw u32.
+    #[test]
+    fn inmemory_provider_new_with_tensor_views_rejects_unknown_dtype() {
+        use dag_ml_data_core::{AxisKind, AxisSpec, RepresentationSpec, TypeId};
+
+        let observation_ids = [bytes_view(b"obs.s1")];
+        let shape = [1usize, 2];
+        let data: [u8; 2] = [1, 2];
+        let views = [DagMlDataBorrowedTensorView {
+            abi_version: DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION,
+            tensor_id: bytes_view(b"rgb"),
+            representation_id: bytes_view(b"rgb_image"),
+            container: bytes_view(b"ndarray"),
+            dtype: 99, // unknown code
+            data: data.as_ptr(),
+            data_len: data.len(),
+            shape: shape.as_ptr(),
+            strides_bytes: std::ptr::null(),
+            rank: shape.len(),
+            observation_ids: observation_ids.as_ptr(),
+            sample_ids: std::ptr::null(),
+            ids_len: observation_ids.len(),
+            row_presence_mask: std::ptr::null(),
+            row_presence_len: 0,
+        }];
+        let representation_id = RepresentationId::new("rgb_image").unwrap();
+        let schema = single_source_dataset_schema(
+            "image",
+            "image",
+            RepresentationSpec {
+                id: representation_id.clone(),
+                type_id: TypeId::new("image").unwrap(),
+                rank: Some(2),
+                axes: vec![
+                    AxisSpec {
+                        name: "sample".to_string(),
+                        kind: AxisKind::Sample,
+                        unit: None,
+                        size: Some(3),
+                        variable: false,
+                        coordinates: None,
+                    },
+                    AxisSpec {
+                        name: "pixel".to_string(),
+                        kind: AxisKind::Feature,
+                        unit: None,
+                        size: Some(2),
+                        variable: false,
+                        coordinates: None,
+                    },
+                ],
+                container: "ndarray".to_string(),
+                dtype: Some("uint8".to_string()),
+                sparse: false,
+                ragged: false,
+                signal_type: None,
+            },
+        );
+        let (envelope, _request) = single_modality_provider_fixture(&schema, &representation_id);
+        let target_tables = b"[]";
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_tensor_views(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                views.as_ptr(),
+                views.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(vtable.user_data.is_null());
+        unsafe {
+            dagmldata_string_free(error);
         }
     }
 

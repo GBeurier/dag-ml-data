@@ -90,6 +90,57 @@ typedef struct DagMlDataTensorF32 {
     DagMlDataStringArray feature_names;
 } DagMlDataTensorF32;
 
+#define DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION 1u
+#define DAG_ML_DATA_OWNED_TENSOR_ABI_VERSION 1u
+
+typedef enum DagMlDataTensorDType {
+    DAG_ML_DATA_TENSOR_DTYPE_F64 = 0,
+    DAG_ML_DATA_TENSOR_DTYPE_F32 = 1,
+    DAG_ML_DATA_TENSOR_DTYPE_U8 = 2,
+    DAG_ML_DATA_TENSOR_DTYPE_I32 = 3,
+    DAG_ML_DATA_TENSOR_DTYPE_BOOL = 4
+} DagMlDataTensorDType;
+
+/* Borrowed N-D tensor view. Axis 0 is the sample/observation axis
+ * (shape[0] == ids_len). strides_bytes may be NULL (contiguous row-major) or
+ * strictly positive byte strides; the constructor copies into canonical
+ * row-major bytes and discards strides. All pointers are borrowed for the
+ * duration of the constructor call only. */
+typedef struct DagMlDataBorrowedTensorView {
+    uint32_t abi_version;
+    DagMlDataBytesView tensor_id;
+    DagMlDataBytesView representation_id;
+    DagMlDataBytesView container;
+    /* A DagMlDataTensorDType value, carried as uint32_t so an out-of-range code
+     * is rejected by the library instead of being undefined behaviour. */
+    uint32_t dtype;
+    const uint8_t *data;
+    size_t data_len;
+    const size_t *shape;
+    const ptrdiff_t *strides_bytes;
+    size_t rank;
+    const DagMlDataBytesView *observation_ids;
+    const DagMlDataBytesView *sample_ids;
+    size_t ids_len;
+    const uint8_t *row_presence_mask;
+    size_t row_presence_len;
+} DagMlDataBorrowedTensorView;
+
+/* Rust-owned, contiguous row-major N-D tensor returned by the ND export.
+ * Release with dagmldata_nd_tensor_free. */
+typedef struct DagMlDataOwnedTensor {
+    uint32_t abi_version;
+    DagMlDataString tensor_id;
+    DagMlDataString representation_id;
+    DagMlDataString container;
+    DagMlDataTensorDType dtype;
+    DagMlDataStringArray observation_ids;
+    DagMlDataStringArray sample_ids;
+    DagMlDataUSizeArray shape;
+    DagMlDataU8Array data;
+    DagMlDataU8Array row_presence_mask;
+} DagMlDataOwnedTensor;
+
 typedef struct DagMlDataFeatureMatrixF64View {
     DagMlDataBytesView feature_set_id;
     DagMlDataBytesView representation_id;
@@ -183,6 +234,7 @@ DagMlDataStatusCode dagmldata_last_error_json(DagMlDataString *out);
 uint32_t dagmldata_last_error_code(void);
 void dagmldata_tensor_f64_free(DagMlDataTensorF64 tensor);
 void dagmldata_tensor_f32_free(DagMlDataTensorF32 tensor);
+void dagmldata_nd_tensor_free(DagMlDataOwnedTensor tensor);
 void dagmldata_arrow_array_free(ArrowArray *array);
 void dagmldata_arrow_schema_free(ArrowSchema *schema);
 DagMlDataStatusCode dagmldata_schema_fingerprint_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *fingerprint_out, DagMlDataString *error_out);
@@ -217,6 +269,10 @@ DagMlDataStatusCode dagmldata_inmemory_provider_new_with_f64_features_json(const
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_f64_feature_views(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const DagMlDataFeatureMatrixF64View *feature_matrices, size_t feature_matrices_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_with_f64_feature_columns(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const DagMlDataFeatureMatrixF64ColumnarView *feature_matrices, size_t feature_matrices_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_inmemory_provider_new_from_file(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const uint8_t *path_ptr, size_t path_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_new_with_tensor_views(const uint8_t *envelope_ptr, size_t envelope_len, const uint8_t *target_tables_ptr, size_t target_tables_len, const DagMlDataBorrowedTensorView *tensor_views, size_t tensor_views_len, DagMlDataVTable *out_vtable, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_nd_tensor_manifest_json(const DagMlDataVTable *vtable, DagMlDataString *out_json, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_data_nd_tensor_manifest_json(const DagMlDataVTable *vtable, DagMlDataHandle data_handle, DagMlDataString *out_json, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_inmemory_provider_nd_tensor_export_json(const DagMlDataVTable *vtable, DagMlDataHandle view, DagMlDataBytesView selector_json, DagMlDataOwnedTensor *out_tensor, DagMlDataString *error_out);
 /* dagmldata_inmemory_provider_new_from_arrow_ipc is only present when the
    `arrow-ipc` feature is enabled in the dag-ml-data-capi build. Hosts that
    link a feature-enabled library must define DAG_ML_DATA_ARROW_IPC before

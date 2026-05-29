@@ -25,6 +25,7 @@ use dag_ml_data_core::{
     CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorDataViewRecord,
     CoordinatorFeatureBlock, CoordinatorHandleArena, CoordinatorRelationSet,
     CoordinatorTargetBlock, CoordinatorTargetTable, DataError, DataView, FeatureFusionPolicy,
+    NdTensorArena, NdTensorBinding, NdTensorBlock, NdTensorManifest, NdTensorStore,
     NumericFeatureBufferArena, NumericFeatureBufferBinding, NumericFeatureBufferManifest,
     NumericFeatureBufferStore, Result, SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
 };
@@ -99,6 +100,7 @@ pub struct InMemoryProvider {
 struct ProviderArenas {
     handles: CoordinatorHandleArena,
     features: NumericFeatureBufferArena,
+    nd_tensors: NdTensorArena,
 }
 
 /// The provider contract the C ABI vtable is built on.
@@ -146,17 +148,34 @@ pub trait DagMlDataProvider {
 
 impl InMemoryProvider {
     /// Builds a provider over a validated envelope, target tables, and feature
-    /// store.
+    /// store (no N-D tensors).
     pub fn new(
         envelope: CoordinatorDataPlanEnvelope,
         target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
         feature_store: NumericFeatureBufferStore,
+    ) -> Result<Self> {
+        Self::new_with_tensors(
+            envelope,
+            target_tables,
+            feature_store,
+            NdTensorStore::default(),
+        )
+    }
+
+    /// Builds a provider that also serves host-supplied N-D tensors (RGB images,
+    /// hyperspectral cubes, ...) bound by representation like feature buffers.
+    pub fn new_with_tensors(
+        envelope: CoordinatorDataPlanEnvelope,
+        target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
+        feature_store: NumericFeatureBufferStore,
+        nd_tensor_store: NdTensorStore,
     ) -> Result<Self> {
         envelope.validate()?;
         Ok(Self {
             arenas: Mutex::new(ProviderArenas {
                 handles: CoordinatorHandleArena::new(default_owner_controller())?,
                 features: NumericFeatureBufferArena::new(feature_store),
+                nd_tensors: NdTensorArena::new(nd_tensor_store),
             }),
             envelope,
             target_tables,
@@ -279,6 +298,49 @@ impl InMemoryProvider {
             .bindings_for_data_handle(data_handle)
     }
 
+    /// Returns the provider-wide N-D tensor manifests.
+    pub fn nd_tensor_manifests(&self) -> Result<Vec<NdTensorManifest>> {
+        self.lock_arenas()?.nd_tensors.manifests()
+    }
+
+    /// Returns the N-D tensor bindings scoped to one materialized data handle.
+    pub fn data_nd_tensor_bindings(&self, data_handle: u64) -> Result<Vec<NdTensorBinding>> {
+        self.lock_arenas()?
+            .nd_tensors
+            .bindings_for_data_handle(data_handle)
+    }
+
+    /// Projects a bound N-D tensor over a view (axis-0 gather by observation id),
+    /// optionally scoped to one source.
+    pub fn nd_tensor_block(
+        &self,
+        view_handle: u64,
+        tensor_id: &str,
+        source_id: Option<&SourceId>,
+    ) -> Result<NdTensorBlock> {
+        let arenas = self.lock_arenas()?;
+        let view_record = arenas
+            .handles
+            .view_record(view_handle)
+            .ok_or_else(|| DataError::Validation(format!("unknown view handle `{view_handle}`")))?;
+        let parent_record = arenas
+            .handles
+            .handle_record(view_record.parent_handle.handle)
+            .ok_or_else(|| {
+                DataError::Validation(format!(
+                    "view `{view_handle}` parent data handle `{}` is not live",
+                    view_record.parent_handle.handle
+                ))
+            })?;
+        let relations = arenas.handles.view_identity(view_handle)?;
+        arenas.nd_tensors.project_bound_relations(
+            parent_record.handle.handle,
+            tensor_id,
+            &relations,
+            source_id,
+        )
+    }
+
     /// Locks both arenas. A poisoned lock (a prior panic while holding it) is
     /// mapped to a `DataError` so the failure crosses the C ABI as a status
     /// code instead of unwinding across the FFI boundary.
@@ -298,15 +360,19 @@ impl DagMlDataProvider for InMemoryProvider {
     ) -> Result<CoordinatorDataHandleRecord> {
         let mut arenas = self.lock_arenas()?;
         let record = arenas.handles.materialize(&self.envelope, request)?;
-        // Bind under the same lock so the data handle and its feature bindings
-        // are published atomically with respect to `release`.
+        // Bind feature buffers and N-D tensors under the same lock so the data
+        // handle and its bindings are published atomically with respect to
+        // `release`.
         let relations = arenas.handles.data_identity(record.handle.handle).ok();
         if let Some(relations) = relations {
-            arenas.features.bind_data_handle(
-                record.handle.handle,
-                &relations,
-                &record.output_representation,
-            )?;
+            let handle = record.handle.handle;
+            let representation = record.output_representation.clone();
+            arenas
+                .features
+                .bind_data_handle(handle, &relations, &representation)?;
+            arenas
+                .nd_tensors
+                .bind_data_handle(handle, &relations, &representation)?;
         }
         Ok(record)
     }
@@ -349,7 +415,8 @@ impl DagMlDataProvider for InMemoryProvider {
         };
         let released_handle = arenas.handles.release_handle(handle);
         let released_buffers = arenas.features.release_data_handle(handle);
-        released_handle || released_buffers
+        let released_tensors = arenas.nd_tensors.release_data_handle(handle);
+        released_handle || released_buffers || released_tensors
     }
 }
 
@@ -371,7 +438,11 @@ mod tests {
     /// feature set `x` with two columns (`f0`, `f1`). Mirrors the C-ABI modality
     /// fixtures but stays entirely in pure Rust so the extracted provider crate
     /// is exercised without the FFI layer.
-    fn fixture() -> (InMemoryProvider, CoordinatorDataMaterializationRequest) {
+    fn fixture_parts() -> (
+        CoordinatorDataPlanEnvelope,
+        CoordinatorDataMaterializationRequest,
+        NumericFeatureBufferStore,
+    ) {
         let representation_id = RepresentationId::new("tabular_numeric").unwrap();
         let native_representation = RepresentationSpec {
             id: representation_id.clone(),
@@ -491,8 +562,42 @@ mod tests {
             validity_mask: None,
         }])
         .unwrap();
-        let provider = InMemoryProvider::new(envelope, BTreeMap::new(), store).unwrap();
-        (provider, request)
+        (envelope, request, store)
+    }
+
+    fn fixture() -> (InMemoryProvider, CoordinatorDataMaterializationRequest) {
+        let (envelope, request, store) = fixture_parts();
+        (
+            InMemoryProvider::new(envelope, BTreeMap::new(), store).unwrap(),
+            request,
+        )
+    }
+
+    fn nd_fixture() -> (InMemoryProvider, CoordinatorDataMaterializationRequest) {
+        use dag_ml_data_core::{NdTensorDType, NdTensorInput, NdTensorStore};
+        let (envelope, request, store) = fixture_parts();
+        // [3, 2] u8 tensor over obs.s1..s3, representation matches the plan
+        // output so it binds at materialize like the feature buffers.
+        let nd = NdTensorStore::from_inputs(vec![NdTensorInput {
+            tensor_id: "rgb".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            container: "pil_image_batch".to_string(),
+            dtype: NdTensorDType::U8,
+            shape: vec![3, 2],
+            observation_ids: vec![
+                ObservationId::new("obs.s1").unwrap(),
+                ObservationId::new("obs.s2").unwrap(),
+                ObservationId::new("obs.s3").unwrap(),
+            ],
+            sample_ids: None,
+            data: vec![1, 2, 3, 4, 5, 6],
+            row_presence: None,
+        }])
+        .unwrap();
+        (
+            InMemoryProvider::new_with_tensors(envelope, BTreeMap::new(), store, nd).unwrap(),
+            request,
+        )
     }
 
     fn full_view() -> DataView {
@@ -513,6 +618,41 @@ mod tests {
             .iter()
             .map(|observation| observation.as_str().to_string())
             .collect()
+    }
+
+    #[test]
+    fn materialize_binds_nd_tensors_and_block_projects_in_relation_order() {
+        let (provider, request) = nd_fixture();
+        let data = provider.materialize(&request).unwrap();
+
+        let manifests = provider.nd_tensor_manifests().unwrap();
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0].shape, vec![3, 2]);
+        assert!(!provider
+            .data_nd_tensor_bindings(data.handle.handle)
+            .unwrap()
+            .is_empty());
+
+        // View selects s3 then s1; the ND block gathers axis-0 rows in that order.
+        let view = DataView {
+            sample_ids: Some(vec![
+                SampleId::new("s3").unwrap(),
+                SampleId::new("s1").unwrap(),
+            ]),
+            include_augmented: true,
+            ..DataView::default()
+        };
+        let view = provider.make_view(data.handle.handle, &view).unwrap();
+        let block = provider
+            .nd_tensor_block(view.handle.handle, "rgb", None)
+            .unwrap();
+        assert_eq!(block.shape, vec![2, 2]);
+        assert_eq!(block.data, vec![5, 6, 1, 2]);
+
+        assert!(provider.release(data.handle.handle));
+        assert!(provider
+            .data_nd_tensor_bindings(data.handle.handle)
+            .is_err());
     }
 
     #[test]

@@ -42,6 +42,8 @@
     "data_provider_vtable_abi_version": 2,
     "data_tensor_f64_abi_version": 1,
     "data_tensor_f32_abi_version": 1,
+    "data_borrowed_tensor_view_abi_version": 1,
+    "data_owned_tensor_abi_version": 1,
     "required_provider_callbacks": [
       "materialize",
       "make_view",
@@ -78,7 +80,15 @@
       "dagmldata_inmemory_fitted_adapter_store_register_json",
       "dagmldata_inmemory_fitted_adapter_store_materialize_json",
       "dagmldata_inmemory_fitted_adapter_store_release",
-      "dagmldata_inmemory_fitted_adapter_store_destroy"
+      "dagmldata_inmemory_fitted_adapter_store_destroy",
+      "DagMlDataTensorDType",
+      "DagMlDataBorrowedTensorView",
+      "DagMlDataOwnedTensor",
+      "dagmldata_inmemory_provider_new_with_tensor_views",
+      "dagmldata_inmemory_provider_nd_tensor_manifest_json",
+      "dagmldata_inmemory_provider_data_nd_tensor_manifest_json",
+      "dagmldata_inmemory_provider_nd_tensor_export_json",
+      "dagmldata_nd_tensor_free"
     ]
   },
   "cross_repo_conformance": {

@@ -499,6 +499,25 @@ def validate_dag_ml_data_tensor_header(header: str, label: str) -> None:
         "dagmldata_inmemory_provider_data_feature_buffer_manifest_json" in header,
         f"{label} header must expose data-handle feature-buffer manifests",
     )
+    require(
+        "#define DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION=1",
+    )
+    require(
+        "#define DAG_ML_DATA_OWNED_TENSOR_ABI_VERSION 1u" in header,
+        f"{label} header must declare DAG_ML_DATA_OWNED_TENSOR_ABI_VERSION=1",
+    )
+    for symbol in (
+        "DagMlDataTensorDType",
+        "DagMlDataBorrowedTensorView",
+        "DagMlDataOwnedTensor",
+        "dagmldata_inmemory_provider_new_with_tensor_views",
+        "dagmldata_inmemory_provider_nd_tensor_manifest_json",
+        "dagmldata_inmemory_provider_data_nd_tensor_manifest_json",
+        "dagmldata_inmemory_provider_nd_tensor_export_json",
+        "dagmldata_nd_tensor_free",
+    ):
+        require(symbol in header, f"{label} header must expose `{symbol}`")
 
 
 def canonical_json_sha256(value: Any) -> str:
@@ -647,6 +666,16 @@ def validate_conformance_pack(
         require(
             c_abi.get("data_tensor_f32_abi_version") == 1,
             f"{label} f32 tensor ABI version must be 1",
+        )
+    if "DagMlDataBorrowedTensorView" in header:
+        require(
+            c_abi.get("data_borrowed_tensor_view_abi_version") == 1,
+            f"{label} borrowed tensor view ABI version must be 1",
+        )
+    if "DagMlDataOwnedTensor" in header:
+        require(
+            c_abi.get("data_owned_tensor_abi_version") == 1,
+            f"{label} owned tensor ABI version must be 1",
         )
 
     cross_repo = pack.get("cross_repo_conformance")
