@@ -89,6 +89,26 @@ jobs:
       - name: Example schema
         run: cargo run -p dag-ml-data-cli -- fingerprint-schema examples/minimal_schema.json
 
+  sanitizer:
+    name: AddressSanitizer (capi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      # Run the C-ABI crate's unit tests (which exercise the raw-pointer FFI
+      # marshaling, borrowed strided tensor views and Arrow C Data ABI structs)
+      # under AddressSanitizer. std is rebuilt with the sanitizer via -Zbuild-std.
+      # Leak detection is off: the FFI test harness intentionally hands some
+      # allocations to "C", and the goal here is use-after-free / out-of-bounds /
+      # UB on the unsafe surface, not leak accounting.
+      - name: capi unit tests under AddressSanitizer
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          ASAN_OPTIONS: "detect_leaks=0"
+        run: cargo test -p dag-ml-data-capi --lib -Zbuild-std --target x86_64-unknown-linux-gnu
+
   docs-site:
     name: Documentation site
     runs-on: ubuntu-latest
@@ -132,6 +152,17 @@ jobs:
         run: |
           python -m pip install target/wheels/dag_ml_data-*.whl
           python scripts/smoke_python_bindings.py
+      # The PyO3 wheel above is JSON-only; the provider/tensor surface is reached
+      # through the stdlib-only ctypes package. Build the cdylib, install the
+      # package, and run the reusable provider smoke against it.
+      - name: Smoke installed ctypes provider package
+        run: |
+          cargo build -p dag-ml-data-capi --lib
+          python -m pip install ./crates/dag-ml-data-capi/bindings/python
+          DAG_ML_DATA_CAPI_LIB="$PWD/target/debug/libdag_ml_data_capi.so" \
+            python examples/python/provider_smoke.py \
+              --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json \
+              --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
 
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}
@@ -143,9 +174,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+      # The default WASM package exposes only the JSON contract surface; the
+      # opt-in `provider` feature compiles the in-WASM provider over
+      # dag-ml-data-provider. Build it so that surface is covered by CI.
+      - name: Build WASM provider feature
+        run: cargo build -p dag-ml-data-wasm --features provider --target wasm32-unknown-unknown
       - name: Install wasm-pack
         run: cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
       - name: Build WASM nodejs package
