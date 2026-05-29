@@ -566,6 +566,9 @@ mod tests {
         let relations = SampleRelationTable { rows: vec![s1, s2] };
 
         let error = relations.validate_fold_set(&fold_set()).unwrap_err();
+        assert_eq!(error.category(), "data");
+        assert_eq!(error.code(), "relation_boundary_violation");
+        assert_eq!(error.error_code(), 0x0002_0002);
         assert!(error.to_string().contains("leaks group"));
     }
 

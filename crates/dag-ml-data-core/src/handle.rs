@@ -1456,7 +1456,10 @@ mod tests {
         assert!(arena.release_handle(data.handle.handle));
         assert_eq!(arena.handle_record(data.handle.handle), None);
         assert_eq!(arena.view_record(view_record.handle.handle), None);
-        assert!(arena.view_identity(view_record.handle.handle).is_err());
+        let error = arena.view_identity(view_record.handle.handle).unwrap_err();
+        assert_eq!(error.category(), "runtime");
+        assert_eq!(error.code(), "unknown_handle");
+        assert_eq!(error.error_code(), 0x0001_0001);
         assert!(!arena.release_handle(data.handle.handle));
     }
 }

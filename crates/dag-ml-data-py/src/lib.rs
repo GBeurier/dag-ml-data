@@ -280,6 +280,7 @@ fn contract_manifest() -> serde_json::Value {
             "dagmldata_fold_set_validate_json",
             "dagmldata_fold_set_fingerprint_json",
             "dagmldata_fold_set_validate_against_relations_json",
+            "dagmldata_aggregation_policy_validate_json",
             "dagmldata_coordinator_multi_target_arrow_json"
         ]
     })

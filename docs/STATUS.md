@@ -343,7 +343,8 @@ Implemented:
 - CI hardening: an AddressSanitizer lane over the C-ABI `--lib` unsafe surface,
   the capi `arrow-ipc` feature compiled+tested, the WASM `provider` feature
   built, and the stdlib-only ctypes provider package pip-installed + smoked. The
-  public-doc ratchet floor is raised to the measured value (31%).
+  public-doc ratchet floor is raised to track the current coverage (33%, measured
+  33.4%).
 
 Not implemented yet:
 

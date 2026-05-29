@@ -296,7 +296,7 @@ fn is_rfc3339_utc_seconds(value: &str) -> bool {
     (1..=days_in_month).contains(&day)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SignalKind {

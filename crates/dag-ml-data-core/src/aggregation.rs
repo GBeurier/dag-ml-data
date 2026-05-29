@@ -10,9 +10,13 @@
 //! The policy is a flat struct with `deny_unknown_fields` (not an internally
 //! tagged enum) so the JSON wire shape stays flat — `{"reducer": "robust_mean",
 //! "trim_fraction": 0.1}` — yet unknown keys such as `skipna` are rejected at the
-//! boundary, keeping the Rust deserializer, the JSON schema and the C ABI
-//! validator in agreement. Type-level looseness (a parameter that belongs to
-//! another reducer) is caught semantically by [`AggregationPolicy::validate`].
+//! boundary, keeping the Rust deserializer and the C ABI validator
+//! (`dagmldata_aggregation_policy_validate_json`) in agreement. Type-level
+//! looseness (a parameter that belongs to another reducer) is caught
+//! semantically by [`AggregationPolicy::validate`]. No shared JSON schema is
+//! published yet — the conformance pack pins only the validator symbol (the
+//! dag-ml coordinator-level aggregation policy stays a distinct contract; see the
+//! ADR-07 reconciliation follow-up).
 
 use serde::{Deserialize, Serialize};
 
@@ -23,9 +27,16 @@ pub const DEFAULT_TRIM_FRACTION: f64 = 0.1;
 /// Default `threshold` for `exclude_outliers` when unspecified (ADR-07).
 pub const DEFAULT_THRESHOLD: f64 = 0.95;
 
+/// A reducer label (weight column, custom reducer id) must be non-empty, carry no
+/// leading or trailing whitespace, and contain no control characters.
+fn is_clean_label(value: &str) -> bool {
+    !value.is_empty() && value == value.trim() && !value.chars().any(char::is_control)
+}
+
 /// The canonical reducer names. The `custom` escape hatch is intentionally not
-/// listed; it is addressed by `custom_reducer_id` instead. Kept in sync with the
-/// conformance pack `aggregation_reducers` declaration.
+/// listed; it is addressed by `custom_reducer_id` instead. This array is the
+/// source of truth for the canonical set (the conformance pack pins only the C
+/// ABI validator symbol, not a shared reducer list).
 pub const CANONICAL_AGGREGATION_REDUCERS: [&str; 6] = [
     "mean",
     "weighted_mean",
@@ -149,18 +160,18 @@ impl AggregationPolicy {
             }
             R::WeightedMean => {
                 let column = self.weight_column.as_deref().unwrap_or_default();
-                if column.trim().is_empty() {
+                if !is_clean_label(column) {
                     return Err(DataError::Validation(
-                        "aggregation reducer `weighted_mean` requires a non-empty weight_column"
+                        "aggregation reducer `weighted_mean` requires a non-empty weight_column with no surrounding whitespace or control characters"
                             .to_string(),
                     ));
                 }
             }
             R::Custom => {
-                let id = self.custom_reducer_id.as_deref().unwrap_or_default().trim();
-                if id.is_empty() {
+                let id = self.custom_reducer_id.as_deref().unwrap_or_default();
+                if !is_clean_label(id) {
                     return Err(DataError::Validation(
-                        "aggregation reducer `custom` requires a non-empty custom_reducer_id"
+                        "aggregation reducer `custom` requires a non-empty custom_reducer_id with no surrounding whitespace or control characters"
                             .to_string(),
                     ));
                 }
@@ -294,6 +305,11 @@ mod tests {
         assert!(p.validate().is_err()); // blank
         p.weight_column = Some("weight".to_string());
         assert!(p.validate().is_ok());
+        // surrounding whitespace / control characters are rejected
+        p.weight_column = Some(" weight ".to_string());
+        assert!(p.validate().is_err());
+        p.weight_column = Some("we\tight".to_string());
+        assert!(p.validate().is_err());
     }
 
     #[test]
@@ -305,6 +321,11 @@ mod tests {
         for reserved in ["mean", "robust_mean", "custom"] {
             p.custom_reducer_id = Some(reserved.to_string());
             assert!(p.validate().is_err(), "reserved `{reserved}` should fail");
+        }
+        // surrounding whitespace / control characters are rejected
+        for dirty in [" site.special", "site.special ", "site\tspecial"] {
+            p.custom_reducer_id = Some(dirty.to_string());
+            assert!(p.validate().is_err(), "dirty `{dirty:?}` should fail");
         }
     }
 

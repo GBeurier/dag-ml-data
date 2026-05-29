@@ -633,9 +633,10 @@ pub unsafe extern "C" fn dagmldata_schema_fingerprint_json(
 ///
 /// The payload mirrors dag-ml's `FoldSet` JSON shape but keeps `fold_id` as an
 /// opaque string so runtime labels such as `fold:0` remain ABI-compatible.
-/// This standalone check validates only the exhaustive fold partition shape;
-/// use `dagmldata_fold_set_validate_against_relations_json` to audit group and
-/// augmentation-origin leakage.
+/// This standalone check validates the exhaustive fold partition shape and any
+/// leakage across the fold-set's own embedded `sample_groups`; use
+/// `dagmldata_fold_set_validate_against_relations_json` to additionally audit
+/// leakage against an external relation table's groups and augmentation origins.
 ///
 /// # Safety
 ///
@@ -6979,7 +6980,7 @@ mod tests {
                 dtype: Some("float64".to_string()),
                 sparse: false,
                 ragged: false,
-                signal_type: case.signal_type.clone(),
+                signal_type: case.signal_type,
             };
             let schema =
                 single_source_dataset_schema(case.modality, case.type_id, native_representation);

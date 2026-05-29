@@ -228,6 +228,16 @@ impl CoordinatorDataPlanEnvelope {
         Ok(envelope)
     }
 
+    /// Validate the envelope.
+    ///
+    /// Only the `plan` fingerprint is *recomputed* and matched against the
+    /// declared value (the plan is carried in the envelope), so a tampered plan
+    /// is rejected with [`DataError::FingerprintMismatch`]. The `schema` and
+    /// `relation` fingerprints are replay keys for source artifacts (the
+    /// `DatasetSchema` and the source `SampleRelationTable`) that are *not*
+    /// carried here, so they are format-validated only; the embedded
+    /// `coordinator_relations` is a derived view validated structurally, not
+    /// against the fingerprint.
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION {
             return Err(DataError::Validation(format!(
@@ -390,7 +400,10 @@ mod tests {
             CoordinatorDataPlanEnvelope::from_parts(&load_schema(), load_plan(), None).unwrap();
         envelope.plan_fingerprint = "0".repeat(64);
 
-        assert!(envelope.validate().is_err());
+        let error = envelope.validate().unwrap_err();
+        assert_eq!(error.category(), "compatibility");
+        assert_eq!(error.code(), "fingerprint_mismatch");
+        assert_eq!(error.error_code(), 0x0008_0002);
     }
 
     #[test]

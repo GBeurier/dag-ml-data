@@ -14,6 +14,8 @@ usually branch on `DagMlDataStatusCode` before parsing a payload.
 
 - version, string-free and tensor-free helpers;
 - `dagmldata_schema_fingerprint_json`;
+- `dagmldata_aggregation_policy_validate_json`, which validates an ADR-07
+  aggregation-policy payload (reducer name plus its parameters);
 - Arrow C Data `ArrowArray` and `ArrowSchema` structs plus release helpers;
 - `DagMlDataTensorF64`, an owned row-major f64 tensor descriptor with identity,
   shape, values, optional masks and feature names;

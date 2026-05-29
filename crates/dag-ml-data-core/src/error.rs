@@ -39,8 +39,8 @@ pub enum DataError {
         actual: String,
     },
 
-    /// A data, view or fitted-adapter handle was released or never issued; the
-    /// caller is using a stale or unknown handle against the coordinator arena.
+    /// A data or view handle was released or never issued; the caller is using a
+    /// stale or unknown handle against the coordinator arena.
     #[error("unknown {kind} handle `{handle}`")]
     UnknownHandle { kind: &'static str, handle: u64 },
 
@@ -96,7 +96,7 @@ impl DataError {
                 "Fix the data contract inputs, schema, handles or coordinator request before retrying."
             }
             Self::FingerprintMismatch { .. } => {
-                "Recompute the fingerprint from the current schema/plan/relations, or replay against the contract version that produced it."
+                "Recompute the fingerprint from the current schema, plan, relations or fitted-adapter parameters, or replay against the contract version that produced it."
             }
             Self::UnknownHandle { .. } => {
                 "Use a live handle returned by materialize/make_view; released or never-issued handles cannot be reused."
