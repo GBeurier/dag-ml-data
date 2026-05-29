@@ -57,6 +57,15 @@ pub enum DataError {
         task: &'static str,
     },
 
+    /// A provider-declared signal type does not match the one the plan or bundle
+    /// expects (for example an absorbance-trained pipeline applied to raw
+    /// reflectance) — ADR-06.
+    #[error("signal type mismatch: expected {expected}, actual {actual}")]
+    SignalTypeMismatch {
+        expected: &'static str,
+        actual: &'static str,
+    },
+
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 }
@@ -98,6 +107,9 @@ impl DataError {
             Self::IncompatibleReducer { .. } => {
                 "The `vote` reducer aggregates classification predictions only; use a numeric reducer (mean, weighted_mean, median, robust_mean, exclude_outliers) or a custom reducer for a regression task."
             }
+            Self::SignalTypeMismatch { .. } => {
+                "Convert the data to the expected signal type (e.g. convert_to_absorbance) before materialize or predict; a trained pipeline must be applied to the signal type it recorded."
+            }
             Self::Serialization(_) => {
                 "Check that the JSON payload matches the supported dag-ml-data contract version."
             }
@@ -135,6 +147,10 @@ impl DataError {
             Self::IncompatibleReducer { reducer, task } => {
                 context.insert("reducer".to_string(), json!(reducer));
                 context.insert("task".to_string(), json!(task));
+            }
+            Self::SignalTypeMismatch { expected, actual } => {
+                context.insert("expected".to_string(), json!(expected));
+                context.insert("actual".to_string(), json!(actual));
             }
             Self::Serialization(error) => {
                 context.insert("detail".to_string(), json!(error.to_string()));
@@ -180,6 +196,7 @@ impl DataError {
                 ("data", "relation_boundary_violation", "error")
             }
             Self::IncompatibleReducer { .. } => ("data", "incompatible_reducer", "error"),
+            Self::SignalTypeMismatch { .. } => ("compatibility", "signal_type_mismatch", "error"),
             Self::Serialization(_) => ("compatibility", "serialization_error", "error"),
         }
     }
@@ -200,6 +217,7 @@ impl DataError {
             Self::IncompatibleReducer { .. } => (2, 3),
             Self::UnknownHandle { .. } => (1, 1),
             Self::FingerprintMismatch { .. } => (8, 2),
+            Self::SignalTypeMismatch { .. } => (8, 3),
             Self::Serialization(_) => (8, 1),
         }
     }

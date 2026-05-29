@@ -308,6 +308,57 @@ pub enum SignalKind {
     Unknown,
 }
 
+impl SignalKind {
+    /// The snake_case wire name, for diagnostics.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Absorbance => "absorbance",
+            Self::Reflectance => "reflectance",
+            Self::Transmittance => "transmittance",
+            Self::LogReflectance => "log_reflectance",
+            Self::Preprocessed => "preprocessed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Validate that a provider-declared `actual` signal type matches the `expected`
+/// one the plan or bundle records (ADR-06). The `Unknown` policy is the caller's:
+/// pass `allow_unknown = true` at train time (an untagged signal type is
+/// tolerated) and `false` at predict time (a trained pipeline must carry a
+/// concrete signal type, so any difference — including `Unknown` — is refused).
+///
+/// This is a reusable contract helper; `dag-ml-data` does not yet wire it into
+/// materialize because the "expected" side is carried by `dag-ml` lineage, not by
+/// the data envelope. The host bridge calls it with the two sides it owns.
+pub fn require_signal_type_match(
+    expected: SignalKind,
+    actual: SignalKind,
+    allow_unknown: bool,
+) -> Result<()> {
+    // `Unknown` on either side is decided by the caller's policy FIRST: at predict
+    // time (`allow_unknown = false`) any `Unknown` is refused — including when both
+    // sides are `Unknown` — because a trained pipeline must carry a concrete signal
+    // type (ADR-06).
+    if expected == SignalKind::Unknown || actual == SignalKind::Unknown {
+        return if allow_unknown {
+            Ok(())
+        } else {
+            Err(DataError::SignalTypeMismatch {
+                expected: expected.as_str(),
+                actual: actual.as_str(),
+            })
+        };
+    }
+    if expected == actual {
+        return Ok(());
+    }
+    Err(DataError::SignalTypeMismatch {
+        expected: expected.as_str(),
+        actual: actual.as_str(),
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AxisSizeContract {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1466,5 +1517,27 @@ mod tests {
             explicit(strings(&["2024-02-29T23:59:59Z"])),
         );
         assert!(leap_day.validate("time", Some(1), false).is_ok());
+    }
+
+    #[test]
+    fn signal_type_match_honours_caller_unknown_policy() {
+        use SignalKind::*;
+        // exact match always passes
+        assert!(require_signal_type_match(Absorbance, Absorbance, false).is_ok());
+        // two concrete, different types always mismatch
+        let error = require_signal_type_match(Absorbance, Reflectance, true).unwrap_err();
+        assert_eq!(error.code(), "signal_type_mismatch");
+        assert_eq!(error.error_code(), 0x0008_0003);
+        assert_eq!(error.context()["expected"], serde_json::json!("absorbance"));
+        assert_eq!(error.context()["actual"], serde_json::json!("reflectance"));
+        // Unknown actual: tolerated at train (allow_unknown), refused at predict
+        assert!(require_signal_type_match(Absorbance, Unknown, true).is_ok());
+        assert!(require_signal_type_match(Absorbance, Unknown, false).is_err());
+        // Unknown expected behaves symmetrically
+        assert!(require_signal_type_match(Unknown, Reflectance, true).is_ok());
+        assert!(require_signal_type_match(Unknown, Reflectance, false).is_err());
+        // both-Unknown: tolerated at train, refused at predict (ADR-06)
+        assert!(require_signal_type_match(Unknown, Unknown, true).is_ok());
+        assert!(require_signal_type_match(Unknown, Unknown, false).is_err());
     }
 }
