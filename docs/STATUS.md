@@ -15,6 +15,27 @@ Implemented:
 - sample alignment planner for `inner`, `left` and `outer` multi-source
   policies, plus planner-visible `Align` steps before multi-source joins;
 - sample relation validation for groups, repetitions and augmentation origins;
+- `FoldSet` validation against sample relation group/origin boundaries, exposed
+  through Rust core, Python, WASM and C ABI JSON helpers;
+- canonical `FoldSet` fingerprints for replay/lineage identity, exposed through
+  Rust core, Python, WASM and C ABI JSON helpers;
+- shared `FoldSet` fixture parity with `dag-ml`, checked by
+  `scripts/validate_contracts.py` and smoke-tested through Python/WASM
+  bindings;
+- Python/WASM contract manifests for production/browser integrations to assert
+  package version, supported contracts, exported helpers and shared fixture
+  digests before running a pipeline;
+- ADR-11 structured error descriptors in Rust core, Python exception
+  attributes, WASM error payloads and C ABI validation error payloads, guarded
+  by `scripts/check_error_taxonomy.py`;
+- Python facade contract wrappers for host integrations to pass validated
+  `DatasetSchema`, `ModelInputSpec`, `AdapterRegistry`, `DataPlan`,
+  `SampleRelationTable`, `FoldSet` and `CoordinatorDataPlanEnvelope` values
+  instead of raw JSON strings only;
+- optional nirs4all integration schema fields:
+  `RepresentationSpec.signal_type`, source `ShapeContract`, `MetadataSchema`,
+  `GroupSpec`, `FoldSpec` and `AugmentationMetadata`, all additive for v1
+  readers and covered by the `nirs4all-lite` Python/WASM smoke fixture;
 - sample relation fingerprints;
 - coordinator data-plan envelope export with schema, plan and relation
   fingerprints;
@@ -24,6 +45,39 @@ Implemented:
   unit smoke that keeps its declared version aligned to the Rust contract;
 - stdlib shared-contract validation script plus CI checkout of `dag-ml` so
   schema copies and coordinator fixtures cannot drift silently;
+- CI documentation and packaging gates (`cargo doc` with rustdoc warnings
+  denied, plus workspace `cargo package --no-verify`) for release readiness;
+- Sphinx/MyST docs-site scaffold with a warnings-denied CI build and release
+  metadata validation, so ADR-09 has a local build gate before hosted docs;
+- ADR-14 managed-debt CI lint for production-path `TODO`/`FIXME` markers and
+  Rust `#[deprecated]` attributes, with release metadata enforcing the gate;
+- public Rust documentation coverage ratchet in CI, currently enforcing the
+  measured baseline while leaving the 95% invariant-docstring target explicit
+  for the hardening backlog;
+- ADR-10 publish-plan CI check that validates internal Cargo dependency
+  version pinning and dry-runs independently publishable root crates;
+- CI MSRV gate with Rust 1.83.0 and `cargo check --workspace --all-targets`,
+  matching the current PyO3 0.28.x floor;
+- CI supply-chain audit gate with pinned `cargo-audit` and
+  `cargo audit --deny warnings`;
+- CI Python wheel metadata smoke for name/version, `Requires-Python`, MIT
+  license packaging, `abi3`, native extension, stubs and `py.typed`;
+- CI WASM package tarball gate via `wasm-pack pack` for browser-target npm
+  artifacts;
+- CI npm tarball metadata gate via `npm pack --dry-run --json` for WASM
+  package name/version, integrity, bundled-dependency absence and required
+  published files;
+- WASM smoke validation for generated npm package metadata, including package
+  name, version, JS entry, typings, required emitted files and expected
+  TypeScript exports;
+- release metadata validator for Cargo workspace inheritance, internal crate
+  version pins, Python PEP 440 package version, `abi3-py311`, MSRV/toolchain
+  pins, MSRV-sensitive dependency pins, required governance files and the
+  docs-site / managed-debt / publish-plan CI gates;
+- public C ABI snapshot manifest for `dag_ml_data.h`, validated in CI so
+  header changes cannot drift silently;
+- shared parity-oracle handoff manifest for the first nirs4all-lite parity
+  cases, with fixture/gate references validated against `dag-ml`;
 - shared conformance-pack manifest with canonical schema/fixture digests, C ABI
   requirements and required cross-repo checks, kept JSON-identical with
   `dag-ml`;
@@ -40,6 +94,9 @@ Implemented:
   explicit requested sample order;
 - sample-level target value alignment for view handles with deterministic
   de-duplication across repeated observations in view sample order;
+- multi-target target alignment through `CoordinatorMultiTargetBlock` and
+  `dagmldata_coordinator_multi_target_arrow_json`, preserving view sample order
+  while emitting nullable per-target Arrow columns and validity masks;
 - observation-level feature table alignment for view handles, preserving
   repeated observations, applying `DataView.columns` and keeping view sample
   order;
@@ -200,8 +257,9 @@ Implemented:
   version macro and are compiled together in both include orders when the
   sibling checkout is present;
 - Python `ctypes` smoke for the same provider lifecycle;
-- reusable stdlib-only Python provider wrapper and CLI smoke in
-  `examples/python`;
+- installable stdlib-only Python provider package (`dag_ml_data_provider`) in
+  `crates/dag-ml-data-capi/bindings/python`, plus a reusable CLI smoke in
+  `examples/python` that imports it;
 - C ABI schema fingerprint entry point;
 - example schema fixture;
 - CI workflow;

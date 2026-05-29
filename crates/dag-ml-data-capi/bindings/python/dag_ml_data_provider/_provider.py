@@ -1,7 +1,8 @@
-"""Minimal ctypes wrapper for the dag-ml-data C ABI provider vtable.
+"""The :class:`InMemoryProvider` ctypes wrapper over the C ABI provider vtable.
 
-This example intentionally depends only on the Python standard library. It is a
-binding smoke, not the final Python package API.
+This is a thin shim: its only job is to hand JSON payloads and host buffers to
+the Rust C ABI and decode the Arrow/owned-struct results. It owns no NIRS, ML,
+or scheduling logic.
 """
 
 from __future__ import annotations
@@ -11,134 +12,20 @@ import json
 from pathlib import Path
 from typing import Any
 
-
-class DagMlDataString(ctypes.Structure):
-    _fields_ = [("ptr", ctypes.c_void_p), ("len", ctypes.c_size_t)]
-
-
-class DagMlDataBytesView(ctypes.Structure):
-    _fields_ = [("ptr", ctypes.POINTER(ctypes.c_uint8)), ("len", ctypes.c_size_t)]
-
-
-class DagMlDataStringArray(ctypes.Structure):
-    _fields_ = [("ptr", ctypes.POINTER(DagMlDataString)), ("len", ctypes.c_size_t)]
-
-
-class DagMlDataUSizeArray(ctypes.Structure):
-    _fields_ = [("ptr", ctypes.POINTER(ctypes.c_size_t)), ("len", ctypes.c_size_t)]
-
-
-class DagMlDataF64Array(ctypes.Structure):
-    _fields_ = [("ptr", ctypes.POINTER(ctypes.c_double)), ("len", ctypes.c_size_t)]
-
-
-class DagMlDataU8Array(ctypes.Structure):
-    _fields_ = [("ptr", ctypes.POINTER(ctypes.c_uint8)), ("len", ctypes.c_size_t)]
-
-
-class DagMlDataTensorF64(ctypes.Structure):
-    _fields_ = [
-        ("abi_version", ctypes.c_uint32),
-        ("block_id", DagMlDataString),
-        ("representation_id", DagMlDataString),
-        ("batch_container", DagMlDataString),
-        ("observation_ids", DagMlDataStringArray),
-        ("sample_ids", DagMlDataStringArray),
-        ("shape", DagMlDataUSizeArray),
-        ("values", DagMlDataF64Array),
-        ("presence_mask", DagMlDataU8Array),
-        ("validity_mask", DagMlDataU8Array),
-        ("feature_names", DagMlDataStringArray),
-    ]
-
-
-class ArrowArray(ctypes.Structure):
-    pass
-
-
-class ArrowSchema(ctypes.Structure):
-    pass
-
-
-ArrowArray._fields_ = [
-    ("length", ctypes.c_int64),
-    ("null_count", ctypes.c_int64),
-    ("offset", ctypes.c_int64),
-    ("n_buffers", ctypes.c_int64),
-    ("n_children", ctypes.c_int64),
-    ("buffers", ctypes.POINTER(ctypes.c_void_p)),
-    ("children", ctypes.POINTER(ctypes.POINTER(ArrowArray))),
-    ("dictionary", ctypes.POINTER(ArrowArray)),
-    ("release", ctypes.c_void_p),
-    ("private_data", ctypes.c_void_p),
-]
-
-ArrowSchema._fields_ = [
-    ("format", ctypes.c_char_p),
-    ("name", ctypes.c_char_p),
-    ("metadata", ctypes.c_char_p),
-    ("flags", ctypes.c_int64),
-    ("n_children", ctypes.c_int64),
-    ("children", ctypes.POINTER(ctypes.POINTER(ArrowSchema))),
-    ("dictionary", ctypes.POINTER(ArrowSchema)),
-    ("release", ctypes.c_void_p),
-    ("private_data", ctypes.c_void_p),
-]
-
-
-MaterializeFn = ctypes.CFUNCTYPE(
-    ctypes.c_int,
-    ctypes.c_void_p,
-    ctypes.c_uint64,
+from ._abi import (
+    ArrowArray,
+    ArrowSchema,
     DagMlDataBytesView,
-    ctypes.POINTER(ctypes.c_uint64),
+    DagMlDataF64Array,
+    DagMlDataString,
+    DagMlDataStringArray,
+    DagMlDataTensorF64,
+    DagMlDataU8Array,
+    DagMlDataUSizeArray,
+    DagMlDataVTable,
+    ViewIdentityFn,
 )
-MakeViewFn = ctypes.CFUNCTYPE(
-    ctypes.c_int,
-    ctypes.c_void_p,
-    ctypes.c_uint64,
-    DagMlDataBytesView,
-    ctypes.POINTER(ctypes.c_uint64),
-)
-ViewIdentityFn = ctypes.CFUNCTYPE(
-    ctypes.c_int,
-    ctypes.c_void_p,
-    ctypes.c_uint64,
-    ctypes.POINTER(ctypes.POINTER(ArrowArray)),
-    ctypes.POINTER(ctypes.POINTER(ArrowSchema)),
-)
-TargetArrowFn = ctypes.CFUNCTYPE(
-    ctypes.c_int,
-    ctypes.c_void_p,
-    ctypes.c_uint64,
-    DagMlDataBytesView,
-    ctypes.POINTER(ctypes.POINTER(ArrowArray)),
-    ctypes.POINTER(ctypes.POINTER(ArrowSchema)),
-)
-FeatureArrowFn = ctypes.CFUNCTYPE(
-    ctypes.c_int,
-    ctypes.c_void_p,
-    ctypes.c_uint64,
-    DagMlDataBytesView,
-    ctypes.POINTER(ctypes.POINTER(ArrowArray)),
-    ctypes.POINTER(ctypes.POINTER(ArrowSchema)),
-)
-ReleaseFn = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint64)
-DestroyFn = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
-
-
-class DagMlDataVTable(ctypes.Structure):
-    _fields_ = [
-        ("abi_version", ctypes.c_uint32),
-        ("user_data", ctypes.c_void_p),
-        ("materialize", MaterializeFn),
-        ("make_view", MakeViewFn),
-        ("view_identity", ViewIdentityFn),
-        ("target_arrow", TargetArrowFn),
-        ("feature_arrow", FeatureArrowFn),
-        ("release", ReleaseFn),
-        ("destroy", DestroyFn),
-    ]
+from ._library import load_library
 
 
 def _u8_buffer(data: bytes) -> tuple[ctypes.Array[ctypes.c_char], ctypes.POINTER(ctypes.c_uint8)]:
@@ -239,29 +126,42 @@ def _tensor_to_dict(tensor: DagMlDataTensorF64) -> dict[str, Any]:
 
 
 class InMemoryProvider:
+    """Rust-owned in-memory provider driven over the C ABI vtable.
+
+    ``library_path`` is keyword-only; when omitted the cdylib is discovered via
+    :func:`dag_ml_data_provider.find_capi_library`.
+    """
+
     def __init__(
         self,
-        library_path: str | Path,
         envelope_json: bytes,
+        *,
+        library_path: str | Path | None = None,
         target_tables: list[dict[str, Any]] | None = None,
         feature_tables: list[dict[str, Any]] | None = None,
         f64_feature_matrices: list[dict[str, Any]] | None = None,
     ) -> None:
-        self._lib = ctypes.CDLL(str(library_path))
-        self._configure_lib()
+        if feature_tables is not None and f64_feature_matrices is not None:
+            raise ValueError(
+                "pass at most one of feature_tables or f64_feature_matrices"
+            )
+        self._lib = load_library(library_path)
+        # Choose the feature payload from the SAME branch as the constructor so
+        # the JSON shape always matches the symbol it is handed to.
+        if f64_feature_matrices is not None:
+            constructor = self._lib.dagmldata_inmemory_provider_new_with_f64_features_json
+            feature_rows = f64_feature_matrices
+        else:
+            constructor = self._lib.dagmldata_inmemory_provider_new_with_features_json
+            feature_rows = feature_tables or []
         target_json = json.dumps(target_tables or []).encode("utf-8")
-        feature_json = json.dumps(feature_tables or f64_feature_matrices or []).encode("utf-8")
+        feature_json = json.dumps(feature_rows).encode("utf-8")
         envelope_buffer, envelope_ptr = _u8_buffer(envelope_json)
         target_buffer, target_ptr = _u8_buffer(target_json)
         feature_buffer, feature_ptr = _u8_buffer(feature_json)
         self._buffers = [envelope_buffer, target_buffer, feature_buffer]
         self._vtable = DagMlDataVTable()
         error = DagMlDataString()
-        constructor = (
-            self._lib.dagmldata_inmemory_provider_new_with_f64_features_json
-            if f64_feature_matrices is not None
-            else self._lib.dagmldata_inmemory_provider_new_with_features_json
-        )
         status = constructor(
             envelope_ptr,
             len(envelope_json),
@@ -281,18 +181,19 @@ class InMemoryProvider:
     @classmethod
     def from_files(
         cls,
-        library_path: str | Path,
         envelope_path: str | Path,
+        *,
+        library_path: str | Path | None = None,
         target_tables: list[dict[str, Any]] | None = None,
         feature_tables: list[dict[str, Any]] | None = None,
         f64_feature_matrices: list[dict[str, Any]] | None = None,
     ) -> "InMemoryProvider":
         return cls(
-            Path(library_path),
             Path(envelope_path).read_bytes(),
-            target_tables,
-            feature_tables,
-            f64_feature_matrices,
+            library_path=library_path,
+            target_tables=target_tables,
+            feature_tables=feature_tables,
+            f64_feature_matrices=f64_feature_matrices,
         )
 
     def materialize(self, request: dict[str, Any] | bytes) -> int:
@@ -488,78 +389,6 @@ class InMemoryProvider:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.close()
-
-    def _configure_lib(self) -> None:
-        self._lib.dagmldata_inmemory_provider_new_json.argtypes = [
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.c_size_t,
-            ctypes.POINTER(DagMlDataVTable),
-            ctypes.POINTER(DagMlDataString),
-        ]
-        self._lib.dagmldata_inmemory_provider_new_json.restype = ctypes.c_int
-        self._lib.dagmldata_inmemory_provider_new_with_features_json.argtypes = [
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.c_size_t,
-            ctypes.POINTER(DagMlDataVTable),
-            ctypes.POINTER(DagMlDataString),
-        ]
-        self._lib.dagmldata_inmemory_provider_new_with_features_json.restype = ctypes.c_int
-        self._lib.dagmldata_inmemory_provider_new_with_f64_features_json.argtypes = [
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.c_size_t,
-            ctypes.POINTER(DagMlDataVTable),
-            ctypes.POINTER(DagMlDataString),
-        ]
-        self._lib.dagmldata_inmemory_provider_new_with_f64_features_json.restype = ctypes.c_int
-        self._lib.dagmldata_inmemory_provider_feature_buffer_manifest_json.argtypes = [
-            ctypes.POINTER(DagMlDataVTable),
-            ctypes.POINTER(DagMlDataString),
-            ctypes.POINTER(DagMlDataString),
-        ]
-        self._lib.dagmldata_inmemory_provider_feature_buffer_manifest_json.restype = ctypes.c_int
-        self._lib.dagmldata_inmemory_provider_data_feature_buffer_manifest_json.argtypes = [
-            ctypes.POINTER(DagMlDataVTable),
-            ctypes.c_uint64,
-            ctypes.POINTER(DagMlDataString),
-            ctypes.POINTER(DagMlDataString),
-        ]
-        self._lib.dagmldata_inmemory_provider_data_feature_buffer_manifest_json.restype = ctypes.c_int
-        self._lib.dagmldata_inmemory_provider_feature_collation_json.argtypes = [
-            ctypes.POINTER(DagMlDataVTable),
-            ctypes.c_uint64,
-            DagMlDataBytesView,
-            ctypes.POINTER(DagMlDataString),
-            ctypes.POINTER(DagMlDataString),
-        ]
-        self._lib.dagmldata_inmemory_provider_feature_collation_json.restype = ctypes.c_int
-        self._lib.dagmldata_inmemory_provider_feature_collation_tensor_f64_json.argtypes = [
-            ctypes.POINTER(DagMlDataVTable),
-            ctypes.c_uint64,
-            DagMlDataBytesView,
-            ctypes.POINTER(DagMlDataTensorF64),
-            ctypes.POINTER(DagMlDataString),
-        ]
-        self._lib.dagmldata_inmemory_provider_feature_collation_tensor_f64_json.restype = ctypes.c_int
-        self._lib.dagmldata_inmemory_provider_destroy.argtypes = [ctypes.POINTER(DagMlDataVTable)]
-        self._lib.dagmldata_inmemory_provider_destroy.restype = None
-        self._lib.dagmldata_string_free.argtypes = [DagMlDataString]
-        self._lib.dagmldata_string_free.restype = None
-        self._lib.dagmldata_tensor_f64_free.argtypes = [DagMlDataTensorF64]
-        self._lib.dagmldata_tensor_f64_free.restype = None
-        self._lib.dagmldata_arrow_array_free.argtypes = [ctypes.POINTER(ArrowArray)]
-        self._lib.dagmldata_arrow_array_free.restype = None
-        self._lib.dagmldata_arrow_schema_free.argtypes = [ctypes.POINTER(ArrowSchema)]
-        self._lib.dagmldata_arrow_schema_free.restype = None
 
     def _consume_error(self, error: DagMlDataString) -> str | None:
         return self._consume_string(error)

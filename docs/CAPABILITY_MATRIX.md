@@ -2,19 +2,24 @@
 
 `dag-ml-data` supports the replacement of the current `nirs4all` data pipeline
 surface by making data shape, identity and conversion explicit. It does not own
-OOF or leakage decisions, but it must expose enough information for `dag-ml` to
-enforce them.
+OOF or leakage decisions, but it exposes enough information for `dag-ml` to
+enforce them and can validate externally supplied fold assignments against the
+data identities it owns.
 
 ## Data Surface
 
 | Capability | Data contract support | Enforcement owner |
 |---|---|---|
 | Multisource | `DatasetSchema`, `SourceDescriptor`, alignment policy, presence masks, planner-visible `Align` steps | `dag-ml` decides phase and accepted fusion policy |
-| Repetitions | `SampleRelation` with observation/sample/target/group/origin ids | `dag-ml` validates split unit and aggregation |
-| Grouped samples | group ids exposed through sample relations | `dag-ml` validates group-aware folds |
-| Augmentation | augmentation adapters declare output origin ids | `dag-ml` validates train-only use |
+| Repetitions | `SampleRelation` with observation/sample/target/group/origin ids plus optional `GroupSpec`/`FoldSpec` declarations and `FoldSet` validation helpers | `dag-ml` chooses split unit and aggregation; `dag-ml-data` rejects malformed/leaking fold contracts |
+| Grouped samples | group ids exposed through sample relations and schema-level `GroupSpec` | `dag-ml` builds group-aware folds; `dag-ml-data` validates supplied fold boundaries |
+| Augmentation | augmentation adapters declare output origin ids and optional `AugmentationMetadata` | `dag-ml` decides train-only use; `dag-ml-data` validates origin boundaries for supplied folds |
+| Signal type | `RepresentationSpec.signal_type` records absorbance/reflectance/transmittance/log-reflectance/preprocessed/unknown | host loaders detect, `dag-ml-data` validates materialize/predict contracts |
+| Shape contracts | `SourceDescriptor.shape_contract` pins rank and named axis sizes | providers must refuse materialization when source payload shape violates the contract |
+| Metadata | `MetadataSchema` declares typed metadata fields and categorical vocabularies | bridge maps nirs4all metadata columns and refuses missing/invalid required fields |
+| Multi-targets | `CoordinatorMultiTargetBlock` aligns multiple target tables on one sample axis and the C ABI exports nullable per-target Arrow columns | `dag-ml` decides target use per phase; providers preserve missing-target validity masks |
 | Processings | representation adapters, fit scope, fitted adapter refs | `dag-ml` chooses fold/full-train scope |
-| Splits | identity/group/origin inputs only | `dag-ml` builds folds |
+| Splits | identity/group/origin inputs, JSON `FoldSet` validators and canonical fold fingerprints in Rust/Python/WASM/C ABI for exhaustive partition-style folds | `dag-ml` builds folds; `dag-ml-data` validates and fingerprints supplied folds |
 | Models | `ModelInputSpec`, accepted representations/types, aux inputs | controller and `dag-ml` execute model phases |
 | Refit | serialized `DataPlan`, schema fingerprints, fitted refs | `dag-ml` controls replay/refit phase |
 | Branching | immutable views and source filters | `dag-ml` owns branch graph semantics |
@@ -33,4 +38,6 @@ enforce them.
 5. Presence masks and alignment choices are serializable and planned before
    multi-source joins.
 6. Schema fingerprints are stable under irrelevant ordering changes.
-7. No fold, OOF, prediction partition or leakage decision is made in this repo.
+7. No fold, OOF or prediction partition decision is made in this repo; supplied
+   partition-style fold sets can be validated against relation group/origin
+   boundaries.

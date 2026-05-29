@@ -150,6 +150,16 @@ pub struct CoordinatorTargetBlock {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoordinatorMultiTargetBlock {
+    pub target_ids: Vec<TargetId>,
+    pub sample_ids: Vec<SampleId>,
+    /// Target-major values: `values[target_idx][sample_idx]`.
+    pub values: Vec<Vec<serde_json::Value>>,
+    /// Target-major validity masks aligned with `values`.
+    pub validity_masks: Vec<Vec<bool>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CoordinatorFeatureRow {
     pub observation_id: ObservationId,
     pub values: Vec<serde_json::Value>,
@@ -435,6 +445,86 @@ impl CoordinatorHandleArena {
             target_id: target_table.target_id.clone(),
             sample_ids,
             values,
+        })
+    }
+
+    pub fn multi_target_values(
+        &self,
+        view_handle: u64,
+        target_tables: &[CoordinatorTargetTable],
+    ) -> Result<CoordinatorMultiTargetBlock> {
+        if target_tables.is_empty() {
+            return Err(DataError::Validation(
+                "multi-target materialization requires at least one target table".to_string(),
+            ));
+        }
+        let mut seen_targets = BTreeSet::new();
+        for table in target_tables {
+            table.validate()?;
+            if !seen_targets.insert(table.target_id.clone()) {
+                return Err(DataError::Validation(format!(
+                    "multi-target materialization contains duplicate target `{}`",
+                    table.target_id
+                )));
+            }
+        }
+
+        let target_ids = target_tables
+            .iter()
+            .map(|table| table.target_id.clone())
+            .collect::<Vec<_>>();
+        let target_universe = target_ids.iter().collect::<BTreeSet<_>>();
+        let relations = self.view_identity(view_handle)?;
+        let mut seen_samples = BTreeSet::new();
+        let mut sample_ids = Vec::new();
+        for relation in relations.records.iter().filter(|relation| {
+            relation
+                .target_id
+                .as_ref()
+                .map(|target_id| target_universe.contains(target_id))
+                .unwrap_or(true)
+        }) {
+            if seen_samples.insert(relation.sample_id.clone()) {
+                sample_ids.push(relation.sample_id.clone());
+            }
+        }
+        if sample_ids.is_empty() {
+            return Err(DataError::Validation(format!(
+                "view `{view_handle}` contains no samples for requested targets"
+            )));
+        }
+
+        let mut values = Vec::with_capacity(target_tables.len());
+        let mut validity_masks = Vec::with_capacity(target_tables.len());
+        for table in target_tables {
+            let values_by_sample = table
+                .values
+                .iter()
+                .map(|value| (&value.sample_id, &value.value))
+                .collect::<BTreeMap<_, _>>();
+            let mut target_values = Vec::with_capacity(sample_ids.len());
+            let mut validity = Vec::with_capacity(sample_ids.len());
+            for sample_id in &sample_ids {
+                match values_by_sample.get(sample_id) {
+                    Some(value) if !value.is_null() => {
+                        target_values.push((*value).clone());
+                        validity.push(true);
+                    }
+                    Some(_) | None => {
+                        target_values.push(serde_json::Value::Null);
+                        validity.push(false);
+                    }
+                }
+            }
+            values.push(target_values);
+            validity_masks.push(validity);
+        }
+
+        Ok(CoordinatorMultiTargetBlock {
+            target_ids,
+            sample_ids,
+            values,
+            validity_masks,
         })
     }
 
@@ -1116,6 +1206,64 @@ mod tests {
         assert_eq!(target.target_id.as_str(), "y");
         assert_eq!(target.sample_ids, vec![SampleId::new("S001").unwrap()]);
         assert_eq!(target.values, vec![json!(42.0)]);
+    }
+
+    #[test]
+    fn multi_target_values_align_samples_and_emit_validity_masks() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view = DataView {
+            sample_ids: Some(vec![
+                SampleId::new("S002").unwrap(),
+                SampleId::new("S001").unwrap(),
+            ]),
+            include_augmented: false,
+            ..Default::default()
+        };
+        let view_record = arena.make_view(data.handle.handle, &view).unwrap();
+        let y = CoordinatorTargetTable {
+            target_id: TargetId::new("y").unwrap(),
+            values: vec![
+                CoordinatorTargetValue {
+                    sample_id: SampleId::new("S001").unwrap(),
+                    value: json!(42.0),
+                },
+                CoordinatorTargetValue {
+                    sample_id: SampleId::new("S002").unwrap(),
+                    value: json!(7.0),
+                },
+            ],
+        };
+        let protein = CoordinatorTargetTable {
+            target_id: TargetId::new("protein").unwrap(),
+            values: vec![CoordinatorTargetValue {
+                sample_id: SampleId::new("S001").unwrap(),
+                value: json!(12.5),
+            }],
+        };
+
+        let block = arena
+            .multi_target_values(view_record.handle.handle, &[y, protein])
+            .unwrap();
+
+        assert_eq!(
+            block.target_ids,
+            vec![
+                TargetId::new("y").unwrap(),
+                TargetId::new("protein").unwrap()
+            ]
+        );
+        assert_eq!(
+            block.sample_ids,
+            vec![
+                SampleId::new("S002").unwrap(),
+                SampleId::new("S001").unwrap()
+            ]
+        );
+        assert_eq!(block.values[0], vec![json!(7.0), json!(42.0)]);
+        assert_eq!(block.validity_masks[0], vec![true, true]);
+        assert_eq!(block.values[1], vec![json!(null), json!(12.5)]);
+        assert_eq!(block.validity_masks[1], vec![false, true]);
     }
 
     #[test]

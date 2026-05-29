@@ -18,7 +18,8 @@
 | Handles | materialization request/envelope fingerprint match, opaque data/view handle traceability, requested source-id relation scoping |
 | Views/features/targets | sample/source/augmentation filtering, requested sample-order preservation, repetition-preserving identity, observation-level feature alignment, feature-column filtering, feature representation mismatch refusal, sample-level target de-duplication |
 | Feature buffers | typed numeric buffer projection, duplicate feature/observation/column refusal, row-major f64 matrix shape/mask validation, finite-value validation for valid entries, deterministic manifests and fingerprints, store-level duplicate feature-set refusal, core arena bind/project/release lifecycle, source/relation coverage bindings for materialized handles |
-| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/feature/fused-feature Arrow exports, feature-collation JSON and `DagMlDataTensorF64` exports, in-memory typed feature-buffer creation, typed f64 feature-matrix provider construction, borrowed C f64 feature-matrix provider construction, provider feature-buffer manifest JSON, data-handle feature-buffer binding JSON, provider-backed feature fusion selector over `feature_arrow`, provider-backed feature-collation selector over typed buffers, stale parent handle refusal for feature/tensor exports, wrong-source/wrong-representation buffer refusal, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, cross-header syntax with `dag_ml.h` in both include orders, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
+| ABI | null pointer handling, invalid JSON, valid fingerprint, coordinator identity plus numeric target/multi-target/feature/fused-feature Arrow exports, feature-collation JSON and `DagMlDataTensorF64` exports, in-memory typed feature-buffer creation, typed f64 feature-matrix provider construction, borrowed C f64 feature-matrix provider construction, provider feature-buffer manifest JSON, data-handle feature-buffer binding JSON, provider-backed feature fusion selector over `feature_arrow`, provider-backed feature-collation selector over typed buffers, stale parent handle refusal for feature/tensor exports, wrong-source/wrong-representation buffer refusal, in-memory provider vtable lifecycle, parent/child handle release, C header syntax, cross-header syntax with `dag_ml.h` in both include orders, linked C runtime, embedded Python ctypes smoke and reusable Python example smoke |
+| Error taxonomy | Rust `DataError` descriptors for every variant, Python exception attributes, WASM descriptor payloads, C ABI structured validation payloads and CI coverage by `scripts/check_error_taxonomy.py` |
 
 ## Conformance Tests
 
@@ -53,7 +54,19 @@ cargo run -p dag-ml-data-cli -- materialize-envelope --envelope examples/fixture
 python3 -m json.tool docs/contracts/coordinator_data_plan_envelope.schema.json >/dev/null
 python3 -m json.tool docs/contracts/feature_fusion_selector.schema.json >/dev/null
 python3 -m json.tool docs/contracts/conformance_pack.v1.json >/dev/null
+python3 -m json.tool docs/contracts/parity_oracle.v1.json >/dev/null
 DAG_ML_REPO=../dag-ml python3 scripts/validate_contracts.py
+python3 scripts/validate_release_metadata.py
+python3 scripts/check_deprecations.py
+python3 scripts/check_public_docs.py
+python3 scripts/release/check_publish_plan.py --dry-run
+python3 scripts/validate_abi_snapshot.py
+python3 -m pip install -r docs/requirements.txt
+sphinx-build -W --keep-going -b html docs docs/_build/html
+cargo audit --deny warnings
+cargo +1.83.0 check --workspace --all-targets
+python3 scripts/smoke_python_wheel_metadata.py target/wheels/dag_ml_data-*.whl
+node scripts/smoke_wasm_tarball_metadata.mjs crates/dag-ml-data-wasm/pkg-web
 ```
 
 `examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json` is the

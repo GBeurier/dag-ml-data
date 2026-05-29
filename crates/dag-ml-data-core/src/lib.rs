@@ -26,7 +26,7 @@ pub use buffer::*;
 pub use buffer_file_store::*;
 pub use collation::*;
 pub use coordinator::*;
-pub use error::{DataError, Result};
+pub use error::{DataError, DataErrorDescriptor, Result};
 pub use fingerprint::*;
 pub use fitted_adapter::*;
 pub use fusion::*;

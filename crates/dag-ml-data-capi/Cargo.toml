@@ -20,7 +20,8 @@ arrow-ipc = ["dep:dag-ml-data-arrow", "dep:arrow-array", "dep:arrow-ipc", "dep:a
 arrow-array = { version = "53", optional = true }
 arrow-ipc = { version = "53", optional = true }
 arrow-schema = { version = "53", optional = true }
-dag-ml-data-arrow = { path = "../dag-ml-data-arrow", optional = true }
+dag-ml-data-arrow = { workspace = true, optional = true }
 dag-ml-data-core.workspace = true
+dag-ml-data-provider.workspace = true
 serde.workspace = true
 serde_json.workspace = true

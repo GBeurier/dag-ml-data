@@ -3,6 +3,11 @@
 The data ABI lets a host runtime keep buffers and fitted data adapters in its own
 memory while exposing deterministic descriptors and identity tables to the core.
 
+Validation failures written to `error_out` use the ADR-11 descriptor JSON shape:
+`category`, `code`, `severity`, `message`, `remediation_hint` and `context`.
+Null-pointer preflight errors still use the legacy human string because callers
+usually branch on `DagMlDataStatusCode` before parsing a payload.
+
 ## Current Scaffold
 
 `crates/dag-ml-data-capi/include/dag_ml_data.h` exposes:
@@ -29,6 +34,9 @@ memory while exposing deterministic descriptors and identity tables to the core.
 - `dagmldata_coordinator_target_arrow_json` for numeric target-table smoke tests
   from a validated envelope, materialization request, `DataView` and target
   table;
+- `dagmldata_coordinator_multi_target_arrow_json` for multi-output target
+  export from the same envelope/view contracts, with one nullable f64 column per
+  target and a per-target validity bitmap;
 - `dagmldata_coordinator_feature_arrow_json` for numeric observation-level
   feature-table smoke tests from the same coordinator/view contracts;
 - `dagmldata_coordinator_feature_fusion_arrow_json` for numeric multi-source
@@ -140,6 +148,12 @@ target values to the selected samples and emits `sample_id`, `target_id` and
 numeric `value` columns. Repeated observations are intentionally de-duplicated
 to one target value per sample.
 
+`dagmldata_coordinator_multi_target_arrow_json` uses the same materialization
+path for multi-output regression/classification targets. Its request carries
+`target_tables` and its Arrow result emits `sample_id` plus one nullable f64
+column per target id. Missing or explicit null values are represented by that
+target column's validity bitmap rather than by dropping samples.
+
 `dagmldata_coordinator_feature_arrow_json` is intentionally observation-level.
 It materializes the same envelope/view, preserves repeated observations, applies
 `DataView.columns`, and emits `observation_id`, `sample_id` plus one numeric
@@ -249,11 +263,13 @@ when a `dag-ml` checkout is available, so shared data-provider vtable guards
 cannot drift silently.
 
 `tests/python_ctypes_smoke.rs` performs the same provider lifecycle from Python
-using only `ctypes`. It also runs `examples/python/provider_smoke.py`, which uses
-`examples/python/dag_ml_data_provider.py` as a small reusable wrapper around the
-current provider vtable. This is intentionally not the final Python package API:
-it is the binding-friendly conformance target for materialize, view creation,
-identity export, target export, feature export, release and destroy.
+using only `ctypes`. It also runs `examples/python/provider_smoke.py` against the
+installable `dag_ml_data_provider` package
+(`crates/dag-ml-data-capi/bindings/python`), a stdlib-only ctypes wrapper around
+the provider vtable. The package is the binding-friendly conformance target for
+materialize, view creation, identity export, target export, feature export,
+release and destroy; it locates the cdylib via `library_path=` /
+`DAG_ML_DATA_CAPI_LIB` / the Cargo target dir.
 
 ## ABI Roadmap
 

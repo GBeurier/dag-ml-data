@@ -25,12 +25,14 @@ FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.
 BRANCH_VIEW_SCHEMA_REL = Path("docs/contracts/coordinator_branch_view.schema.json")
 FITTED_ADAPTER_SCHEMA_REL = Path("docs/contracts/fitted_adapter_ref.schema.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
+PARITY_ORACLE_REL = Path("docs/contracts/parity_oracle.v1.json")
 LOCAL_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
 )
 LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/feature_fusion_selector_nir_chem.json"
 )
+SHARED_FOLD_SET_FIXTURE_REL = Path("examples/fixtures/shared/fold_set_cv_partition.json")
 LOCAL_C_HEADER_REL = Path("crates/dag-ml-data-capi/include/dag_ml_data.h")
 SIBLING_FIXTURE_REL = Path("examples/fixtures/data/coordinator_data_plan_envelope_nir.json")
 SIBLING_FEATURE_FUSION_FIXTURE_REL = Path(
@@ -62,7 +64,19 @@ SIBLING_FEATURE_FUSION_SCHEMA_ID = (
     "feature_fusion_selector.v1.schema.json"
 )
 SHA256_RE = re.compile(r"^[0-9A-Fa-f]{64}$")
+IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 CONFORMANCE_PACK_ID = "dag-ml.shared.conformance.v1"
+PARITY_ORACLE_ID = "dag-ml.nirs4all.parity_oracle.v1"
+REQUIRED_PARITY_CASE_IDS = {
+    "nirs4all_lite_browser_compile_plan",
+    "repetition_group_leakage_refusal",
+    "controller_registry_selector_parity",
+    "branch_merge_oof_refit_replay",
+    "python_wheel_facade_integration",
+}
+SHARED_FOLD_SET_FINGERPRINT = (
+    "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c"
+)
 
 
 class ContractError(RuntimeError):
@@ -350,6 +364,86 @@ def validate_feature_fusion_selector(selector: Any, label: str) -> None:
             )
 
 
+def validate_identifier(value: Any, label: str) -> None:
+    require(
+        isinstance(value, str) and IDENTIFIER_RE.fullmatch(value) is not None,
+        f"{label} must be a shared DAG-ML identifier",
+    )
+
+
+def validate_fold_set_fixture(fold_set: Any, label: str) -> None:
+    require(isinstance(fold_set, dict), f"{label} fold set must be an object")
+    require_non_empty_string(fold_set.get("id"), f"{label}.id")
+    sample_ids = fold_set.get("sample_ids")
+    require(isinstance(sample_ids, list) and sample_ids, f"{label}.sample_ids must be non-empty")
+    for index, sample_id in enumerate(sample_ids):
+        validate_identifier(sample_id, f"{label}.sample_ids[{index}]")
+    require(len(set(sample_ids)) == len(sample_ids), f"{label}.sample_ids contain duplicates")
+    sample_set = set(sample_ids)
+
+    sample_groups = fold_set.get("sample_groups", {})
+    require(isinstance(sample_groups, dict), f"{label}.sample_groups must be an object")
+    for sample_id, group_id in sample_groups.items():
+        require(sample_id in sample_set, f"{label}.sample_groups references unknown sample")
+        validate_identifier(group_id, f"{label}.sample_groups[{sample_id}]")
+    if sample_groups:
+        require(
+            set(sample_groups) == sample_set,
+            f"{label}.sample_groups must cover every sample when present",
+        )
+
+    folds = fold_set.get("folds")
+    require(isinstance(folds, list) and folds, f"{label}.folds must be non-empty")
+    fold_ids: list[str] = []
+    validation_counts = {sample_id: 0 for sample_id in sample_ids}
+    for index, fold in enumerate(folds):
+        fold_label = f"{label}.folds[{index}]"
+        require(isinstance(fold, dict), f"{fold_label} must be an object")
+        validate_identifier(fold.get("fold_id"), f"{fold_label}.fold_id")
+        fold_ids.append(fold["fold_id"])
+        train = fold.get("train_sample_ids")
+        validation = fold.get("validation_sample_ids")
+        require(isinstance(train, list), f"{fold_label}.train_sample_ids must be an array")
+        require(
+            isinstance(validation, list) and validation,
+            f"{fold_label}.validation_sample_ids must be non-empty",
+        )
+        for sample_id in train + validation:
+            validate_identifier(sample_id, f"{fold_label} sample id")
+            require(sample_id in sample_set, f"{fold_label} references unknown sample `{sample_id}`")
+        require(len(set(train)) == len(train), f"{fold_label}.train_sample_ids contain duplicates")
+        require(
+            len(set(validation)) == len(validation),
+            f"{fold_label}.validation_sample_ids contain duplicates",
+        )
+        require(
+            set(train).isdisjoint(validation),
+            f"{fold_label} has train/validation overlap",
+        )
+        for sample_id in validation:
+            validation_counts[sample_id] += 1
+    require(len(set(fold_ids)) == len(fold_ids), f"{label}.fold_id contains duplicates")
+    for sample_id, count in validation_counts.items():
+        require(
+            count == 1,
+            f"{label} sample `{sample_id}` appears in validation {count} time(s)",
+        )
+
+
+def canonical_fold_set_fingerprint(fold_set: Any) -> str:
+    canonical = copy.deepcopy(fold_set)
+    canonical["sample_ids"] = sorted(canonical["sample_ids"])
+    canonical["folds"] = sorted(canonical["folds"], key=lambda fold: fold["fold_id"])
+    for fold in canonical["folds"]:
+        fold["train_sample_ids"] = sorted(fold["train_sample_ids"])
+        fold["validation_sample_ids"] = sorted(fold["validation_sample_ids"])
+        if fold.get("metadata") == {}:
+            fold.pop("metadata")
+    if canonical.get("sample_groups") == {}:
+        canonical.pop("sample_groups")
+    return canonical_json_sha256(canonical)
+
+
 def validate_data_provider_header(header: str, label: str) -> None:
     require(
         "#define DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION 2u" in header,
@@ -445,6 +539,7 @@ def validate_conformance_pack(
     feature_fusion_schema: Any,
     branch_view_schema: Any,
     fitted_adapter_schema: Any,
+    parity_oracle: Any,
     fixture: Any,
     feature_fusion_fixture: Any,
     header: str,
@@ -483,6 +578,13 @@ def validate_conformance_pack(
         "json_schema",
         1,
         f"{label} fitted adapter ref contract",
+    )
+    validate_digest_record(
+        contracts.get("parity_oracle.v1"),
+        canonical_json_sha256(parity_oracle),
+        "parity_oracle_manifest",
+        1,
+        f"{label} parity oracle contract",
     )
 
     fixtures = pack.get("fixtures")
@@ -555,8 +657,121 @@ def validate_conformance_pack(
         "contracts.schema_and_fixture_equivalence",
         "headers.include_order",
         "provider.f64_predict_replay",
+        "fold_set.fingerprint_parity",
     ):
         require(test_id in required_tests, f"{label} conformance pack must require `{test_id}`")
+
+
+def validate_parity_oracle_manifest(
+    oracle: Any,
+    roots_by_repo: dict[str, Path],
+    label: str,
+) -> None:
+    require(isinstance(oracle, dict), f"{label} parity oracle must be a JSON object")
+    require(oracle.get("schema_version") == 1, f"{label} parity oracle schema_version must be 1")
+    require(oracle.get("oracle_id") == PARITY_ORACLE_ID, f"{label} parity oracle id mismatch")
+    require(oracle.get("status") == "producer_handoff", f"{label} parity oracle status mismatch")
+
+    consumer_ledger = oracle.get("consumer_ledger")
+    require(isinstance(consumer_ledger, dict), f"{label} parity oracle ledger must be an object")
+    require(
+        consumer_ledger.get("repo") == "nirs4all",
+        f"{label} parity oracle ledger must point to nirs4all",
+    )
+    require(
+        consumer_ledger.get("path") == "docs/compatibility.md",
+        f"{label} parity oracle ledger path mismatch",
+    )
+    require(
+        consumer_ledger.get("required_before_bridge") is True,
+        f"{label} parity oracle ledger must be required before bridge wiring",
+    )
+
+    shared = oracle.get("shared")
+    require(isinstance(shared, dict), f"{label} parity oracle shared block must be an object")
+    require(
+        shared.get("fold_set_fixture_fingerprint") == SHARED_FOLD_SET_FINGERPRINT,
+        f"{label} parity oracle shared fold-set fingerprint drifted",
+    )
+
+    tolerance_profiles = oracle.get("tolerance_profiles")
+    require(
+        isinstance(tolerance_profiles, list) and tolerance_profiles,
+        f"{label} parity oracle must declare tolerance profiles",
+    )
+    profile_ids: set[str] = set()
+    for index, profile in enumerate(tolerance_profiles):
+        profile_label = f"{label} parity oracle tolerance_profiles[{index}]"
+        require(isinstance(profile, dict), f"{profile_label} must be an object")
+        require(
+            isinstance(profile.get("profile_id"), str)
+            and IDENTIFIER_RE.fullmatch(profile["profile_id"]),
+            f"{profile_label}.profile_id must be a shared identifier",
+        )
+        require_non_empty_string(profile.get("metric"), f"{profile_label}.metric")
+        require_non_empty_string(profile.get("owner"), f"{profile_label}.owner")
+        require(
+            isinstance(profile.get("absolute_tolerance"), (int, float)),
+            f"{profile_label}.absolute_tolerance must be numeric",
+        )
+        require(
+            isinstance(profile.get("relative_tolerance"), (int, float)),
+            f"{profile_label}.relative_tolerance must be numeric",
+        )
+        require(
+            profile["profile_id"] not in profile_ids,
+            f"{profile_label}.profile_id is duplicated",
+        )
+        profile_ids.add(profile["profile_id"])
+
+    required_case_ids = oracle.get("required_case_ids")
+    require(
+        isinstance(required_case_ids, list),
+        f"{label} parity oracle required_case_ids must be a list",
+    )
+    require(
+        set(required_case_ids) == REQUIRED_PARITY_CASE_IDS,
+        f"{label} parity oracle required_case_ids changed",
+    )
+
+    cases = oracle.get("cases")
+    require(isinstance(cases, list) and cases, f"{label} parity oracle cases must be non-empty")
+    case_ids: set[str] = set()
+    for index, case in enumerate(cases):
+        case_label = f"{label} parity oracle cases[{index}]"
+        require(isinstance(case, dict), f"{case_label} must be an object")
+        require(
+            isinstance(case.get("case_id"), str) and IDENTIFIER_RE.fullmatch(case["case_id"]),
+            f"{case_label}.case_id must be a shared identifier",
+        )
+        require(case["case_id"] not in case_ids, f"{case_label}.case_id is duplicated")
+        case_ids.add(case["case_id"])
+        for field in ("ledger_topics", "fixtures", "gates", "invariants"):
+            require(
+                isinstance(case.get(field), list) and case[field],
+                f"{case_label}.{field} must be a non-empty list",
+            )
+        for topic_index, topic in enumerate(case["ledger_topics"]):
+            require_non_empty_string(topic, f"{case_label}.ledger_topics[{topic_index}]")
+        for invariant_index, invariant in enumerate(case["invariants"]):
+            require_non_empty_string(invariant, f"{case_label}.invariants[{invariant_index}]")
+        for fixture_index, fixture in enumerate(case["fixtures"]):
+            fixture_label = f"{case_label}.fixtures[{fixture_index}]"
+            require(isinstance(fixture, dict), f"{fixture_label} must be an object")
+            repo = fixture.get("repo")
+            require(repo in {"dag-ml", "dag-ml-data"}, f"{fixture_label}.repo is invalid")
+            require_non_empty_string(fixture.get("path"), f"{fixture_label}.path")
+            require_non_empty_string(fixture.get("kind"), f"{fixture_label}.kind")
+            root = roots_by_repo.get(repo)
+            if root is not None:
+                require((root / fixture["path"]).is_file(), f"{fixture_label} path is missing")
+        for gate_index, gate in enumerate(case["gates"]):
+            gate_label = f"{case_label}.gates[{gate_index}]"
+            require(isinstance(gate, dict), f"{gate_label} must be an object")
+            require(gate.get("repo") in {"dag-ml", "dag-ml-data"}, f"{gate_label}.repo is invalid")
+            require_non_empty_string(gate.get("command"), f"{gate_label}.command")
+            require_non_empty_string(gate.get("proves"), f"{gate_label}.proves")
+    require(case_ids == REQUIRED_PARITY_CASE_IDS, f"{label} parity oracle case set changed")
 
 
 def extract_function_body(source: str, signature_substring: str, label: str) -> str:
@@ -634,8 +849,10 @@ def main() -> int:
         local_branch_view_schema = load_json(ROOT / BRANCH_VIEW_SCHEMA_REL)
         local_fitted_adapter_schema = load_json(ROOT / FITTED_ADAPTER_SCHEMA_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
+        local_parity_oracle = load_json(ROOT / PARITY_ORACLE_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
+        local_fold_set_fixture = load_json(ROOT / SHARED_FOLD_SET_FIXTURE_REL)
         local_header = load_text(ROOT / LOCAL_C_HEADER_REL)
         validate_schema_artifact(local_schema, LOCAL_SCHEMA_ID, "dag-ml-data")
         validate_feature_fusion_schema_artifact(
@@ -655,14 +872,26 @@ def main() -> int:
         )
         validate_envelope(local_fixture, "dag-ml-data")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml-data")
+        validate_fold_set_fixture(local_fold_set_fixture, "dag-ml-data shared")
+        require(
+            canonical_fold_set_fingerprint(local_fold_set_fixture)
+            == SHARED_FOLD_SET_FINGERPRINT,
+            "dag-ml-data shared fold set fingerprint drifted",
+        )
         validate_data_provider_header(local_header, "dag-ml-data")
         validate_dag_ml_data_tensor_header(local_header, "dag-ml-data")
+        validate_parity_oracle_manifest(
+            local_parity_oracle,
+            {"dag-ml-data": ROOT},
+            "dag-ml-data",
+        )
         validate_conformance_pack(
             local_pack,
             local_schema,
             local_feature_fusion_schema,
             local_branch_view_schema,
             local_fitted_adapter_schema,
+            local_parity_oracle,
             local_fixture,
             local_feature_fusion_fixture,
             local_header,
@@ -677,10 +906,12 @@ def main() -> int:
         sibling_schema = load_json(sibling / SCHEMA_REL)
         sibling_feature_fusion_schema = load_json(sibling / FEATURE_FUSION_SCHEMA_REL)
         sibling_pack = load_json(sibling / CONFORMANCE_PACK_REL)
+        sibling_parity_oracle = load_json(sibling / PARITY_ORACLE_REL)
         sibling_fixture = load_json(sibling / SIBLING_FIXTURE_REL)
         sibling_feature_fusion_fixture = load_json(
             sibling / SIBLING_FEATURE_FUSION_FIXTURE_REL
         )
+        sibling_fold_set_fixture = load_json(sibling / SHARED_FOLD_SET_FIXTURE_REL)
         sibling_header = load_text(sibling / SIBLING_C_HEADER_REL)
         validate_schema_artifact(sibling_schema, SIBLING_SCHEMA_ID, "dag-ml")
         validate_feature_fusion_schema_artifact(
@@ -690,6 +921,12 @@ def main() -> int:
         )
         validate_envelope(sibling_fixture, "dag-ml")
         validate_feature_fusion_selector(sibling_feature_fusion_fixture, "dag-ml")
+        validate_fold_set_fixture(sibling_fold_set_fixture, "dag-ml shared")
+        require(
+            canonical_fold_set_fingerprint(sibling_fold_set_fixture)
+            == SHARED_FOLD_SET_FINGERPRINT,
+            "dag-ml shared fold set fingerprint drifted",
+        )
         validate_data_provider_header(sibling_header, "dag-ml")
 
         local_fitted_adapter_source = load_text(
@@ -711,12 +948,18 @@ def main() -> int:
         # its `branch_view_plan` lives inline in `campaign_spec.schema.json` $defs.
         # When dag-ml publishes a standalone schema, mirror the local
         # `validate_branch_view_schema_artifact` + conformance-pack call here.
+        validate_parity_oracle_manifest(
+            sibling_parity_oracle,
+            {"dag-ml-data": ROOT, "dag-ml": sibling},
+            "dag-ml",
+        )
         validate_conformance_pack(
             sibling_pack,
             sibling_schema,
             sibling_feature_fusion_schema,
             local_branch_view_schema,
             local_fitted_adapter_schema,
+            sibling_parity_oracle,
             sibling_fixture,
             sibling_feature_fusion_fixture,
             sibling_header,
@@ -739,7 +982,13 @@ def main() -> int:
             local_feature_fusion_fixture == sibling_feature_fusion_fixture,
             "feature fusion selector fixtures diverge",
         )
+        require(
+            canonical_fold_set_fingerprint(local_fold_set_fixture)
+            == canonical_fold_set_fingerprint(sibling_fold_set_fixture),
+            "shared fold set canonical fingerprints diverge",
+        )
         require(local_pack == sibling_pack, "shared conformance packs diverge")
+        require(local_parity_oracle == sibling_parity_oracle, "parity oracle manifests diverge")
         print(f"validated dag-ml-data contract against dag-ml at {sibling}")
         return 0
     except ContractError as exc:

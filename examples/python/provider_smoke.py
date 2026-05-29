@@ -8,7 +8,12 @@ from dag_ml_data_provider import InMemoryProvider
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lib", required=True)
+    parser.add_argument(
+        "--lib",
+        default=None,
+        help="path to the C ABI cdylib; discovered automatically (env "
+        "DAG_ML_DATA_CAPI_LIB / Cargo target dir) when omitted",
+    )
     parser.add_argument("--envelope", required=True)
     parser.add_argument("--request", required=True)
     args = parser.parse_args()
@@ -37,9 +42,9 @@ def main() -> None:
         }
     ]
     with InMemoryProvider.from_files(
-        args.lib,
         args.envelope,
-        target_tables,
+        library_path=args.lib,
+        target_tables=target_tables,
         f64_feature_matrices=f64_feature_matrices,
     ) as provider:
         manifests = provider.feature_buffer_manifests()

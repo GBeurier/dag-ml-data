@@ -4,18 +4,22 @@ use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::slice;
 
-#[cfg(test)]
-use dag_ml_data_core::SampleId;
 use dag_ml_data_core::{
-    collate_feature_block, fuse_feature_blocks, schema_fingerprint, CollationPolicy,
-    CoordinatorDataHandleRecord, CoordinatorDataMaterializationRequest,
-    CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
-    CoordinatorHandleArena, CoordinatorTargetBlock, CoordinatorTargetTable, DataView,
-    DatasetSchema, FeatureFusionPolicy, FittedAdapterManifest, FittedAdapterMaterializationRequest,
-    FittedAdapterRef, InMemoryFittedAdapterStore, NumericFeatureBufferArena,
+    collate_feature_block, fold_set_fingerprint, fuse_feature_blocks, schema_fingerprint,
+    CollationPolicy, CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope,
+    CoordinatorFeatureBlock, CoordinatorFeatureTable, CoordinatorHandleArena,
+    CoordinatorMultiTargetBlock, CoordinatorTargetBlock, CoordinatorTargetTable, DataError,
+    DataView, DatasetSchema, FeatureFusionPolicy, FittedAdapterManifest,
+    FittedAdapterMaterializationRequest, FittedAdapterRef, FoldSet, InMemoryFittedAdapterStore,
     NumericFeatureBufferStore, NumericFeatureMatrixF64, NumericFeatureMatrixF64Columnar,
     NumericTensorBlock, ObservationId, RepresentationId, RuntimeFittedAdapterStore,
-    SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
+    SampleAlignmentPlan, SampleRelationTable, SourceFeatureBlock, TargetId,
+};
+#[cfg(test)]
+use dag_ml_data_core::{SampleId, SourceId};
+use dag_ml_data_provider::{
+    default_owner_controller, DagMlDataProvider, InMemoryProvider, ProviderFeatureCollationRequest,
+    ProviderFeatureFusionSelector,
 };
 use serde::Deserialize;
 
@@ -338,6 +342,54 @@ pub extern "C" fn dagmldata_version() -> DagMlDataVersion {
     }
 }
 
+thread_local! {
+    /// ADR-11 thread-local last-error buffer: the structured descriptor JSON and
+    /// numeric error code of the most recent failing C ABI call on this thread.
+    static LAST_ERROR: RefCell<Option<(String, u32)>> = const { RefCell::new(None) };
+}
+
+/// Record the descriptor JSON and numeric code of the most recent error in the
+/// calling thread's last-error buffer.
+fn store_last_error(payload: &str, code: u32) {
+    LAST_ERROR.with(|cell| *cell.borrow_mut() = Some((payload.to_string(), code)));
+}
+
+/// Writes the structured ADR-11 descriptor JSON of the most recent failing C ABI
+/// call on the calling thread into `out`.
+///
+/// The buffer is thread-local and persists until the next failing call on the
+/// same thread. When no error has been recorded, `out` is set to an empty string
+/// (`ptr` is null). Returns [`DagMlDataStatusCode::Ok`].
+///
+/// # Safety
+///
+/// `out` may be null; when non-null it must point to writable memory for one
+/// `DagMlDataString`. Any returned string must be released with
+/// `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_last_error_json(
+    out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    // Clone the payload out of the borrow before writing so the writer can never
+    // re-borrow LAST_ERROR. `set_string` is the pure writer (it does not touch the
+    // thread-local), so reading the buffer must not overwrite it.
+    let payload = LAST_ERROR.with(|cell| cell.borrow().as_ref().map(|(p, _)| p.clone()));
+    clear_string(out);
+    if let Some(payload) = payload {
+        set_string(out, payload);
+    }
+    DagMlDataStatusCode::Ok
+}
+
+/// Returns the stable ADR-11 numeric error code (`(category << 16) | code`) of the
+/// most recent failing C ABI call on the calling thread, or `0` when no error has
+/// been recorded. The buffer is thread-local and persists until the next failing
+/// call on the same thread.
+#[no_mangle]
+pub extern "C" fn dagmldata_last_error_code() -> u32 {
+    LAST_ERROR.with(|cell| cell.borrow().as_ref().map(|(_, code)| *code).unwrap_or(0))
+}
+
 /// Releases a string allocated by DAG-ML-DATA.
 ///
 /// # Safety
@@ -450,7 +502,7 @@ pub unsafe extern "C" fn dagmldata_schema_fingerprint_json(
     clear_string(fingerprint_out);
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -462,12 +514,154 @@ pub unsafe extern "C" fn dagmldata_schema_fingerprint_json(
                 DagMlDataStatusCode::Ok
             }
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 DagMlDataStatusCode::ValidationError
             }
         },
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Validates a JSON fold-set payload.
+///
+/// The payload mirrors dag-ml's `FoldSet` JSON shape but keeps `fold_id` as an
+/// opaque string so runtime labels such as `fold:0` remain ABI-compatible.
+/// This standalone check validates only the exhaustive fold partition shape;
+/// use `dagmldata_fold_set_validate_against_relations_json` to audit group and
+/// augmentation-origin leakage.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `error_out` may be null; when non-null it must
+/// point to writable memory for one `DagMlDataString`. Returned strings must be
+/// released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_fold_set_validate_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_error_message(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<FoldSet>(json) {
+        Ok(fold_set) => match fold_set.validate() {
+            Ok(()) => DagMlDataStatusCode::Ok,
+            Err(error) => {
+                set_display_error(error_out, error);
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_display_error(error_out, error);
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Computes the deterministic fingerprint of a JSON fold-set payload.
+///
+/// The fingerprint canonicalizes irrelevant ordering of sample ids, fold ids
+/// and train/validation sample lists after validating the fold set.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `fingerprint_out` and `error_out` may be null; when
+/// non-null each must point to writable memory for one `DagMlDataString`. Any
+/// returned string must be released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_fold_set_fingerprint_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    fingerprint_out: *mut DagMlDataString,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(fingerprint_out);
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_error_message(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<FoldSet>(json) {
+        Ok(fold_set) => match fold_set_fingerprint(&fold_set) {
+            Ok(fingerprint) => {
+                set_string(fingerprint_out, fingerprint);
+                DagMlDataStatusCode::Ok
+            }
+            Err(error) => {
+                set_display_error(error_out, error);
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_display_error(error_out, error);
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Validates a JSON fold-set payload against a JSON `SampleRelationTable`.
+///
+/// This is the C ABI entry point for ADR-05: all samples covered by relations
+/// must be covered exactly once by validation folds, and relation group/origin
+/// boundaries must not cross train/validation inside a fold.
+///
+/// # Safety
+///
+/// When non-null, `fold_set_ptr` and `relations_ptr` must point to
+/// `fold_set_len` and `relations_len` readable bytes respectively for the
+/// duration of the call. `error_out` may be null; when non-null it must point to
+/// writable memory for one `DagMlDataString`. Returned strings must be released
+/// with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_fold_set_validate_against_relations_json(
+    fold_set_ptr: *const u8,
+    fold_set_len: usize,
+    relations_ptr: *const u8,
+    relations_len: usize,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if fold_set_ptr.is_null() {
+        set_error_message(error_out, "fold set json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if relations_ptr.is_null() {
+        set_error_message(error_out, "sample relations json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let fold_set_json = slice::from_raw_parts(fold_set_ptr, fold_set_len);
+    let relations_json = slice::from_raw_parts(relations_ptr, relations_len);
+    let fold_set = match serde_json::from_slice::<FoldSet>(fold_set_json) {
+        Ok(fold_set) => fold_set,
+        Err(error) => {
+            set_display_error(error_out, error);
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    let relations = match serde_json::from_slice::<SampleRelationTable>(relations_json) {
+        Ok(relations) => relations,
+        Err(error) => {
+            set_display_error(error_out, error);
+            return DagMlDataStatusCode::ValidationError;
+        }
+    };
+    match relations.validate_fold_set(&fold_set) {
+        Ok(()) => DagMlDataStatusCode::Ok,
+        Err(error) => {
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -509,6 +703,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_new(
     out_store: *mut DagMlDataFittedAdapterStoreHandle,
 ) -> DagMlDataStatusCode {
     if out_store.is_null() {
+        record_arg_error("fitted-adapter store out pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     let store = Box::new(InMemoryFittedAdapterStore::new());
@@ -556,7 +751,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_register_json(
 ) -> DagMlDataStatusCode {
     clear_string(error_out);
     if store.ptr.is_null() || json_ptr.is_null() {
-        set_string(error_out, "store or json pointer is null");
+        set_error_message(error_out, "store or json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     let store_ref = &*store.ptr.cast::<InMemoryFittedAdapterStore>();
@@ -564,7 +759,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_register_json(
     let value: FittedAdapterRef = match serde_json::from_slice(json) {
         Ok(value) => value,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
@@ -576,7 +771,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_register_json(
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -602,7 +797,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_materialize_jso
 ) -> DagMlDataStatusCode {
     clear_string(error_out);
     if store.ptr.is_null() || json_ptr.is_null() {
-        set_string(error_out, "store or json pointer is null");
+        set_error_message(error_out, "store or json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     let store_ref = &*store.ptr.cast::<InMemoryFittedAdapterStore>();
@@ -610,7 +805,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_materialize_jso
     let request: FittedAdapterMaterializationRequest = match serde_json::from_slice(json) {
         Ok(request) => request,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
@@ -622,7 +817,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_materialize_jso
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -645,13 +840,17 @@ pub unsafe extern "C" fn dagmldata_inmemory_fitted_adapter_store_release(
     out_released: *mut u8,
 ) -> DagMlDataStatusCode {
     if store.ptr.is_null() || adapter_id.is_null() {
+        record_arg_error("fitted-adapter store or adapter_id pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     let store_ref = &*store.ptr.cast::<InMemoryFittedAdapterStore>();
     let adapter_id_bytes = slice::from_raw_parts(adapter_id, adapter_id_len);
     let adapter_id_str = match std::str::from_utf8(adapter_id_bytes) {
         Ok(value) => value,
-        Err(_) => return DagMlDataStatusCode::InvalidArgument,
+        Err(_) => {
+            record_arg_error("adapter_id is not valid UTF-8");
+            return DagMlDataStatusCode::InvalidArgument;
+        }
     };
     let released = store_ref.release(adapter_id_str);
     if !out_released.is_null() {
@@ -683,22 +882,22 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_attach_fitted_adapter_store
 ) -> DagMlDataStatusCode {
     clear_string(error_out);
     if vtable.is_null() || (*vtable).user_data.is_null() {
-        set_string(error_out, "provider vtable or user_data is null");
+        set_error_message(error_out, "provider vtable or user_data is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
-    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
     let store_ptr = if store.ptr.is_null() {
         std::ptr::null()
     } else {
         store.ptr.cast::<InMemoryFittedAdapterStore>() as *const _
     };
-    match provider.fitted_adapter_store.lock() {
+    match state.fitted_adapter_store.lock() {
         Ok(mut slot) => {
             *slot = store_ptr;
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(
+            set_error_message(
                 error_out,
                 format!("provider fitted-adapter mutex poisoned: {error}"),
             );
@@ -728,37 +927,41 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_materialize_fitted_adapter_
 ) -> DagMlDataStatusCode {
     clear_string(error_out);
     if vtable.is_null() || (*vtable).user_data.is_null() || json_ptr.is_null() {
-        set_string(
+        set_error_message(
             error_out,
             "provider vtable, user_data or json pointer is null",
         );
         return DagMlDataStatusCode::InvalidArgument;
     }
-    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
-    let store_ptr = match provider.fitted_adapter_store.lock() {
-        Ok(guard) => *guard,
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
+    // Hold the store guard across the dereference and `materialize` so a
+    // concurrent attach(null)/detach cannot pull the borrowed store pointer out
+    // from under us (which, combined with the host destroying the store, would
+    // be a use-after-free). Detach blocks until any in-flight materialize ends.
+    let store_guard = match state.fitted_adapter_store.lock() {
+        Ok(guard) => guard,
         Err(error) => {
-            set_string(
+            set_error_message(
                 error_out,
                 format!("provider fitted-adapter mutex poisoned: {error}"),
             );
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    if store_ptr.is_null() {
-        set_string(
+    if store_guard.is_null() {
+        set_error_message(
             error_out,
             "provider has no fitted-adapter store attached; \
              call dagmldata_inmemory_provider_attach_fitted_adapter_store first",
         );
         return DagMlDataStatusCode::InvalidArgument;
     }
-    let store = &*store_ptr;
+    let store = &**store_guard;
     let json = slice::from_raw_parts(json_ptr, json_len);
     let request: FittedAdapterMaterializationRequest = match serde_json::from_slice(json) {
         Ok(request) => request,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
@@ -770,7 +973,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_materialize_fitted_adapter_
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -799,14 +1002,14 @@ pub unsafe extern "C" fn dagmldata_fitted_adapter_ref_validate_json(
 ) -> DagMlDataStatusCode {
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     let json = slice::from_raw_parts(json_ptr, json_len);
     let value: FittedAdapterRef = match serde_json::from_slice(json) {
         Ok(value) => value,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
@@ -818,7 +1021,7 @@ pub unsafe extern "C" fn dagmldata_fitted_adapter_ref_validate_json(
     match result {
         Ok(()) => DagMlDataStatusCode::Ok,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -841,14 +1044,14 @@ pub unsafe extern "C" fn dagmldata_fitted_adapter_manifest_validate_json(
 ) -> DagMlDataStatusCode {
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     let json = slice::from_raw_parts(json_ptr, json_len);
     let manifest: FittedAdapterManifest = match serde_json::from_slice(json) {
         Ok(manifest) => manifest,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
@@ -860,7 +1063,7 @@ pub unsafe extern "C" fn dagmldata_fitted_adapter_manifest_validate_json(
     match result {
         Ok(()) => DagMlDataStatusCode::Ok,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -890,11 +1093,11 @@ pub unsafe extern "C" fn dagmldata_coordinator_identity_arrow_json(
     clear_arrow_schema(out_arrow_schema);
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_arrow_array.is_null() || out_arrow_schema.is_null() {
-        set_string(error_out, "arrow output pointer is null");
+        set_error_message(error_out, "arrow output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -907,12 +1110,12 @@ pub unsafe extern "C" fn dagmldata_coordinator_identity_arrow_json(
                 DagMlDataStatusCode::Ok
             }
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 DagMlDataStatusCode::ValidationError
             }
         },
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -944,11 +1147,11 @@ pub unsafe extern "C" fn dagmldata_coordinator_target_arrow_json(
     clear_arrow_schema(out_arrow_schema);
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_arrow_array.is_null() || out_arrow_schema.is_null() {
-        set_string(error_out, "arrow output pointer is null");
+        set_error_message(error_out, "arrow output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -962,13 +1165,70 @@ pub unsafe extern "C" fn dagmldata_coordinator_target_arrow_json(
                     DagMlDataStatusCode::Ok
                 }
                 Err(error) => {
-                    set_string(error_out, error.to_string());
+                    set_display_error(error_out, error);
                     DagMlDataStatusCode::ValidationError
                 }
             }
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Builds an Arrow C Data multi-target table from a coordinator envelope, data
+/// view and target tables.
+///
+/// The request JSON shape is `{ envelope, materialization_request, view,
+/// target_tables, owner_controller? }`. The returned table has `sample_id`
+/// plus one nullable f64 column per `target_id`, preserving the view's
+/// requested sample order and encoding missing/null target values in each
+/// target column's validity bitmap.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `out_arrow_array`, `out_arrow_schema` and
+/// `error_out` may be null. Returned Arrow pointers must be released with
+/// `dagmldata_arrow_array_free` and `dagmldata_arrow_schema_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_coordinator_multi_target_arrow_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_arrow_array: *mut *mut ArrowArray,
+    out_arrow_schema: *mut *mut ArrowSchema,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_arrow_array(out_arrow_array);
+    clear_arrow_schema(out_arrow_schema);
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_error_message(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+    if out_arrow_array.is_null() || out_arrow_schema.is_null() {
+        set_error_message(error_out, "arrow output pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<CoordinatorMultiTargetArrowRequest>(json) {
+        Ok(request) => match build_multi_target_block(&request)
+            .and_then(|block| build_multi_target_arrow(&block))
+        {
+            Ok((array, schema)) => {
+                *out_arrow_array = Box::into_raw(Box::new(array));
+                *out_arrow_schema = Box::into_raw(Box::new(schema));
+                DagMlDataStatusCode::Ok
+            }
+            Err(error) => {
+                set_display_error(error_out, error);
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1001,11 +1261,11 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_arrow_json(
     clear_arrow_schema(out_arrow_schema);
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_arrow_array.is_null() || out_arrow_schema.is_null() {
-        set_string(error_out, "arrow output pointer is null");
+        set_error_message(error_out, "arrow output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1019,13 +1279,13 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_arrow_json(
                     DagMlDataStatusCode::Ok
                 }
                 Err(error) => {
-                    set_string(error_out, error.to_string());
+                    set_display_error(error_out, error);
                     DagMlDataStatusCode::ValidationError
                 }
             }
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1058,11 +1318,11 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_fusion_arrow_json(
     clear_arrow_schema(out_arrow_schema);
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_arrow_array.is_null() || out_arrow_schema.is_null() {
-        set_string(error_out, "arrow output pointer is null");
+        set_error_message(error_out, "arrow output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1082,12 +1342,12 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_fusion_arrow_json(
                 DagMlDataStatusCode::Ok
             }
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 DagMlDataStatusCode::ValidationError
             }
         },
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1115,7 +1375,7 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_json(
     clear_string(out_json);
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1130,13 +1390,13 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_json(
                     DagMlDataStatusCode::Ok
                 }
                 Err(error) => {
-                    set_string(error_out, error.to_string());
+                    set_display_error(error_out, error);
                     DagMlDataStatusCode::ValidationError
                 }
             }
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1163,11 +1423,11 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_tensor_f64_json
     clear_tensor(out_tensor);
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_tensor.is_null() {
-        set_string(error_out, "tensor output pointer is null");
+        set_error_message(error_out, "tensor output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1179,12 +1439,12 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_tensor_f64_json
                 DagMlDataStatusCode::Ok
             }
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 DagMlDataStatusCode::ValidationError
             }
         },
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1215,11 +1475,11 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_tensor_f32_json
     clear_tensor_f32(out_tensor);
     clear_string(error_out);
     if json_ptr.is_null() {
-        set_string(error_out, "json pointer is null");
+        set_error_message(error_out, "json pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_tensor.is_null() {
-        set_string(error_out, "tensor output pointer is null");
+        set_error_message(error_out, "tensor output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1233,12 +1493,12 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_collation_tensor_f32_json
                 DagMlDataStatusCode::Ok
             }
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 DagMlDataStatusCode::ValidationError
             }
         },
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1268,11 +1528,11 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_json(
     clear_vtable(out_vtable);
     clear_string(error_out);
     if envelope_ptr.is_null() {
-        set_string(error_out, "envelope pointer is null");
+        set_error_message(error_out, "envelope pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_vtable.is_null() {
-        set_string(error_out, "vtable output pointer is null");
+        set_error_message(error_out, "vtable output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1280,18 +1540,15 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_json(
     let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
         Ok(envelope) => envelope,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len, error_out) {
         Ok(target_tables) => target_tables,
-        Err(error) => {
-            set_string(error_out, error.to_string());
-            return DagMlDataStatusCode::ValidationError;
-        }
+        Err(status) => return status,
     };
-    match InMemoryProvider::new(
+    match InMemoryProviderState::new(
         envelope,
         target_tables,
         NumericFeatureBufferStore::default(),
@@ -1301,7 +1558,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_json(
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1331,11 +1588,11 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_features_json(
     clear_vtable(out_vtable);
     clear_string(error_out);
     if envelope_ptr.is_null() {
-        set_string(error_out, "envelope pointer is null");
+        set_error_message(error_out, "envelope pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_vtable.is_null() {
-        set_string(error_out, "vtable output pointer is null");
+        set_error_message(error_out, "vtable output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1343,31 +1600,26 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_features_json(
     let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
         Ok(envelope) => envelope,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len, error_out) {
         Ok(target_tables) => target_tables,
-        Err(error) => {
-            set_string(error_out, error.to_string());
-            return DagMlDataStatusCode::ValidationError;
-        }
+        Err(status) => return status,
     };
-    let feature_tables = match parse_feature_tables(feature_tables_ptr, feature_tables_len) {
-        Ok(feature_tables) => feature_tables,
-        Err(error) => {
-            set_string(error_out, error.to_string());
-            return DagMlDataStatusCode::ValidationError;
-        }
-    };
-    match InMemoryProvider::new(envelope, target_tables, feature_tables) {
+    let feature_tables =
+        match parse_feature_tables(feature_tables_ptr, feature_tables_len, error_out) {
+            Ok(feature_tables) => feature_tables,
+            Err(status) => return status,
+        };
+    match InMemoryProviderState::new(envelope, target_tables, feature_tables) {
         Ok(provider) => {
             *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1398,11 +1650,11 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_features_json(
     clear_vtable(out_vtable);
     clear_string(error_out);
     if envelope_ptr.is_null() {
-        set_string(error_out, "envelope pointer is null");
+        set_error_message(error_out, "envelope pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_vtable.is_null() {
-        set_string(error_out, "vtable output pointer is null");
+        set_error_message(error_out, "vtable output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1410,32 +1662,26 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_features_json(
     let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
         Ok(envelope) => envelope,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len, error_out) {
         Ok(target_tables) => target_tables,
-        Err(error) => {
-            set_string(error_out, error.to_string());
-            return DagMlDataStatusCode::ValidationError;
-        }
+        Err(status) => return status,
     };
-    let feature_store = match parse_f64_feature_matrices(feature_matrices_ptr, feature_matrices_len)
-    {
-        Ok(feature_store) => feature_store,
-        Err(error) => {
-            set_string(error_out, error.to_string());
-            return DagMlDataStatusCode::ValidationError;
-        }
-    };
-    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+    let feature_store =
+        match parse_f64_feature_matrices(feature_matrices_ptr, feature_matrices_len, error_out) {
+            Ok(feature_store) => feature_store,
+            Err(status) => return status,
+        };
+    match InMemoryProviderState::new(envelope, target_tables, feature_store) {
         Ok(provider) => {
             *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1466,11 +1712,11 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_feature_views(
     clear_vtable(out_vtable);
     clear_string(error_out);
     if envelope_ptr.is_null() {
-        set_string(error_out, "envelope pointer is null");
+        set_error_message(error_out, "envelope pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_vtable.is_null() {
-        set_string(error_out, "vtable output pointer is null");
+        set_error_message(error_out, "vtable output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1478,32 +1724,29 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_feature_views(
     let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
         Ok(envelope) => envelope,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len, error_out) {
         Ok(target_tables) => target_tables,
-        Err(error) => {
-            set_string(error_out, error.to_string());
-            return DagMlDataStatusCode::ValidationError;
-        }
+        Err(status) => return status,
     };
     let feature_store =
         match parse_f64_feature_matrix_views(feature_matrices_ptr, feature_matrices_len) {
             Ok(feature_store) => feature_store,
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 return DagMlDataStatusCode::ValidationError;
             }
         };
-    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+    match InMemoryProviderState::new(envelope, target_tables, feature_store) {
         Ok(provider) => {
             *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1537,11 +1780,11 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_feature_column
     clear_vtable(out_vtable);
     clear_string(error_out);
     if envelope_ptr.is_null() {
-        set_string(error_out, "envelope pointer is null");
+        set_error_message(error_out, "envelope pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_vtable.is_null() {
-        set_string(error_out, "vtable output pointer is null");
+        set_error_message(error_out, "vtable output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1549,32 +1792,29 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_f64_feature_column
     let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
         Ok(envelope) => envelope,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len, error_out) {
         Ok(target_tables) => target_tables,
-        Err(error) => {
-            set_string(error_out, error.to_string());
-            return DagMlDataStatusCode::ValidationError;
-        }
+        Err(status) => return status,
     };
     let feature_store =
         match parse_f64_feature_matrix_columnar_views(feature_matrices_ptr, feature_matrices_len) {
             Ok(feature_store) => feature_store,
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 return DagMlDataStatusCode::ValidationError;
             }
         };
-    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+    match InMemoryProviderState::new(envelope, target_tables, feature_store) {
         Ok(provider) => {
             *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1608,15 +1848,15 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_file(
     clear_vtable(out_vtable);
     clear_string(error_out);
     if envelope_ptr.is_null() {
-        set_string(error_out, "envelope pointer is null");
+        set_error_message(error_out, "envelope pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_vtable.is_null() {
-        set_string(error_out, "vtable output pointer is null");
+        set_error_message(error_out, "vtable output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if path_ptr.is_null() {
-        set_string(error_out, "buffer-store path pointer is null");
+        set_error_message(error_out, "buffer-store path pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1624,22 +1864,19 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_file(
     let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
         Ok(envelope) => envelope,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len, error_out) {
         Ok(target_tables) => target_tables,
-        Err(error) => {
-            set_string(error_out, error.to_string());
-            return DagMlDataStatusCode::ValidationError;
-        }
+        Err(status) => return status,
     };
     let path_bytes = slice::from_raw_parts(path_ptr, path_len);
     let path_str = match std::str::from_utf8(path_bytes) {
         Ok(value) => value,
         Err(error) => {
-            set_string(
+            set_error_message(
                 error_out,
                 format!("buffer-store path is not valid utf-8: {error}"),
             );
@@ -1650,17 +1887,17 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_file(
     let feature_store = match dag_ml_data_core::buffer_file_store::read_store_from_path(path) {
         Ok(store) => store,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+    match InMemoryProviderState::new(envelope, target_tables, feature_store) {
         Ok(provider) => {
             *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1698,15 +1935,15 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_arrow_ipc(
     clear_vtable(out_vtable);
     clear_string(error_out);
     if envelope_ptr.is_null() {
-        set_string(error_out, "envelope pointer is null");
+        set_error_message(error_out, "envelope pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if out_vtable.is_null() {
-        set_string(error_out, "vtable output pointer is null");
+        set_error_message(error_out, "vtable output pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     if path_ptr.is_null() {
-        set_string(error_out, "arrow IPC path pointer is null");
+        set_error_message(error_out, "arrow IPC path pointer is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
@@ -1714,22 +1951,19 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_arrow_ipc(
     let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
         Ok(envelope) => envelope,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len, error_out) {
         Ok(target_tables) => target_tables,
-        Err(error) => {
-            set_string(error_out, error.to_string());
-            return DagMlDataStatusCode::ValidationError;
-        }
+        Err(status) => return status,
     };
     let path_bytes = slice::from_raw_parts(path_ptr, path_len);
     let path_str = match std::str::from_utf8(path_bytes) {
         Ok(value) => value,
         Err(error) => {
-            set_string(
+            set_error_message(
                 error_out,
                 format!("arrow IPC path is not valid utf-8: {error}"),
             );
@@ -1740,17 +1974,17 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_from_arrow_ipc(
     let feature_store = match dag_ml_data_arrow::read_buffers_from_ipc_path(path) {
         Ok(store) => store,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+    match InMemoryProviderState::new(envelope, target_tables, feature_store) {
         Ok(provider) => {
             *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -1847,18 +2081,17 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_buffer_fetcher(
         }
     };
     if out_vtable.is_null() {
-        set_string(error_out, "vtable output pointer is null");
+        set_error_message(error_out, "vtable output pointer is null");
         destroy_fetcher();
         return DagMlDataStatusCode::InvalidArgument;
     }
     if envelope_ptr.is_null() {
-        set_string(error_out, "envelope pointer is null");
+        set_error_message(error_out, "envelope pointer is null");
         destroy_fetcher();
         return DagMlDataStatusCode::InvalidArgument;
     }
     if fetcher.abi_version != DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION {
-        set_string(
-            error_out,
+        set_error_message(error_out,
             format!(
                 "fetcher vtable abi_version {} does not match {DAG_ML_DATA_BUFFER_FETCHER_ABI_VERSION}",
                 fetcher.abi_version
@@ -1868,12 +2101,12 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_buffer_fetcher(
         return DagMlDataStatusCode::InvalidArgument;
     }
     let Some(fetch_callback) = fetcher.fetch_columnar else {
-        set_string(error_out, "fetcher vtable fetch_columnar callback is null");
+        set_error_message(error_out, "fetcher vtable fetch_columnar callback is null");
         destroy_fetcher();
         return DagMlDataStatusCode::InvalidArgument;
     };
     if requests_ptr.is_null() && requests_len != 0 {
-        set_string(
+        set_error_message(
             error_out,
             "fetch requests pointer is null but length is non-zero",
         );
@@ -1885,17 +2118,16 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_buffer_fetcher(
     let envelope = match serde_json::from_slice::<CoordinatorDataPlanEnvelope>(envelope_json) {
         Ok(envelope) => envelope,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             destroy_fetcher();
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len) {
+    let target_tables = match parse_target_tables(target_tables_ptr, target_tables_len, error_out) {
         Ok(target_tables) => target_tables,
-        Err(error) => {
-            set_string(error_out, error.to_string());
+        Err(status) => {
             destroy_fetcher();
-            return DagMlDataStatusCode::ValidationError;
+            return status;
         }
     };
 
@@ -1936,7 +2168,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_buffer_fetcher(
         // safely no-ops on a null/empty string.
         let fetch_message = consume_string_message(fetch_error);
         if status != DagMlDataStatusCode::Ok {
-            set_string(
+            set_error_message(
                 error_out,
                 format!(
                     "fetcher rejected request {index}: status {status:?} message {fetch_message}"
@@ -1948,7 +2180,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_buffer_fetcher(
         let matrix = match f64_feature_matrix_columnar_view_to_core(view, index) {
             Ok(matrix) => matrix,
             Err(error) => {
-                set_string(
+                set_error_message(
                     error_out,
                     format!("fetcher returned invalid matrix for request {index}: {error}"),
                 );
@@ -1962,17 +2194,17 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_new_with_buffer_fetcher(
     let feature_store = match NumericFeatureBufferStore::from_f64_column_matrices(matrices) {
         Ok(store) => store,
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             return DagMlDataStatusCode::ValidationError;
         }
     };
-    match InMemoryProvider::new(envelope, target_tables, feature_store) {
+    match InMemoryProviderState::new(envelope, target_tables, feature_store) {
         Ok(provider) => {
             *out_vtable = provider_vtable(Box::into_raw(Box::new(provider)).cast::<c_void>());
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -2016,15 +2248,14 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_buffer_manifest_jso
     clear_string(out_json);
     clear_string(error_out);
     if vtable.is_null() || (*vtable).user_data.is_null() {
-        set_string(error_out, "provider vtable or user_data is null");
+        set_error_message(error_out, "provider vtable or user_data is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
-    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
-    match provider
-        .feature_arena
-        .borrow()
-        .manifests()
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
+    match state
+        .provider
+        .feature_buffer_manifests()
         .and_then(|manifests| serde_json::to_string(&manifests).map_err(Into::into))
     {
         Ok(json) => {
@@ -2032,7 +2263,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_buffer_manifest_jso
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -2060,15 +2291,14 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_data_feature_buffer_manifes
     clear_string(out_json);
     clear_string(error_out);
     if vtable.is_null() || (*vtable).user_data.is_null() {
-        set_string(error_out, "provider vtable or user_data is null");
+        set_error_message(error_out, "provider vtable or user_data is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
 
-    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
-    match provider
-        .feature_arena
-        .borrow()
-        .bindings_for_data_handle(data_handle)
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
+    match state
+        .provider
+        .data_feature_buffer_bindings(data_handle)
         .and_then(|bindings| serde_json::to_string(&bindings).map_err(Into::into))
     {
         Ok(json) => {
@@ -2076,7 +2306,7 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_data_feature_buffer_manifes
             DagMlDataStatusCode::Ok
         }
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -2107,17 +2337,19 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_json(
     clear_string(out_json);
     clear_string(error_out);
     if vtable.is_null() || (*vtable).user_data.is_null() || selector_json.ptr.is_null() {
-        set_string(
+        set_error_message(
             error_out,
             "provider vtable, user_data or selector pointer is null",
         );
         return DagMlDataStatusCode::InvalidArgument;
     }
 
-    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
     let selector = slice::from_raw_parts(selector_json.ptr, selector_json.len);
-    match serde_json::from_slice::<ProviderFeatureCollationJsonRequest>(selector) {
-        Ok(request) => match provider_feature_collation_block(provider, view, &request)
+    match serde_json::from_slice::<ProviderFeatureCollationRequest>(selector) {
+        Ok(request) => match state
+            .provider
+            .feature_collation_block(view, &request)
             .and_then(|block| collate_feature_block(&block, &request.policy))
             .and_then(|tensor| serde_json::to_string(&tensor).map_err(Into::into))
         {
@@ -2126,12 +2358,12 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_json(
                 DagMlDataStatusCode::Ok
             }
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 DagMlDataStatusCode::ValidationError
             }
         },
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -2166,17 +2398,19 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_tensor_f6
         || selector_json.ptr.is_null()
         || out_tensor.is_null()
     {
-        set_string(
+        set_error_message(
             error_out,
             "provider vtable, user_data, selector pointer or tensor output is null",
         );
         return DagMlDataStatusCode::InvalidArgument;
     }
 
-    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
     let selector = slice::from_raw_parts(selector_json.ptr, selector_json.len);
-    match serde_json::from_slice::<ProviderFeatureCollationJsonRequest>(selector) {
-        Ok(request) => match provider_feature_collation_block(provider, view, &request)
+    match serde_json::from_slice::<ProviderFeatureCollationRequest>(selector) {
+        Ok(request) => match state
+            .provider
+            .feature_collation_block(view, &request)
             .and_then(|block| collate_feature_block(&block, &request.policy))
         {
             Ok(tensor) => {
@@ -2184,12 +2418,12 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_tensor_f6
                 DagMlDataStatusCode::Ok
             }
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 DagMlDataStatusCode::ValidationError
             }
         },
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -2225,17 +2459,19 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_tensor_f3
         || selector_json.ptr.is_null()
         || out_tensor.is_null()
     {
-        set_string(
+        set_error_message(
             error_out,
             "provider vtable, user_data, selector pointer or tensor output is null",
         );
         return DagMlDataStatusCode::InvalidArgument;
     }
 
-    let provider = &*((*vtable).user_data.cast::<InMemoryProvider>());
+    let state = &*((*vtable).user_data.cast::<InMemoryProviderState>());
     let selector = slice::from_raw_parts(selector_json.ptr, selector_json.len);
-    match serde_json::from_slice::<ProviderFeatureCollationJsonRequest>(selector) {
-        Ok(request) => match provider_feature_collation_block(provider, view, &request)
+    match serde_json::from_slice::<ProviderFeatureCollationRequest>(selector) {
+        Ok(request) => match state
+            .provider
+            .feature_collation_block(view, &request)
             .and_then(|block| collate_feature_block(&block, &request.policy))
             .and_then(tensor_to_c_f32)
         {
@@ -2244,12 +2480,12 @@ pub unsafe extern "C" fn dagmldata_inmemory_provider_feature_collation_tensor_f3
                 DagMlDataStatusCode::Ok
             }
             Err(error) => {
-                set_string(error_out, error.to_string());
+                set_display_error(error_out, error);
                 DagMlDataStatusCode::ValidationError
             }
         },
         Err(error) => {
-            set_string(error_out, error.to_string());
+            set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
         }
     }
@@ -2296,6 +2532,100 @@ unsafe fn set_string(out: *mut DagMlDataString, value: impl Into<String>) {
         return;
     }
     *out = owned_string(value);
+}
+
+/// Numeric ADR-11 code for generic C ABI boundary/argument errors that do not
+/// originate from a `DataError` (null pointers, malformed UTF-8): validation
+/// category (0), reserved C-ABI code id `0xFFFF`.
+const C_ABI_ARGUMENT_ERROR_CODE: u32 = 0x0000_FFFF;
+
+/// Build a structured descriptor for a plain boundary `message`, so the
+/// thread-local last-error stays valid JSON and carries a stable taxonomy.
+fn c_abi_argument_descriptor(message: &str) -> String {
+    serde_json::json!({
+        "category": "validation",
+        "code": "c_abi_argument",
+        "severity": "error",
+        "message": message,
+        "remediation_hint": "Pass valid, non-null arguments that satisfy the C ABI contract.",
+        "context": {"detail": message},
+    })
+    .to_string()
+}
+
+/// Record a plain boundary error: update the thread-local last-error with a
+/// generic descriptor and write the message to `out`. The thread-local is
+/// updated even when `out` is null so `dagmldata_last_error_*` stay accurate.
+unsafe fn set_error_message(out: *mut DagMlDataString, message: impl Into<String>) {
+    let message = message.into();
+    store_last_error(
+        &c_abi_argument_descriptor(&message),
+        C_ABI_ARGUMENT_ERROR_CODE,
+    );
+    set_string(out, message);
+}
+
+/// Record a boundary error in the thread-local last-error for handle-based entry
+/// points that have no `error_out` and signal failure only via the status code,
+/// so `dagmldata_last_error_*` stay consistent with the returned status.
+fn record_arg_error(message: &str) {
+    store_last_error(
+        &c_abi_argument_descriptor(message),
+        C_ABI_ARGUMENT_ERROR_CODE,
+    );
+}
+
+/// Record the true per-variant descriptor of a `DataError` in the thread-local
+/// last-error, for status-code-only paths (e.g. provider vtable callbacks) that
+/// would otherwise discard the error.
+fn record_data_error(error: &DataError) {
+    let payload = error
+        .descriptor_json()
+        .unwrap_or_else(|_| error.to_string());
+    store_last_error(&payload, error.error_code());
+}
+
+/// Emit a `DataError` to `error_out` (and the thread-local) with its true
+/// per-variant taxonomy, returning the `ValidationError` status. Used by parse
+/// helpers that own their own error reporting.
+unsafe fn data_error_status(
+    error_out: *mut DagMlDataString,
+    error: DataError,
+) -> DagMlDataStatusCode {
+    set_display_error(error_out, error);
+    DagMlDataStatusCode::ValidationError
+}
+
+/// Errors that can be lowered into a stable ADR-11 `DataError` descriptor at the
+/// C ABI boundary. Both the core `DataError` and the raw `serde_json::Error`
+/// produced by top-level payload parsing implement this, so every C ABI callsite
+/// emits the true per-variant taxonomy instead of a hardcoded category/code.
+trait IntoDataError {
+    fn into_data_error(self) -> DataError;
+}
+
+impl IntoDataError for DataError {
+    fn into_data_error(self) -> DataError {
+        self
+    }
+}
+
+impl IntoDataError for serde_json::Error {
+    fn into_data_error(self) -> DataError {
+        DataError::Serialization(self)
+    }
+}
+
+/// Write a structured ADR-11 descriptor for `error` into `out`. The descriptor
+/// carries the real category/code/severity/remediation_hint/context of the
+/// underlying `DataError` variant.
+unsafe fn set_display_error(out: *mut DagMlDataString, error: impl IntoDataError) {
+    let error = error.into_data_error();
+    let payload = error
+        .descriptor_json()
+        .unwrap_or_else(|_| error.to_string());
+    store_last_error(&payload, error.error_code());
+    set_string(out, payload);
 }
 
 /// Read a `DagMlDataString` produced by some other function (typically a
@@ -2487,6 +2817,16 @@ struct CoordinatorTargetArrowRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct CoordinatorMultiTargetArrowRequest {
+    envelope: CoordinatorDataPlanEnvelope,
+    materialization_request: CoordinatorDataMaterializationRequest,
+    view: DataView,
+    target_tables: Vec<CoordinatorTargetTable>,
+    #[serde(default = "default_owner_controller")]
+    owner_controller: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct CoordinatorFeatureArrowRequest {
     envelope: CoordinatorDataPlanEnvelope,
     materialization_request: CoordinatorDataMaterializationRequest,
@@ -2505,42 +2845,34 @@ struct CoordinatorFeatureFusionArrowRequest {
     policy: FeatureFusionPolicy,
 }
 
-fn default_owner_controller() -> String {
-    "controller:data.provider".to_string()
-}
-
-struct InMemoryProvider {
-    arena: CoordinatorHandleArena,
-    envelope: CoordinatorDataPlanEnvelope,
-    target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
-    feature_arena: RefCell<NumericFeatureBufferArena>,
-    // Borrowed pointer to a host-owned `InMemoryFittedAdapterStore`. The host
-    // is responsible for keeping the store alive while it stays attached to
-    // the provider and for clearing the attachment (by attaching a null
-    // handle) before destroying the store. The pointer is read inside a
-    // `Mutex` guard so concurrent attach/detach from multiple host threads
-    // never race the materialize path.
+/// C-ABI-side provider state: the modality-neutral [`InMemoryProvider`] plus a
+/// borrowed pointer to a host-owned `InMemoryFittedAdapterStore`.
+///
+/// The provider itself is `Send + Sync`; the borrowed store pointer is read only
+/// under the `Mutex` guard, so concurrent attach/detach from multiple host
+/// threads never races the materialize path. The host must keep the store alive
+/// while attached and clear the attachment (attach a null handle) before
+/// destroying it.
+struct InMemoryProviderState {
+    provider: InMemoryProvider,
     fitted_adapter_store: std::sync::Mutex<*const InMemoryFittedAdapterStore>,
 }
 
-// The fitted-adapter store pointer is only ever dereferenced while the
-// `Mutex` is held, and `InMemoryFittedAdapterStore` is itself `Send + Sync`,
-// so the borrowed pointer is safe to share across threads.
-unsafe impl Send for InMemoryProvider {}
-unsafe impl Sync for InMemoryProvider {}
+// SAFETY: the only field that is not already `Send + Sync` is the raw
+// fitted-adapter store pointer, which is dereferenced only under the `Mutex`
+// guard; `InMemoryFittedAdapterStore` is itself `Send + Sync`. The host
+// serializes vtable calls per the C ABI contract.
+unsafe impl Send for InMemoryProviderState {}
+unsafe impl Sync for InMemoryProviderState {}
 
-impl InMemoryProvider {
+impl InMemoryProviderState {
     fn new(
         envelope: CoordinatorDataPlanEnvelope,
         target_tables: BTreeMap<TargetId, CoordinatorTargetTable>,
         feature_store: NumericFeatureBufferStore,
     ) -> dag_ml_data_core::Result<Self> {
-        envelope.validate()?;
         Ok(Self {
-            arena: CoordinatorHandleArena::new(default_owner_controller())?,
-            envelope,
-            target_tables,
-            feature_arena: RefCell::new(NumericFeatureBufferArena::new(feature_store)),
+            provider: InMemoryProvider::new(envelope, target_tables, feature_store)?,
             fitted_adapter_store: std::sync::Mutex::new(std::ptr::null()),
         })
     }
@@ -2553,114 +2885,95 @@ struct CoordinatorFeatureCollationJsonRequest {
     policy: CollationPolicy,
 }
 
-#[derive(Debug, Deserialize)]
-struct ProviderFeatureFusionSelector {
-    feature_set_id: String,
-    sources: Vec<ProviderFeatureFusionSource>,
-    alignment: SampleAlignmentPlan,
-    #[serde(default)]
-    policy: FeatureFusionPolicy,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProviderFeatureCollationJsonRequest {
-    #[serde(default)]
-    feature_set_id: Option<String>,
-    #[serde(default)]
-    fusion: Option<ProviderFeatureFusionSelector>,
-    #[serde(default)]
-    policy: CollationPolicy,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProviderFeatureFusionSource {
-    source_id: SourceId,
-    feature_set_id: String,
-    #[serde(default)]
-    columns: Option<Vec<String>>,
-}
-
-fn parse_target_tables(
+unsafe fn parse_target_tables(
     target_tables_ptr: *const u8,
     target_tables_len: usize,
-) -> dag_ml_data_core::Result<BTreeMap<TargetId, CoordinatorTargetTable>> {
+    error_out: *mut DagMlDataString,
+) -> Result<BTreeMap<TargetId, CoordinatorTargetTable>, DagMlDataStatusCode> {
     if target_tables_ptr.is_null() {
         if target_tables_len != 0 {
-            return Err(dag_ml_data_core::DataError::Validation(
-                "target tables pointer is null".to_string(),
-            ));
+            // Inconsistent (null pointer, non-zero length) is a caller/ABI
+            // contract violation, not a data-contract failure.
+            set_error_message(
+                error_out,
+                "target tables pointer is null but length is non-zero",
+            );
+            return Err(DagMlDataStatusCode::InvalidArgument);
         }
         return Ok(BTreeMap::new());
     }
     if target_tables_len == 0 {
         return Ok(BTreeMap::new());
     }
-    let json = unsafe { slice::from_raw_parts(target_tables_ptr, target_tables_len) };
-    let tables = serde_json::from_slice::<Vec<CoordinatorTargetTable>>(json).map_err(|error| {
-        dag_ml_data_core::DataError::Validation(format!(
-            "failed to parse target tables JSON: {error}"
-        ))
-    })?;
+    let json = slice::from_raw_parts(target_tables_ptr, target_tables_len);
+    // Malformed JSON is an ADR-11 compatibility/serialization_error, not a data
+    // contract validation error.
+    let tables = serde_json::from_slice::<Vec<CoordinatorTargetTable>>(json)
+        .map_err(|error| data_error_status(error_out, DataError::Serialization(error)))?;
     let mut by_target = BTreeMap::new();
     for table in tables {
-        table.validate()?;
+        table
+            .validate()
+            .map_err(|error| data_error_status(error_out, error))?;
         let target_id = table.target_id.clone();
         if by_target.insert(target_id.clone(), table).is_some() {
-            return Err(dag_ml_data_core::DataError::Validation(format!(
-                "duplicate target table `{target_id}`"
-            )));
+            return Err(data_error_status(
+                error_out,
+                DataError::Validation(format!("duplicate target table `{target_id}`")),
+            ));
         }
     }
     Ok(by_target)
 }
 
-fn parse_feature_tables(
+unsafe fn parse_feature_tables(
     feature_tables_ptr: *const u8,
     feature_tables_len: usize,
-) -> dag_ml_data_core::Result<NumericFeatureBufferStore> {
+    error_out: *mut DagMlDataString,
+) -> Result<NumericFeatureBufferStore, DagMlDataStatusCode> {
     if feature_tables_ptr.is_null() {
         if feature_tables_len != 0 {
-            return Err(dag_ml_data_core::DataError::Validation(
-                "feature tables pointer is null".to_string(),
-            ));
+            set_error_message(
+                error_out,
+                "feature tables pointer is null but length is non-zero",
+            );
+            return Err(DagMlDataStatusCode::InvalidArgument);
         }
         return Ok(NumericFeatureBufferStore::default());
     }
     if feature_tables_len == 0 {
         return Ok(NumericFeatureBufferStore::default());
     }
-    let json = unsafe { slice::from_raw_parts(feature_tables_ptr, feature_tables_len) };
-    let tables = serde_json::from_slice::<Vec<CoordinatorFeatureTable>>(json).map_err(|error| {
-        dag_ml_data_core::DataError::Validation(format!(
-            "failed to parse feature tables JSON: {error}"
-        ))
-    })?;
+    let json = slice::from_raw_parts(feature_tables_ptr, feature_tables_len);
+    let tables = serde_json::from_slice::<Vec<CoordinatorFeatureTable>>(json)
+        .map_err(|error| data_error_status(error_out, DataError::Serialization(error)))?;
     NumericFeatureBufferStore::from_feature_tables(tables)
+        .map_err(|error| data_error_status(error_out, error))
 }
 
-fn parse_f64_feature_matrices(
+unsafe fn parse_f64_feature_matrices(
     feature_matrices_ptr: *const u8,
     feature_matrices_len: usize,
-) -> dag_ml_data_core::Result<NumericFeatureBufferStore> {
+    error_out: *mut DagMlDataString,
+) -> Result<NumericFeatureBufferStore, DagMlDataStatusCode> {
     if feature_matrices_ptr.is_null() {
         if feature_matrices_len != 0 {
-            return Err(dag_ml_data_core::DataError::Validation(
-                "f64 feature matrices pointer is null".to_string(),
-            ));
+            set_error_message(
+                error_out,
+                "f64 feature matrices pointer is null but length is non-zero",
+            );
+            return Err(DagMlDataStatusCode::InvalidArgument);
         }
         return Ok(NumericFeatureBufferStore::default());
     }
     if feature_matrices_len == 0 {
         return Ok(NumericFeatureBufferStore::default());
     }
-    let json = unsafe { slice::from_raw_parts(feature_matrices_ptr, feature_matrices_len) };
-    let matrices =
-        serde_json::from_slice::<Vec<NumericFeatureMatrixF64>>(json).map_err(|error| {
-            dag_ml_data_core::DataError::Validation(format!(
-                "failed to parse f64 feature matrices JSON: {error}"
-            ))
-        })?;
+    let json = slice::from_raw_parts(feature_matrices_ptr, feature_matrices_len);
+    let matrices = serde_json::from_slice::<Vec<NumericFeatureMatrixF64>>(json)
+        .map_err(|error| data_error_status(error_out, DataError::Serialization(error)))?;
     NumericFeatureBufferStore::from_f64_matrices(matrices)
+        .map_err(|error| data_error_status(error_out, error))
 }
 
 unsafe fn parse_f64_feature_matrix_views(
@@ -2976,28 +3289,29 @@ unsafe extern "C" fn provider_materialize(
     out_handle: *mut DagMlDataHandle,
 ) -> DagMlDataStatusCode {
     if user_data.is_null() || out_handle.is_null() || request_json.ptr.is_null() {
+        record_arg_error("provider materialize: user_data, out_handle or request json is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     *out_handle = 0;
-    let provider = &*(user_data.cast::<InMemoryProvider>());
+    let state = &*(user_data.cast::<InMemoryProviderState>());
     let request = match serde_json::from_slice::<CoordinatorDataMaterializationRequest>(
         slice::from_raw_parts(request_json.ptr, request_json.len),
     ) {
         Ok(request) => request,
-        Err(_) => return DagMlDataStatusCode::ValidationError,
+        Err(error) => {
+            record_data_error(&DataError::Serialization(error));
+            return DagMlDataStatusCode::ValidationError;
+        }
     };
-    match provider
-        .arena
-        .materialize(&provider.envelope, &request)
-        .and_then(|record| {
-            bind_data_feature_buffers(provider, &record)?;
-            Ok(record)
-        }) {
+    match state.provider.materialize(&request) {
         Ok(record) => {
             *out_handle = record.handle.handle;
             DagMlDataStatusCode::Ok
         }
-        Err(_) => DagMlDataStatusCode::ValidationError,
+        Err(error) => {
+            record_data_error(&error);
+            DagMlDataStatusCode::ValidationError
+        }
     }
 }
 
@@ -3008,23 +3322,30 @@ unsafe extern "C" fn provider_make_view(
     out_view: *mut DagMlDataHandle,
 ) -> DagMlDataStatusCode {
     if user_data.is_null() || out_view.is_null() || selector_json.ptr.is_null() {
+        record_arg_error("provider make_view: user_data, out_view or selector json is null");
         return DagMlDataStatusCode::InvalidArgument;
     }
     *out_view = 0;
-    let provider = &*(user_data.cast::<InMemoryProvider>());
+    let state = &*(user_data.cast::<InMemoryProviderState>());
     let view = match serde_json::from_slice::<DataView>(slice::from_raw_parts(
         selector_json.ptr,
         selector_json.len,
     )) {
         Ok(view) => view,
-        Err(_) => return DagMlDataStatusCode::ValidationError,
+        Err(error) => {
+            record_data_error(&DataError::Serialization(error));
+            return DagMlDataStatusCode::ValidationError;
+        }
     };
-    match provider.arena.make_view(data, &view) {
+    match state.provider.make_view(data, &view) {
         Ok(record) => {
             *out_view = record.handle.handle;
             DagMlDataStatusCode::Ok
         }
-        Err(_) => DagMlDataStatusCode::ValidationError,
+        Err(error) => {
+            record_data_error(&error);
+            DagMlDataStatusCode::ValidationError
+        }
     }
 }
 
@@ -3037,11 +3358,12 @@ unsafe extern "C" fn provider_view_identity(
     clear_arrow_array(out_arrow_array);
     clear_arrow_schema(out_arrow_schema);
     if user_data.is_null() || out_arrow_array.is_null() || out_arrow_schema.is_null() {
+        record_arg_error("provider view_identity: user_data or arrow out pointers are null");
         return DagMlDataStatusCode::InvalidArgument;
     }
-    let provider = &*(user_data.cast::<InMemoryProvider>());
-    match provider
-        .arena
+    let state = &*(user_data.cast::<InMemoryProviderState>());
+    match state
+        .provider
         .view_identity(view)
         .and_then(|relations| build_identity_relations_arrow(&relations))
     {
@@ -3050,7 +3372,10 @@ unsafe extern "C" fn provider_view_identity(
             *out_arrow_schema = Box::into_raw(Box::new(schema));
             DagMlDataStatusCode::Ok
         }
-        Err(_) => DagMlDataStatusCode::ValidationError,
+        Err(error) => {
+            record_data_error(&error);
+            DagMlDataStatusCode::ValidationError
+        }
     }
 }
 
@@ -3068,25 +3393,32 @@ unsafe extern "C" fn provider_target_arrow(
         || out_arrow_array.is_null()
         || out_arrow_schema.is_null()
     {
+        record_arg_error(
+            "provider target_arrow: user_data, target_name or arrow out pointers are null",
+        );
         return DagMlDataStatusCode::InvalidArgument;
     }
-    let provider = &*(user_data.cast::<InMemoryProvider>());
+    let state = &*(user_data.cast::<InMemoryProviderState>());
     let target_name =
         match std::str::from_utf8(slice::from_raw_parts(target_name.ptr, target_name.len)) {
             Ok(target_name) => target_name,
-            Err(_) => return DagMlDataStatusCode::ValidationError,
+            Err(_) => {
+                record_arg_error("provider target_arrow: target_name is not valid UTF-8");
+                return DagMlDataStatusCode::ValidationError;
+            }
         };
     let target_id = match TargetId::new(target_name) {
         Ok(target_id) => target_id,
-        Err(_) => return DagMlDataStatusCode::ValidationError,
+        Err(error) => {
+            record_data_error(&error);
+            return DagMlDataStatusCode::ValidationError;
+        }
     };
-    let target_table = match provider.target_tables.get(&target_id) {
-        Some(target_table) => target_table,
-        None => return DagMlDataStatusCode::ValidationError,
-    };
-    match provider
-        .arena
-        .target_values(view, target_table)
+    // A valid-but-absent target id is reported by `target_block` as a semantic
+    // data-validation failure, not a C ABI boundary/argument error.
+    match state
+        .provider
+        .target_block(view, &target_id)
         .and_then(|target| build_target_arrow(&target))
     {
         Ok((array, schema)) => {
@@ -3094,7 +3426,10 @@ unsafe extern "C" fn provider_target_arrow(
             *out_arrow_schema = Box::into_raw(Box::new(schema));
             DagMlDataStatusCode::Ok
         }
-        Err(_) => DagMlDataStatusCode::ValidationError,
+        Err(error) => {
+            record_data_error(&error);
+            DagMlDataStatusCode::ValidationError
+        }
     }
 }
 
@@ -3112,30 +3447,35 @@ unsafe extern "C" fn provider_feature_arrow(
         || out_arrow_array.is_null()
         || out_arrow_schema.is_null()
     {
+        record_arg_error(
+            "provider feature_arrow: user_data, feature_set_name or arrow out pointers are null",
+        );
         return DagMlDataStatusCode::InvalidArgument;
     }
-    let provider = &*(user_data.cast::<InMemoryProvider>());
+    let state = &*(user_data.cast::<InMemoryProviderState>());
     let feature_set_name = match std::str::from_utf8(slice::from_raw_parts(
         feature_set_name.ptr,
         feature_set_name.len,
     )) {
         Ok(feature_set_name) => feature_set_name,
-        Err(_) => return DagMlDataStatusCode::ValidationError,
+        Err(_) => {
+            record_arg_error("provider feature_arrow: feature_set_name is not valid UTF-8");
+            return DagMlDataStatusCode::ValidationError;
+        }
     };
     let result = if feature_set_name.trim_start().starts_with('{') {
         serde_json::from_str::<ProviderFeatureFusionSelector>(feature_set_name)
-            .map_err(|error| {
-                dag_ml_data_core::DataError::Validation(format!(
-                    "failed to parse feature fusion selector JSON: {error}"
-                ))
-            })
-            .and_then(|selector| provider_feature_fusion_block(provider, view, &selector))
+            .map_err(DataError::Serialization)
+            .and_then(|selector| state.provider.feature_fusion_block(view, &selector))
             .and_then(|features| build_feature_arrow(&features))
     } else {
         if feature_set_name.trim().is_empty() {
+            record_arg_error("provider feature_arrow: feature_set_name is empty");
             return DagMlDataStatusCode::ValidationError;
         }
-        provider_feature_block(provider, view, feature_set_name)
+        state
+            .provider
+            .feature_block(view, feature_set_name)
             .and_then(|features| build_feature_arrow(&features))
     };
     match result {
@@ -3144,7 +3484,10 @@ unsafe extern "C" fn provider_feature_arrow(
             *out_arrow_schema = Box::into_raw(Box::new(schema));
             DagMlDataStatusCode::Ok
         }
-        Err(_) => DagMlDataStatusCode::ValidationError,
+        Err(error) => {
+            record_data_error(&error);
+            DagMlDataStatusCode::ValidationError
+        }
     }
 }
 
@@ -3152,19 +3495,15 @@ unsafe extern "C" fn provider_release(user_data: *mut c_void, handle: DagMlDataH
     if user_data.is_null() {
         return;
     }
-    let provider = &*(user_data.cast::<InMemoryProvider>());
-    provider.arena.release_handle(handle);
-    provider
-        .feature_arena
-        .borrow_mut()
-        .release_data_handle(handle);
+    let state = &*(user_data.cast::<InMemoryProviderState>());
+    state.provider.release(handle);
 }
 
 unsafe extern "C" fn provider_destroy(user_data: *mut c_void) {
     if user_data.is_null() {
         return;
     }
-    drop(Box::from_raw(user_data.cast::<InMemoryProvider>()));
+    drop(Box::from_raw(user_data.cast::<InMemoryProviderState>()));
 }
 
 #[allow(dead_code)]
@@ -3269,6 +3608,15 @@ fn build_target_block(
     arena.target_values(view.handle.handle, &request.target_table)
 }
 
+fn build_multi_target_block(
+    request: &CoordinatorMultiTargetArrowRequest,
+) -> dag_ml_data_core::Result<CoordinatorMultiTargetBlock> {
+    let arena = CoordinatorHandleArena::new(&request.owner_controller)?;
+    let data = arena.materialize(&request.envelope, &request.materialization_request)?;
+    let view = arena.make_view(data.handle.handle, &request.view)?;
+    arena.multi_target_values(view.handle.handle, &request.target_tables)
+}
+
 fn build_feature_block(
     request: &CoordinatorFeatureArrowRequest,
 ) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
@@ -3276,119 +3624,6 @@ fn build_feature_block(
     let data = arena.materialize(&request.envelope, &request.materialization_request)?;
     let view = arena.make_view(data.handle.handle, &request.view)?;
     arena.feature_values(view.handle.handle, &request.feature_table)
-}
-
-fn bind_data_feature_buffers(
-    provider: &InMemoryProvider,
-    record: &CoordinatorDataHandleRecord,
-) -> dag_ml_data_core::Result<()> {
-    if let Ok(relations) = provider.arena.data_identity(record.handle.handle) {
-        provider.feature_arena.borrow_mut().bind_data_handle(
-            record.handle.handle,
-            &relations,
-            &record.output_representation,
-        )?;
-    }
-    Ok(())
-}
-
-fn provider_feature_block(
-    provider: &InMemoryProvider,
-    view_handle: u64,
-    feature_set_id: &str,
-) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
-    provider_feature_block_filtered(provider, view_handle, feature_set_id, None, None)
-}
-
-fn provider_feature_block_filtered(
-    provider: &InMemoryProvider,
-    view_handle: u64,
-    feature_set_id: &str,
-    source_id: Option<&SourceId>,
-    columns: Option<&[String]>,
-) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
-    let view_record = provider.arena.view_record(view_handle).ok_or_else(|| {
-        dag_ml_data_core::DataError::Validation(format!("unknown view handle `{view_handle}`"))
-    })?;
-    let parent_record = provider
-        .arena
-        .handle_record(view_record.parent_handle.handle)
-        .ok_or_else(|| {
-            dag_ml_data_core::DataError::Validation(format!(
-                "view `{view_handle}` parent data handle `{}` is not live",
-                view_record.parent_handle.handle
-            ))
-        })?;
-    let relations = provider.arena.view_identity(view_handle)?;
-    let selected_columns = if source_id.is_some() {
-        columns
-    } else {
-        columns.or(view_record.view.columns.as_deref())
-    };
-    provider.feature_arena.borrow().project_bound_relations(
-        parent_record.handle.handle,
-        feature_set_id,
-        &relations,
-        source_id,
-        selected_columns,
-    )
-}
-
-fn provider_feature_fusion_block(
-    provider: &InMemoryProvider,
-    view_handle: u64,
-    selector: &ProviderFeatureFusionSelector,
-) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
-    if selector.sources.is_empty() {
-        return Err(dag_ml_data_core::DataError::Validation(
-            "feature fusion selector requires at least one source".to_string(),
-        ));
-    }
-    let mut sources = Vec::with_capacity(selector.sources.len());
-    for source in &selector.sources {
-        let block = provider_feature_block_filtered(
-            provider,
-            view_handle,
-            &source.feature_set_id,
-            Some(&source.source_id),
-            source.columns.as_deref(),
-        )?;
-        sources.push(SourceFeatureBlock {
-            source_id: source.source_id.clone(),
-            block,
-        });
-    }
-    fuse_feature_blocks(
-        selector.feature_set_id.clone(),
-        &sources,
-        &selector.alignment,
-        &selector.policy,
-    )
-}
-
-fn provider_feature_collation_block(
-    provider: &InMemoryProvider,
-    view_handle: u64,
-    selector: &ProviderFeatureCollationJsonRequest,
-) -> dag_ml_data_core::Result<CoordinatorFeatureBlock> {
-    match (&selector.feature_set_id, &selector.fusion) {
-        (Some(feature_set_id), None) => {
-            if feature_set_id.trim().is_empty() {
-                return Err(dag_ml_data_core::DataError::Validation(
-                    "feature collation selector feature_set_id is empty".to_string(),
-                ));
-            }
-            provider_feature_block(provider, view_handle, feature_set_id)
-        }
-        (None, Some(fusion)) => provider_feature_fusion_block(provider, view_handle, fusion),
-        (Some(_), Some(_)) => Err(dag_ml_data_core::DataError::Validation(
-            "feature collation selector must not specify both feature_set_id and fusion"
-                .to_string(),
-        )),
-        (None, None) => Err(dag_ml_data_core::DataError::Validation(
-            "feature collation selector requires feature_set_id or fusion".to_string(),
-        )),
-    }
 }
 
 fn build_target_arrow(
@@ -3430,6 +3665,81 @@ fn build_target_arrow(
     Ok((
         struct_array(target.sample_ids.len(), child_arrays),
         struct_schema("coordinator_target", child_schemas)?,
+    ))
+}
+
+fn build_multi_target_arrow(
+    targets: &CoordinatorMultiTargetBlock,
+) -> dag_ml_data_core::Result<(ArrowArray, ArrowSchema)> {
+    if targets.values.len() != targets.target_ids.len()
+        || targets.validity_masks.len() != targets.target_ids.len()
+    {
+        return Err(dag_ml_data_core::DataError::Validation(
+            "multi-target block target/value/mask lengths differ".to_string(),
+        ));
+    }
+    let mut child_arrays = vec![Box::into_raw(Box::new(string_array(
+        targets
+            .sample_ids
+            .iter()
+            .map(|sample_id| Some(sample_id.as_str())),
+    )?))];
+    let mut child_schemas = vec![Box::into_raw(Box::new(field_schema(
+        "sample_id",
+        "u",
+        false,
+    )?))];
+
+    for (target_idx, target_id) in targets.target_ids.iter().enumerate() {
+        let values = targets.values.get(target_idx).ok_or_else(|| {
+            dag_ml_data_core::DataError::Validation(format!(
+                "multi-target block missing values for target `{target_id}`"
+            ))
+        })?;
+        let validity = targets.validity_masks.get(target_idx).ok_or_else(|| {
+            dag_ml_data_core::DataError::Validation(format!(
+                "multi-target block missing validity mask for target `{target_id}`"
+            ))
+        })?;
+        if values.len() != targets.sample_ids.len() || validity.len() != targets.sample_ids.len() {
+            return Err(dag_ml_data_core::DataError::Validation(format!(
+                "multi-target block target `{target_id}` is not aligned to sample_ids"
+            )));
+        }
+        let numeric_values = values
+            .iter()
+            .zip(validity.iter())
+            .map(|(value, valid)| {
+                if !*valid || value.is_null() {
+                    return Ok(None);
+                }
+                match value {
+                    serde_json::Value::Number(number) => {
+                        number.as_f64().map(Some).ok_or_else(|| {
+                            dag_ml_data_core::DataError::Validation(format!(
+                                "target `{target_id}` contains a non-f64 numeric value"
+                            ))
+                        })
+                    }
+                    _ => Err(dag_ml_data_core::DataError::Validation(format!(
+                        "target `{target_id}` Arrow smoke only supports numeric or null values"
+                    ))),
+                }
+            })
+            .collect::<dag_ml_data_core::Result<Vec<_>>>()?;
+        child_arrays.push(Box::into_raw(Box::new(f64_array(
+            numeric_values.into_iter(),
+        ))));
+        child_schemas.push(Box::into_raw(Box::new(field_schema(
+            target_id.as_str(),
+            "g",
+            true,
+        )?)));
+    }
+
+    Ok((
+        struct_array(targets.sample_ids.len(), child_arrays),
+        struct_schema("coordinator_multi_target", child_schemas)?,
     ))
 }
 
@@ -3799,6 +4109,238 @@ mod tests {
         unsafe {
             dagmldata_string_free(fingerprint);
         }
+    }
+
+    #[test]
+    fn schema_fingerprint_abi_validates_nirs4all_lite_contract_fields() {
+        let schema = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/schema_nirs4all_lite_contract.json"
+        );
+        let mut fingerprint = DagMlDataString::default();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_schema_fingerprint_json(
+                schema.as_ptr(),
+                schema.len(),
+                &mut fingerprint,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(!fingerprint.ptr.is_null());
+        assert!(error.ptr.is_null());
+        unsafe {
+            dagmldata_string_free(fingerprint);
+        }
+
+        let mut invalid: serde_json::Value = serde_json::from_slice(schema).unwrap();
+        invalid["sources"][0]["shape_contract"]["axis_sizes"]["wavelength"]["exact"] =
+            serde_json::json!(999);
+        let invalid = serde_json::to_vec(&invalid).unwrap();
+        let mut fingerprint = DagMlDataString::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_schema_fingerprint_json(
+                invalid.as_ptr(),
+                invalid.len(),
+                &mut fingerprint,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(fingerprint.ptr.is_null());
+        assert!(!error.ptr.is_null());
+        let message = unsafe { CStr::from_ptr(error.ptr.cast()) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(message.contains("shape contract"));
+        unsafe {
+            dagmldata_string_free(error);
+        }
+    }
+
+    #[test]
+    fn last_error_accessors_expose_structured_taxonomy() {
+        // Malformed JSON -> compatibility (8) / serialization_error (1) -> 0x0008_0001.
+        let malformed = b"{";
+        let mut fingerprint = DagMlDataString::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_schema_fingerprint_json(
+                malformed.as_ptr(),
+                malformed.len(),
+                &mut fingerprint,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert_eq!(dagmldata_last_error_code(), 0x0008_0001);
+
+        let mut last = DagMlDataString::default();
+        let last_status = unsafe { dagmldata_last_error_json(&mut last) };
+        assert_eq!(last_status, DagMlDataStatusCode::Ok);
+        assert!(!last.ptr.is_null());
+        let json = unsafe { CStr::from_ptr(last.ptr.cast()) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        let descriptor: serde_json::Value =
+            serde_json::from_str(&json).expect("last error descriptor json");
+        assert_eq!(descriptor["category"], "compatibility");
+        assert_eq!(descriptor["code"], "serialization_error");
+        unsafe {
+            dagmldata_string_free(error);
+            dagmldata_string_free(last);
+        }
+    }
+
+    #[test]
+    fn last_error_records_boundary_argument_errors() {
+        // A null-pointer (InvalidArgument) failure must still update the
+        // thread-local so it is never stale relative to the returned error.
+        let mut fingerprint = DagMlDataString::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_schema_fingerprint_json(std::ptr::null(), 0, &mut fingerprint, &mut error)
+        };
+        assert_eq!(status, DagMlDataStatusCode::InvalidArgument);
+        assert_eq!(dagmldata_last_error_code(), C_ABI_ARGUMENT_ERROR_CODE);
+
+        let mut last = DagMlDataString::default();
+        let last_status = unsafe { dagmldata_last_error_json(&mut last) };
+        assert_eq!(last_status, DagMlDataStatusCode::Ok);
+        let json = unsafe { CStr::from_ptr(last.ptr.cast()) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        let descriptor: serde_json::Value =
+            serde_json::from_str(&json).expect("boundary descriptor json");
+        assert_eq!(descriptor["category"], "validation");
+        assert_eq!(descriptor["code"], "c_abi_argument");
+        unsafe {
+            dagmldata_string_free(error);
+            dagmldata_string_free(last);
+        }
+    }
+
+    #[test]
+    fn validates_fold_set_json_over_abi() {
+        let fold_set = br#"{
+  "id": "cv.repetition.safe",
+  "sample_ids": ["S001", "S002"],
+  "folds": [
+    {
+      "fold_id": "fold:0",
+      "train_sample_ids": ["S002"],
+      "validation_sample_ids": ["S001"]
+    },
+    {
+      "fold_id": "fold:1",
+      "train_sample_ids": ["S001"],
+      "validation_sample_ids": ["S002"]
+    }
+  ]
+}"#;
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_fold_set_validate_json(fold_set.as_ptr(), fold_set.len(), &mut error)
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut fingerprint = DagMlDataString::default();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_fold_set_fingerprint_json(
+                fold_set.as_ptr(),
+                fold_set.len(),
+                &mut fingerprint,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        let fingerprint = unsafe { string_value(fingerprint) };
+        assert_eq!(fingerprint.len(), 64);
+        assert!(error.ptr.is_null());
+
+        let mut invalid: serde_json::Value = serde_json::from_slice(fold_set).unwrap();
+        invalid["folds"][0]["validation_sample_ids"] = serde_json::json!(["S001", "S002"]);
+        let invalid = serde_json::to_vec(&invalid).unwrap();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_fold_set_validate_json(invalid.as_ptr(), invalid.len(), &mut error)
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        let message = unsafe { string_value(error) };
+        assert!(
+            message.contains("train/validation overlap"),
+            "unexpected: {message}"
+        );
+    }
+
+    #[test]
+    fn fold_set_abi_rejects_relation_group_leakage() {
+        let fold_set = br#"{
+  "id": "cv.repetition.safe",
+  "sample_ids": ["S001", "S002"],
+  "folds": [
+    {
+      "fold_id": "fold:0",
+      "train_sample_ids": ["S002"],
+      "validation_sample_ids": ["S001"]
+    },
+    {
+      "fold_id": "fold:1",
+      "train_sample_ids": ["S001"],
+      "validation_sample_ids": ["S002"]
+    }
+  ]
+}"#;
+        let relations = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/sample_relations_grouped_augmented.json"
+        );
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_fold_set_validate_against_relations_json(
+                fold_set.as_ptr(),
+                fold_set.len(),
+                relations.as_ptr(),
+                relations.len(),
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut leaking_relations: serde_json::Value = serde_json::from_slice(relations).unwrap();
+        for row in leaking_relations["rows"].as_array_mut().unwrap() {
+            if row["sample_id"] == "S002" {
+                row["group_id"] = serde_json::json!("plant.A");
+            }
+        }
+        let leaking_relations = serde_json::to_vec(&leaking_relations).unwrap();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_fold_set_validate_against_relations_json(
+                fold_set.as_ptr(),
+                fold_set.len(),
+                leaking_relations.as_ptr(),
+                leaking_relations.len(),
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        let message = unsafe { string_value(error) };
+        assert!(message.contains("leaks group"), "unexpected: {message}");
     }
 
     #[test]
@@ -4188,6 +4730,83 @@ mod tests {
                 vec![Some("S001".to_string())]
             );
             assert_eq!(f64_values(array_children[2]), vec![Some(42.0)]);
+            dagmldata_arrow_array_free(array);
+            dagmldata_arrow_schema_free(schema);
+        }
+    }
+
+    #[test]
+    fn exports_coordinator_multi_target_arrow_over_abi() {
+        let envelope: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        let materialization_request: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        ))
+        .unwrap();
+        let request = serde_json::json!({
+            "envelope": envelope,
+            "materialization_request": materialization_request,
+            "view": {
+                "sample_ids": ["S002", "S001"],
+                "include_augmented": false
+            },
+            "target_tables": [
+                {
+                    "target_id": "y",
+                    "values": [
+                        {"sample_id": "S001", "value": 42.0},
+                        {"sample_id": "S002", "value": 7.0}
+                    ]
+                },
+                {
+                    "target_id": "protein",
+                    "values": [
+                        {"sample_id": "S001", "value": 12.5}
+                    ]
+                }
+            ]
+        });
+        let request = serde_json::to_vec(&request).unwrap();
+        let mut array = std::ptr::null_mut();
+        let mut schema = std::ptr::null_mut();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_coordinator_multi_target_arrow_json(
+                request.as_ptr(),
+                request.len(),
+                &mut array,
+                &mut schema,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+        unsafe {
+            assert_eq!((*array).length, 2);
+            assert_eq!((*array).n_children, 3);
+            assert_eq!(CStr::from_ptr((*schema).format).to_str().unwrap(), "+s");
+            let array_children =
+                slice::from_raw_parts((*array).children, (*array).n_children as usize);
+            assert_eq!(
+                utf8_values(array_children[0]),
+                vec![Some("S002".to_string()), Some("S001".to_string())]
+            );
+            assert_eq!(f64_values(array_children[1]), vec![Some(7.0), Some(42.0)]);
+            assert_eq!(f64_values(array_children[2]), vec![None, Some(12.5)]);
+            let schema_children =
+                slice::from_raw_parts((*schema).children, (*schema).n_children as usize);
+            assert_eq!(
+                CStr::from_ptr((*schema_children[1]).name).to_str().unwrap(),
+                "y"
+            );
+            assert_eq!(
+                CStr::from_ptr((*schema_children[2]).name).to_str().unwrap(),
+                "protein"
+            );
             dagmldata_arrow_array_free(array);
             dagmldata_arrow_schema_free(schema);
         }
@@ -5079,6 +5698,389 @@ mod tests {
         }
     }
 
+    /// Phase A: prove that one modality-neutral provider transports several
+    /// distinct modalities through a single code path.
+    ///
+    /// Each case is a different modality expressed purely with the generic
+    /// contract vocabulary — a free `modality` string plus an `AxisKind`
+    /// (`Wavelength`, `Feature`, `Time`, `Variant`). The vocabulary has no
+    /// modality-specific *types*: the only modality-bearing fields are free
+    /// strings (`modality`, `type_id`, the representation id) and the generic
+    /// `AxisKind` enum, and the provider code path never branches on any of
+    /// them. The modality schema is threaded through the provider for real —
+    /// the envelope's `schema_fingerprint` is the digest of the modality
+    /// `DatasetSchema`, so a different `AxisKind`/`modality` yields a different
+    /// digest that the request must carry to materialize. The loop body that
+    /// drives the provider (`new_with_f64_features_json -> materialize ->
+    /// make_view -> feature_arrow`) is byte-for-byte identical for every case
+    /// and asserts the same materialized output, so the only thing that varies
+    /// between modalities is the schema. That is the "zero per-modality code"
+    /// claim made concrete. The companion negative test
+    /// `inmemory_provider_refuses_feature_buffer_with_mismatched_representation`
+    /// shows the provider really binds on the representation rather than
+    /// special-casing these names.
+    #[test]
+    fn inmemory_provider_materializes_modalities_through_one_provider_code_path() {
+        use dag_ml_data_core::{AxisKind, AxisSpec, RepresentationSpec, SignalKind, TypeId};
+
+        struct ModalityCase {
+            representation_id: &'static str,
+            modality: &'static str,
+            type_id: &'static str,
+            axis_name: &'static str,
+            axis_kind: AxisKind,
+            axis_unit: Option<&'static str>,
+            container: &'static str,
+            signal_type: Option<SignalKind>,
+        }
+
+        let cases = [
+            ModalityCase {
+                representation_id: "signal_1d",
+                modality: "nir",
+                type_id: "dense_signal",
+                axis_name: "wavelength",
+                axis_kind: AxisKind::Wavelength,
+                axis_unit: Some("nm"),
+                container: "ndarray",
+                signal_type: Some(SignalKind::Reflectance),
+            },
+            ModalityCase {
+                representation_id: "tabular_numeric",
+                modality: "tabular",
+                type_id: "table",
+                axis_name: "feature",
+                axis_kind: AxisKind::Feature,
+                axis_unit: None,
+                container: "dataframe",
+                signal_type: None,
+            },
+            ModalityCase {
+                representation_id: "time_series",
+                modality: "timeseries",
+                type_id: "dense_series",
+                axis_name: "time",
+                axis_kind: AxisKind::Time,
+                axis_unit: Some("s"),
+                container: "ndarray",
+                signal_type: None,
+            },
+            ModalityCase {
+                representation_id: "marker_panel",
+                modality: "markers",
+                type_id: "genotype",
+                axis_name: "variant",
+                axis_kind: AxisKind::Variant,
+                axis_unit: None,
+                container: "ndarray",
+                signal_type: None,
+            },
+        ];
+
+        for case in cases {
+            let representation_id = RepresentationId::new(case.representation_id).unwrap();
+
+            // 1. The generic contract vocabulary expresses this modality with no
+            //    modality-specific type: a `SourceDescriptor` carrying the free
+            //    `modality` string and a native representation whose non-sample
+            //    axis is the modality's `AxisKind`.
+            let native_representation = RepresentationSpec {
+                id: representation_id.clone(),
+                type_id: TypeId::new(case.type_id).unwrap(),
+                rank: Some(2),
+                axes: vec![
+                    AxisSpec {
+                        name: "sample".to_string(),
+                        kind: AxisKind::Sample,
+                        unit: None,
+                        size: Some(3),
+                        variable: false,
+                        coordinates: None,
+                    },
+                    AxisSpec {
+                        name: case.axis_name.to_string(),
+                        kind: case.axis_kind.clone(),
+                        unit: case.axis_unit.map(str::to_string),
+                        size: Some(2),
+                        variable: false,
+                        coordinates: None,
+                    },
+                ],
+                container: case.container.to_string(),
+                dtype: Some("float64".to_string()),
+                sparse: false,
+                ragged: false,
+                signal_type: case.signal_type.clone(),
+            };
+            let schema =
+                single_source_dataset_schema(case.modality, case.type_id, native_representation);
+            schema.validate().unwrap();
+            let source = &schema.sources[0];
+            assert_eq!(source.modality, case.modality);
+            assert_eq!(source.native_representation.axes[1].kind, case.axis_kind);
+            assert_eq!(source.native_representation.id, representation_id);
+
+            // 2. The same provider code path transports this modality. Only the
+            //    modality schema changes between iterations; the envelope's
+            //    schema_fingerprint is the digest of that schema, so the
+            //    modality is bound into materialize-time validation.
+            let (envelope, materialization_request) =
+                single_modality_provider_fixture(&schema, &representation_id);
+            let target_tables = b"[]";
+            let feature_matrices = serde_json::to_vec(&serde_json::json!([
+                {
+                    "feature_set_id": "x",
+                    "representation_id": case.representation_id,
+                    "feature_names": ["f0", "f1"],
+                    "observation_ids": ["obs.s1", "obs.s2", "obs.s3"],
+                    "values": [1.0, 10.0, 2.0, 20.0, 3.0, 30.0],
+                    "validity_mask": [true, true, true, true, true, true]
+                }
+            ]))
+            .unwrap();
+            let mut vtable = empty_vtable();
+            let mut error = DagMlDataString::default();
+            let status = unsafe {
+                dagmldata_inmemory_provider_new_with_f64_features_json(
+                    envelope.as_ptr(),
+                    envelope.len(),
+                    target_tables.as_ptr(),
+                    target_tables.len(),
+                    feature_matrices.as_ptr(),
+                    feature_matrices.len(),
+                    &mut vtable,
+                    &mut error,
+                )
+            };
+            assert_eq!(status, DagMlDataStatusCode::Ok);
+            assert!(error.ptr.is_null());
+
+            let mut data_handle = 0;
+            let status = unsafe {
+                vtable.materialize.unwrap()(
+                    vtable.user_data,
+                    0,
+                    DagMlDataBytesView {
+                        ptr: materialization_request.as_ptr(),
+                        len: materialization_request.len(),
+                    },
+                    &mut data_handle,
+                )
+            };
+            assert_eq!(status, DagMlDataStatusCode::Ok);
+
+            let view_json = serde_json::to_vec(&serde_json::json!({
+                "sample_ids": ["s1", "s2", "s3"],
+                "include_augmented": false
+            }))
+            .unwrap();
+            let mut view_handle = 0;
+            let status = unsafe {
+                vtable.make_view.unwrap()(
+                    vtable.user_data,
+                    data_handle,
+                    DagMlDataBytesView {
+                        ptr: view_json.as_ptr(),
+                        len: view_json.len(),
+                    },
+                    &mut view_handle,
+                )
+            };
+            assert_eq!(status, DagMlDataStatusCode::Ok);
+
+            let mut feature_array = std::ptr::null_mut();
+            let mut feature_schema = std::ptr::null_mut();
+            let feature_set_name = b"x";
+            let status = unsafe {
+                vtable.feature_arrow.unwrap()(
+                    vtable.user_data,
+                    view_handle,
+                    DagMlDataBytesView {
+                        ptr: feature_set_name.as_ptr(),
+                        len: feature_set_name.len(),
+                    },
+                    &mut feature_array,
+                    &mut feature_schema,
+                )
+            };
+            assert_eq!(status, DagMlDataStatusCode::Ok);
+            unsafe {
+                // Columns: [observation_id, sample_id, f0, f1] — identical for
+                // every modality.
+                assert_eq!((*feature_array).n_children, 4);
+                let array_children = slice::from_raw_parts(
+                    (*feature_array).children,
+                    (*feature_array).n_children as usize,
+                );
+                assert_eq!(
+                    utf8_values(array_children[0]),
+                    vec![
+                        Some("obs.s1".to_string()),
+                        Some("obs.s2".to_string()),
+                        Some("obs.s3".to_string()),
+                    ]
+                );
+                assert_eq!(
+                    utf8_values(array_children[1]),
+                    vec![
+                        Some("s1".to_string()),
+                        Some("s2".to_string()),
+                        Some("s3".to_string()),
+                    ]
+                );
+                assert_eq!(
+                    f64_values(array_children[2]),
+                    vec![Some(1.0), Some(2.0), Some(3.0)]
+                );
+                assert_eq!(
+                    f64_values(array_children[3]),
+                    vec![Some(10.0), Some(20.0), Some(30.0)]
+                );
+                dagmldata_arrow_array_free(feature_array);
+                dagmldata_arrow_schema_free(feature_schema);
+                vtable.release.unwrap()(vtable.user_data, view_handle);
+                vtable.release.unwrap()(vtable.user_data, data_handle);
+                dagmldata_inmemory_provider_destroy(&mut vtable);
+            }
+        }
+    }
+
+    /// Companion to `inmemory_provider_materializes_modalities_through_one_provider_code_path`:
+    /// the modality transport is real binding, not name special-casing. The
+    /// schema/plan materialize `tabular_numeric`, but the feature buffer is
+    /// tagged with a different representation (`signal_1d`). The provider binds
+    /// feature buffers by representation at materialize time, so the buffer is
+    /// never bound and `feature_arrow` is refused. This is what stops the
+    /// positive test from passing vacuously if the provider ignored the
+    /// representation.
+    #[test]
+    fn inmemory_provider_refuses_feature_buffer_with_mismatched_representation() {
+        use dag_ml_data_core::{AxisKind, AxisSpec, RepresentationSpec};
+
+        let materialized = RepresentationId::new("tabular_numeric").unwrap();
+        let native_representation = RepresentationSpec {
+            id: materialized.clone(),
+            type_id: dag_ml_data_core::TypeId::new("table").unwrap(),
+            rank: Some(2),
+            axes: vec![
+                AxisSpec {
+                    name: "sample".to_string(),
+                    kind: AxisKind::Sample,
+                    unit: None,
+                    size: Some(3),
+                    variable: false,
+                    coordinates: None,
+                },
+                AxisSpec {
+                    name: "feature".to_string(),
+                    kind: AxisKind::Feature,
+                    unit: None,
+                    size: Some(2),
+                    variable: false,
+                    coordinates: None,
+                },
+            ],
+            container: "dataframe".to_string(),
+            dtype: Some("float64".to_string()),
+            sparse: false,
+            ragged: false,
+            signal_type: None,
+        };
+        let schema = single_source_dataset_schema("tabular", "table", native_representation);
+        schema.validate().unwrap();
+        let (envelope, materialization_request) =
+            single_modality_provider_fixture(&schema, &materialized);
+
+        // The feature buffer is tagged with a representation that does NOT match
+        // the materialized output representation.
+        let feature_matrices = serde_json::to_vec(&serde_json::json!([
+            {
+                "feature_set_id": "x",
+                "representation_id": "signal_1d",
+                "feature_names": ["f0", "f1"],
+                "observation_ids": ["obs.s1", "obs.s2", "obs.s3"],
+                "values": [1.0, 10.0, 2.0, 20.0, 3.0, 30.0],
+                "validity_mask": [true, true, true, true, true, true]
+            }
+        ]))
+        .unwrap();
+        let target_tables = b"[]";
+        let mut vtable = empty_vtable();
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_inmemory_provider_new_with_f64_features_json(
+                envelope.as_ptr(),
+                envelope.len(),
+                target_tables.as_ptr(),
+                target_tables.len(),
+                feature_matrices.as_ptr(),
+                feature_matrices.len(),
+                &mut vtable,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        let mut data_handle = 0;
+        let status = unsafe {
+            vtable.materialize.unwrap()(
+                vtable.user_data,
+                0,
+                DagMlDataBytesView {
+                    ptr: materialization_request.as_ptr(),
+                    len: materialization_request.len(),
+                },
+                &mut data_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let view_json = serde_json::to_vec(&serde_json::json!({
+            "sample_ids": ["s1", "s2", "s3"],
+            "include_augmented": false
+        }))
+        .unwrap();
+        let mut view_handle = 0;
+        let status = unsafe {
+            vtable.make_view.unwrap()(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: view_json.as_ptr(),
+                    len: view_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+
+        let mut feature_array = std::ptr::null_mut();
+        let mut feature_schema = std::ptr::null_mut();
+        let feature_set_name = b"x";
+        let status = unsafe {
+            vtable.feature_arrow.unwrap()(
+                vtable.user_data,
+                view_handle,
+                DagMlDataBytesView {
+                    ptr: feature_set_name.as_ptr(),
+                    len: feature_set_name.len(),
+                },
+                &mut feature_array,
+                &mut feature_schema,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(feature_array.is_null());
+        assert!(feature_schema.is_null());
+
+        unsafe {
+            vtable.release.unwrap()(vtable.user_data, view_handle);
+            vtable.release.unwrap()(vtable.user_data, data_handle);
+            dagmldata_inmemory_provider_destroy(&mut vtable);
+        }
+    }
+
     #[test]
     fn inmemory_provider_refuses_unbound_feature_buffers_for_source_scoped_handle() {
         let (envelope, materialization_request) = multisource_provider_fixture();
@@ -5907,7 +6909,7 @@ mod tests {
         let state = &mut *user_data.cast::<FetcherTestState>();
         let requested = std::slice::from_raw_parts(feature_set_id.ptr, feature_set_id.len);
         if requested != state.feature_set_id.as_slice() {
-            set_string(error_out, "fetcher saw unexpected feature_set_id");
+            set_error_message(error_out, "fetcher saw unexpected feature_set_id");
             return DagMlDataStatusCode::ValidationError;
         }
         state.feature_names = state
@@ -5971,7 +6973,7 @@ mod tests {
         _out_view: *mut DagMlDataFeatureMatrixF64ColumnarView,
         error_out: *mut DagMlDataString,
     ) -> DagMlDataStatusCode {
-        set_string(error_out, "fetcher deliberately refused");
+        set_error_message(error_out, "fetcher deliberately refused");
         DagMlDataStatusCode::ValidationError
     }
 
@@ -5993,7 +6995,7 @@ mod tests {
             out_view,
             error_out,
         );
-        set_string(error_out, "ignored on success");
+        set_error_message(error_out, "ignored on success");
         status
     }
 
@@ -6937,6 +7939,128 @@ mod tests {
             return Vec::new();
         }
         slice::from_raw_parts(array.ptr, array.len).to_vec()
+    }
+
+    /// Builds a single-source `DatasetSchema` (samples `s1..s3` on source
+    /// `src`) wrapping `native_representation` under the free `modality` string
+    /// and `type_id`. Used by the Phase A modality tests to express each
+    /// modality with nothing but generic contract vocabulary.
+    fn single_source_dataset_schema(
+        modality: &str,
+        type_id: &str,
+        native_representation: dag_ml_data_core::RepresentationSpec,
+    ) -> DatasetSchema {
+        use dag_ml_data_core::{SourceDescriptor, SourceGranularity, TypeId};
+
+        DatasetSchema {
+            dataset_id: format!("{modality}-dataset"),
+            sample_ids: vec![
+                SampleId::new("s1").unwrap(),
+                SampleId::new("s2").unwrap(),
+                SampleId::new("s3").unwrap(),
+            ],
+            sources: vec![SourceDescriptor {
+                id: SourceId::new("src").unwrap(),
+                name: format!("{modality} source"),
+                type_id: TypeId::new(type_id).unwrap(),
+                modality: modality.to_string(),
+                native_representation,
+                sample_key: "sample_id".to_string(),
+                granularity: SourceGranularity::PerSample,
+                schema: BTreeMap::new(),
+                tags: BTreeMap::new(),
+                shape_contract: None,
+            }],
+            targets: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            metadata_schema: None,
+            groups: Vec::new(),
+            folds: Vec::new(),
+        }
+    }
+
+    /// Builds an envelope + materialization request from a real modality
+    /// `DatasetSchema`, with three unrepeated observations (`obs.s1..obs.s3`)
+    /// mapped to samples `s1..s3` on source `src`.
+    ///
+    /// The envelope is built with `CoordinatorDataPlanEnvelope::from_parts`, so
+    /// the `schema_fingerprint` is the genuine digest of `schema` (which carries
+    /// the modality's `SourceDescriptor` + `AxisKind`), the `plan_fingerprint`
+    /// is computed from the plan, and the `relation_fingerprint` /
+    /// `coordinator_relations` are derived from the relation table — nothing is
+    /// guessed. The request's fingerprints are taken straight from the envelope,
+    /// so a different modality (hence a different schema digest) threads all the
+    /// way through the provider's materialize-time validation. The plan shape is
+    /// identical across modalities; only `schema`/`representation_id` differ.
+    fn single_modality_provider_fixture(
+        schema: &DatasetSchema,
+        representation_id: &RepresentationId,
+    ) -> (Vec<u8>, Vec<u8>) {
+        use std::collections::BTreeMap;
+
+        use dag_ml_data_core::{
+            CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, DataPlan,
+            DataPlanStep, DataPlanStepKind, FitScope, SampleRelation, SampleRelationTable,
+        };
+
+        let source = SourceId::new("src").unwrap();
+        let plan = DataPlan {
+            id: format!("modality-{representation_id}"),
+            steps: vec![DataPlanStep {
+                kind: DataPlanStepKind::Materialize,
+                source_id: Some(source.clone()),
+                adapter_id: None,
+                input_representation: None,
+                output_representation: Some(representation_id.clone()),
+                fit_scope: FitScope::Stateless,
+                requires_user_choice: false,
+                metadata: BTreeMap::new(),
+            }],
+            output_representation: representation_id.clone(),
+            issues: Vec::new(),
+        };
+        let relation = |observation: &str, sample: &str| SampleRelation {
+            observation_id: ObservationId::new(observation).unwrap(),
+            sample_id: SampleId::new(sample).unwrap(),
+            source_id: Some(source.clone()),
+            target_id: None,
+            group_id: None,
+            origin_id: None,
+            repetition_id: None,
+            augmented: false,
+            excluded: false,
+            metadata: BTreeMap::new(),
+            augmentation: None,
+        };
+        let relations = SampleRelationTable {
+            rows: vec![
+                relation("obs.s1", "s1"),
+                relation("obs.s2", "s2"),
+                relation("obs.s3", "s3"),
+            ],
+        };
+        let envelope =
+            CoordinatorDataPlanEnvelope::from_parts(schema, plan, Some(&relations)).unwrap();
+        let request = CoordinatorDataMaterializationRequest {
+            run_id: "run:test".to_string(),
+            node_id: "node:model".to_string(),
+            input_name: "X".to_string(),
+            phase: "fit".to_string(),
+            variant_id: None,
+            fold_id: None,
+            request_id: "req:test".to_string(),
+            schema_fingerprint: envelope.schema_fingerprint.clone(),
+            plan_fingerprint: envelope.plan_fingerprint.clone(),
+            relation_fingerprint: envelope.relation_fingerprint.clone(),
+            output_representation: envelope.plan.output_representation.clone(),
+            source_ids: Vec::new(),
+            require_relations: false,
+        };
+        request.validate().unwrap();
+        (
+            serde_json::to_vec(&envelope).unwrap(),
+            serde_json::to_vec(&request).unwrap(),
+        )
     }
 
     fn multisource_provider_fixture() -> (Vec<u8>, Vec<u8>) {

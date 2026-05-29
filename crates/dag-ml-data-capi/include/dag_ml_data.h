@@ -172,11 +172,23 @@ typedef struct DagMlDataVTable {
 
 DagMlDataVersion dagmldata_version(void);
 void dagmldata_string_free(DagMlDataString value);
+/* ADR-11 thread-local last-error accessors. The buffer holds the structured
+ * descriptor JSON and numeric (category << 16 | code) of the most recent failing
+ * call on the calling thread. Every failing call updates it: taxonomy errors
+ * carry their real category/code; boundary errors (null pointer, bad UTF-8) use
+ * validation/c_abi_argument (0x0000FFFF). Errno-like semantics: it is NOT cleared
+ * on success, so check the function's return code first, then read the buffer on
+ * the same thread. */
+DagMlDataStatusCode dagmldata_last_error_json(DagMlDataString *out);
+uint32_t dagmldata_last_error_code(void);
 void dagmldata_tensor_f64_free(DagMlDataTensorF64 tensor);
 void dagmldata_tensor_f32_free(DagMlDataTensorF32 tensor);
 void dagmldata_arrow_array_free(ArrowArray *array);
 void dagmldata_arrow_schema_free(ArrowSchema *schema);
 DagMlDataStatusCode dagmldata_schema_fingerprint_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *fingerprint_out, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_fold_set_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_fold_set_fingerprint_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *fingerprint_out, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_fold_set_validate_against_relations_json(const uint8_t *fold_set_ptr, size_t fold_set_len, const uint8_t *relations_ptr, size_t relations_len, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_fitted_adapter_ref_validate_json(const uint8_t *json_ptr, size_t json_len, uint8_t require_portable, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_fitted_adapter_manifest_validate_json(const uint8_t *json_ptr, size_t json_len, uint8_t require_portable, DagMlDataString *error_out);
 
@@ -193,6 +205,7 @@ DagMlDataStatusCode dagmldata_inmemory_provider_attach_fitted_adapter_store(cons
 DagMlDataStatusCode dagmldata_inmemory_provider_materialize_fitted_adapter_json(const DagMlDataVTable *vtable, const uint8_t *json_ptr, size_t json_len, uint64_t *out_handle, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_identity_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_target_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_coordinator_multi_target_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_feature_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_feature_fusion_arrow_json(const uint8_t *json_ptr, size_t json_len, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_coordinator_feature_collation_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *out_json, DagMlDataString *error_out);

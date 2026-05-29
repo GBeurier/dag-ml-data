@@ -313,14 +313,34 @@ fn python_example_provider_smoke_runs_against_c_abi() {
         .join("examples/fixtures/oof_campaign/materialization_request_model_base_x.json");
     let script_path = workspace_root.join("examples/python/provider_smoke.py");
 
+    // The wrapper now lives only in the installable package. A stale copy beside
+    // the smoke script would shadow it (Python puts the script dir before
+    // PYTHONPATH), silently testing the wrong code.
+    assert!(
+        !workspace_root
+            .join("examples/python/dag_ml_data_provider.py")
+            .exists(),
+        "stale examples/python/dag_ml_data_provider.py would shadow the installable package"
+    );
+
+    // Make the installable `dag_ml_data_provider` package importable and exercise
+    // the cdylib discovery path via DAG_ML_DATA_CAPI_LIB, preserving any existing
+    // PYTHONPATH. `--lib` is intentionally omitted.
+    let package_root = workspace_root.join("crates/dag-ml-data-capi/bindings/python");
+    let mut python_paths = vec![package_root];
+    if let Some(existing) = std::env::var_os("PYTHONPATH") {
+        python_paths.extend(std::env::split_paths(&existing));
+    }
+    let python_path = std::env::join_paths(python_paths).expect("join PYTHONPATH");
+
     let output = Command::new("python3")
         .arg(&script_path)
-        .arg("--lib")
-        .arg(&lib_path)
         .arg("--envelope")
         .arg(&envelope_path)
         .arg("--request")
         .arg(&request_path)
+        .env("PYTHONPATH", &python_path)
+        .env("DAG_ML_DATA_CAPI_LIB", &lib_path)
         .output()
         .expect("run reusable Python provider smoke");
 
