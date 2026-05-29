@@ -111,8 +111,8 @@ mod tests {
 
     use crate::ids::{GroupId, RepresentationId, SampleId, SourceId, TypeId};
     use crate::model::{
-        AxisKind, AxisSpec, DatasetSchema, FoldSpec, GroupKind, GroupSpec, RepresentationSpec,
-        SourceDescriptor, SourceGranularity,
+        AxisKind, AxisSpec, CoordinateDType, CoordinateSpec, CoordinateValues, DatasetSchema,
+        FoldSpec, GroupKind, GroupSpec, RepresentationSpec, SourceDescriptor, SourceGranularity,
     };
     use crate::plan::DataPlan;
     use crate::relation::{FoldAssignment, FoldSet};
@@ -137,7 +137,7 @@ mod tests {
                     unit: None,
                     size: Some(2),
                     variable: false,
-                    coordinates: None,
+                    coordinate: None,
                 },
                 AxisSpec {
                     name: "feature".to_string(),
@@ -145,7 +145,7 @@ mod tests {
                     unit: None,
                     size: Some(1),
                     variable: false,
-                    coordinates: None,
+                    coordinate: None,
                 },
             ],
             container: "dataframe".to_string(),
@@ -306,6 +306,57 @@ mod tests {
             fold_set_fingerprint(&left).unwrap(),
             fold_set_fingerprint(&right).unwrap()
         );
+    }
+
+    fn coordinate_schema(coordinate: Option<CoordinateSpec>) -> DatasetSchema {
+        let mut repr = representation("tabular");
+        // The feature axis (size 1) carries the coordinate.
+        repr.axes[1].coordinate = coordinate;
+        let mut descriptor = source("a");
+        descriptor.native_representation = repr;
+        DatasetSchema {
+            dataset_id: "coords".to_string(),
+            sample_ids: vec![SampleId::new("s1").unwrap()],
+            sources: vec![descriptor],
+            targets: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            metadata_schema: None,
+            groups: Vec::new(),
+            folds: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn schema_fingerprint_reflects_axis_coordinates() {
+        let explicit = CoordinateSpec {
+            dtype: CoordinateDType::Categorical,
+            ordered: false,
+            values: CoordinateValues::Explicit {
+                values: vec![serde_json::Value::from("R")],
+            },
+        };
+        let grid = CoordinateSpec {
+            dtype: CoordinateDType::Numeric,
+            ordered: true,
+            values: CoordinateValues::RegularGrid {
+                start: 400.0,
+                step: 2.0,
+            },
+        };
+
+        let bare = schema_fingerprint(&coordinate_schema(None)).unwrap();
+        let with_explicit = schema_fingerprint(&coordinate_schema(Some(explicit.clone()))).unwrap();
+        let with_grid = schema_fingerprint(&coordinate_schema(Some(grid))).unwrap();
+
+        // Stable for a fixed coordinate spec.
+        assert_eq!(
+            with_explicit,
+            schema_fingerprint(&coordinate_schema(Some(explicit))).unwrap()
+        );
+        // Coordinates participate in the fingerprint and the two shapes differ.
+        assert_ne!(bare, with_explicit);
+        assert_ne!(bare, with_grid);
+        assert_ne!(with_explicit, with_grid);
     }
 
     #[test]

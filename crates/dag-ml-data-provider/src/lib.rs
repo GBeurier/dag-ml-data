@@ -455,7 +455,7 @@ mod tests {
                     unit: None,
                     size: Some(3),
                     variable: false,
-                    coordinates: None,
+                    coordinate: None,
                 },
                 AxisSpec {
                     name: "feature".to_string(),
@@ -463,7 +463,7 @@ mod tests {
                     unit: None,
                     size: Some(2),
                     variable: false,
-                    coordinates: None,
+                    coordinate: None,
                 },
             ],
             container: "dataframe".to_string(),

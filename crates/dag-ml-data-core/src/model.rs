@@ -28,6 +28,7 @@ pub enum AxisKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AxisSpec {
     pub name: String,
     pub kind: AxisKind,
@@ -35,8 +36,8 @@ pub struct AxisSpec {
     pub size: Option<usize>,
     #[serde(default)]
     pub variable: bool,
-    #[serde(default)]
-    pub coordinates: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinate: Option<CoordinateSpec>,
 }
 
 impl AxisSpec {
@@ -50,18 +51,249 @@ impl AxisSpec {
                 self.name
             )));
         }
-        if let (Some(size), Some(coordinates)) = (self.size, &self.coordinates) {
-            if coordinates.len() != size {
+        if let Some(unit) = &self.unit {
+            if unit.trim().is_empty() {
                 return Err(DataError::Validation(format!(
-                    "axis `{}` has {} coordinates for size {}",
-                    self.name,
-                    coordinates.len(),
-                    size
+                    "axis `{}` has an empty unit",
+                    self.name
                 )));
+            }
+        }
+        if let Some(coordinate) = &self.coordinate {
+            coordinate.validate(&self.name, self.size, self.variable)?;
+        }
+        Ok(())
+    }
+}
+
+/// Element dtype of an axis coordinate sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinateDType {
+    Numeric,
+    Categorical,
+    Datetime,
+}
+
+/// Axis coordinate values: either an explicit per-index list or a regular
+/// numeric grid (`value(i) = start + i * step`, count taken from the axis size).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CoordinateValues {
+    Explicit { values: Vec<serde_json::Value> },
+    RegularGrid { start: f64, step: f64 },
+}
+
+/// Typed coordinate contract for an axis, so methods can machine-rely on the
+/// coordinate dtype, ordering and (for numeric) regular-grid structure rather
+/// than re-deriving them from untyped JSON.
+///
+/// `datetime` coordinates are canonical RFC 3339 UTC second-precision strings
+/// (`YYYY-MM-DDThh:mm:ssZ`); richer precision / offsets are a future extension.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoordinateSpec {
+    pub dtype: CoordinateDType,
+    #[serde(default)]
+    pub ordered: bool,
+    pub values: CoordinateValues,
+}
+
+impl CoordinateSpec {
+    pub fn validate(&self, axis_name: &str, size: Option<usize>, variable: bool) -> Result<()> {
+        if variable {
+            return Err(DataError::Validation(format!(
+                "axis `{axis_name}` cannot carry coordinates while variable"
+            )));
+        }
+        match &self.values {
+            CoordinateValues::Explicit { values } => {
+                if values.is_empty() {
+                    return Err(DataError::Validation(format!(
+                        "axis `{axis_name}` has empty explicit coordinates"
+                    )));
+                }
+                if let Some(size) = size {
+                    if values.len() != size {
+                        return Err(DataError::Validation(format!(
+                            "axis `{axis_name}` has {} coordinates for size {size}",
+                            values.len()
+                        )));
+                    }
+                }
+                self.validate_explicit(axis_name, values)?;
+            }
+            CoordinateValues::RegularGrid { start, step } => {
+                if self.dtype != CoordinateDType::Numeric {
+                    return Err(DataError::Validation(format!(
+                        "axis `{axis_name}` regular-grid coordinates require numeric dtype"
+                    )));
+                }
+                if size.is_none() {
+                    return Err(DataError::Validation(format!(
+                        "axis `{axis_name}` regular-grid coordinates require a known axis size"
+                    )));
+                }
+                if !start.is_finite() || !step.is_finite() {
+                    return Err(DataError::Validation(format!(
+                        "axis `{axis_name}` regular-grid start/step must be finite"
+                    )));
+                }
+                if *step == 0.0 {
+                    return Err(DataError::Validation(format!(
+                        "axis `{axis_name}` regular-grid step must be non-zero"
+                    )));
+                }
+                if !self.ordered {
+                    return Err(DataError::Validation(format!(
+                        "axis `{axis_name}` regular-grid coordinates are inherently ordered; set ordered=true"
+                    )));
+                }
             }
         }
         Ok(())
     }
+
+    fn validate_explicit(&self, axis_name: &str, values: &[serde_json::Value]) -> Result<()> {
+        match self.dtype {
+            CoordinateDType::Numeric => {
+                let mut numbers = Vec::with_capacity(values.len());
+                for value in values {
+                    let number = value
+                        .as_f64()
+                        .filter(|number| number.is_finite())
+                        .ok_or_else(|| {
+                            DataError::Validation(format!(
+                                "axis `{axis_name}` numeric coordinate `{value}` is not a finite number"
+                            ))
+                        })?;
+                    numbers.push(number);
+                }
+                if self.ordered {
+                    require_strictly_monotonic(axis_name, &numbers, |left, right| {
+                        left.partial_cmp(right)
+                    })?;
+                }
+            }
+            CoordinateDType::Categorical => {
+                let mut seen = BTreeSet::new();
+                for value in values {
+                    let label = value.as_str().filter(|label| !label.is_empty()).ok_or_else(|| {
+                        DataError::Validation(format!(
+                            "axis `{axis_name}` categorical coordinate `{value}` is not a non-empty string"
+                        ))
+                    })?;
+                    if !seen.insert(label) {
+                        return Err(DataError::Validation(format!(
+                            "axis `{axis_name}` categorical coordinate `{label}` is duplicated"
+                        )));
+                    }
+                }
+                // `ordered` is the declared category order; labels are not compared.
+            }
+            CoordinateDType::Datetime => {
+                let mut stamps = Vec::with_capacity(values.len());
+                for value in values {
+                    let stamp = value.as_str().ok_or_else(|| {
+                        DataError::Validation(format!(
+                            "axis `{axis_name}` datetime coordinate `{value}` is not a string"
+                        ))
+                    })?;
+                    if !is_rfc3339_utc_seconds(stamp) {
+                        return Err(DataError::Validation(format!(
+                            "axis `{axis_name}` datetime coordinate `{stamp}` is not canonical RFC 3339 UTC seconds (YYYY-MM-DDThh:mm:ssZ)"
+                        )));
+                    }
+                    stamps.push(stamp.to_string());
+                }
+                if self.ordered {
+                    // The canonical fixed UTC-seconds form makes lexicographic
+                    // order equal to chronological order.
+                    require_strictly_monotonic(axis_name, &stamps, |left, right| {
+                        Some(left.cmp(right))
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Strictly monotonic in EITHER direction (ascending or descending); rejects
+/// equal/unorderable neighbours.
+fn require_strictly_monotonic<T>(
+    axis_name: &str,
+    values: &[T],
+    compare: impl Fn(&T, &T) -> Option<std::cmp::Ordering>,
+) -> Result<()> {
+    if values.len() < 2 {
+        return Ok(());
+    }
+    let first = compare(&values[1], &values[0]).ok_or_else(|| {
+        DataError::Validation(format!(
+            "axis `{axis_name}` ordered coordinates are not comparable"
+        ))
+    })?;
+    if first == std::cmp::Ordering::Equal {
+        return Err(DataError::Validation(format!(
+            "axis `{axis_name}` ordered coordinates must be strictly monotonic"
+        )));
+    }
+    for window in values.windows(2) {
+        let ordering = compare(&window[1], &window[0]).ok_or_else(|| {
+            DataError::Validation(format!(
+                "axis `{axis_name}` ordered coordinates are not comparable"
+            ))
+        })?;
+        if ordering != first {
+            return Err(DataError::Validation(format!(
+                "axis `{axis_name}` ordered coordinates must be strictly monotonic"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Strict canonical RFC 3339 UTC second-precision check: `YYYY-MM-DDThh:mm:ssZ`.
+fn is_rfc3339_utc_seconds(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 20 {
+        return false;
+    }
+    let digit_positions = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
+    if digit_positions
+        .iter()
+        .any(|position| !bytes[*position].is_ascii_digit())
+    {
+        return false;
+    }
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'Z'
+    {
+        return false;
+    }
+    let field = |start: usize, end: usize| value[start..end].parse::<u32>().unwrap_or(u32::MAX);
+    let year = field(0, 4);
+    let month = field(5, 7);
+    let day = field(8, 10);
+    let hour = field(11, 13);
+    let minute = field(14, 16);
+    let second = field(17, 19);
+    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
+        return false;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => unreachable!("month already validated in 1..=12"),
+    };
+    (1..=days_in_month).contains(&day)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -614,7 +846,7 @@ mod tests {
             unit: None,
             size: Some(2),
             variable: false,
-            coordinates: None,
+            coordinate: None,
         }
     }
 
@@ -630,7 +862,7 @@ mod tests {
                 unit: None,
                 size: Some(3),
                 variable: false,
-                coordinates: None,
+                coordinate: None,
             }],
             container: "dataframe".to_string(),
             dtype: Some("float32".to_string()),
@@ -678,7 +910,7 @@ mod tests {
                 unit: Some("cm-1".to_string()),
                 size: Some(1024),
                 variable: false,
-                coordinates: None,
+                coordinate: None,
             },
         ];
         let repr = RepresentationSpec {
@@ -711,7 +943,7 @@ mod tests {
                     unit: Some("nm".to_string()),
                     size: Some(3),
                     variable: false,
-                    coordinates: None,
+                    coordinate: None,
                 },
             ],
             container: "ndarray".to_string(),
@@ -799,7 +1031,7 @@ mod tests {
                     unit: Some("nm".to_string()),
                     size: Some(3),
                     variable: false,
-                    coordinates: None,
+                    coordinate: None,
                 },
             ],
             container: "ndarray".to_string(),
@@ -849,7 +1081,7 @@ mod tests {
                     unit: Some("nm".to_string()),
                     size: Some(3),
                     variable: false,
-                    coordinates: None,
+                    coordinate: None,
                 },
             ],
             container: "ndarray".to_string(),
@@ -917,5 +1149,322 @@ mod tests {
         assert!(error
             .to_string()
             .contains("neither group_id nor split_column"));
+    }
+
+    fn coord(dtype: CoordinateDType, ordered: bool, values: CoordinateValues) -> CoordinateSpec {
+        CoordinateSpec {
+            dtype,
+            ordered,
+            values,
+        }
+    }
+
+    fn explicit(values: Vec<serde_json::Value>) -> CoordinateValues {
+        CoordinateValues::Explicit { values }
+    }
+
+    fn nums(values: &[f64]) -> Vec<serde_json::Value> {
+        values
+            .iter()
+            .map(|value| serde_json::Value::from(*value))
+            .collect()
+    }
+
+    fn strings(values: &[&str]) -> Vec<serde_json::Value> {
+        values
+            .iter()
+            .map(|value| serde_json::Value::from(*value))
+            .collect()
+    }
+
+    #[test]
+    fn numeric_ordered_coordinates_accept_ascending_or_descending() {
+        let ascending = coord(
+            CoordinateDType::Numeric,
+            true,
+            explicit(nums(&[400.0, 402.0, 404.0])),
+        );
+        assert!(ascending.validate("wl", Some(3), false).is_ok());
+        let descending = coord(
+            CoordinateDType::Numeric,
+            true,
+            explicit(nums(&[404.0, 402.0, 400.0])),
+        );
+        assert!(descending.validate("wl", Some(3), false).is_ok());
+    }
+
+    #[test]
+    fn numeric_ordered_coordinates_reject_non_monotonic_and_duplicates() {
+        let bumpy = coord(
+            CoordinateDType::Numeric,
+            true,
+            explicit(nums(&[400.0, 404.0, 402.0])),
+        );
+        assert!(bumpy.validate("wl", Some(3), false).is_err());
+        let duplicate = coord(
+            CoordinateDType::Numeric,
+            true,
+            explicit(nums(&[400.0, 400.0])),
+        );
+        assert!(duplicate.validate("wl", Some(2), false).is_err());
+    }
+
+    #[test]
+    fn numeric_coordinates_reject_non_finite_and_non_number() {
+        let not_finite = coord(
+            CoordinateDType::Numeric,
+            false,
+            explicit(vec![serde_json::Value::from(f64::NAN)]),
+        );
+        assert!(not_finite.validate("wl", Some(1), false).is_err());
+        let text = coord(CoordinateDType::Numeric, false, explicit(strings(&["400"])));
+        assert!(text.validate("wl", Some(1), false).is_err());
+    }
+
+    #[test]
+    fn categorical_coordinates_require_unique_non_empty_strings() {
+        let ok = coord(
+            CoordinateDType::Categorical,
+            false,
+            explicit(strings(&["R", "G", "B"])),
+        );
+        assert!(ok.validate("channel", Some(3), false).is_ok());
+        let duplicate = coord(
+            CoordinateDType::Categorical,
+            false,
+            explicit(strings(&["R", "R"])),
+        );
+        assert!(duplicate.validate("channel", Some(2), false).is_err());
+        let empty = coord(
+            CoordinateDType::Categorical,
+            false,
+            explicit(strings(&[""])),
+        );
+        assert!(empty.validate("channel", Some(1), false).is_err());
+        let numeric_label = coord(CoordinateDType::Categorical, false, explicit(nums(&[1.0])));
+        assert!(numeric_label.validate("channel", Some(1), false).is_err());
+        // ordered categorical keeps the declared order; labels are not compared.
+        let ordered = coord(
+            CoordinateDType::Categorical,
+            true,
+            explicit(strings(&["Z", "A"])),
+        );
+        assert!(ordered.validate("channel", Some(2), false).is_ok());
+    }
+
+    #[test]
+    fn datetime_coordinates_require_canonical_rfc3339_utc_seconds() {
+        let ok = coord(
+            CoordinateDType::Datetime,
+            false,
+            explicit(strings(&["2026-05-29T10:00:00Z"])),
+        );
+        assert!(ok.validate("time", Some(1), false).is_ok());
+        for bad in [
+            "2026-05-29 10:00:00",
+            "2026-05-29T10:00:00+02:00",
+            "2026-13-29T10:00:00Z",
+        ] {
+            let spec = coord(CoordinateDType::Datetime, false, explicit(strings(&[bad])));
+            assert!(
+                spec.validate("time", Some(1), false).is_err(),
+                "expected reject for {bad}"
+            );
+        }
+        let epoch = coord(
+            CoordinateDType::Datetime,
+            false,
+            explicit(nums(&[1.716976e9])),
+        );
+        assert!(epoch.validate("time", Some(1), false).is_err());
+    }
+
+    #[test]
+    fn datetime_ordered_coordinates_enforce_strict_monotonic() {
+        let ok = coord(
+            CoordinateDType::Datetime,
+            true,
+            explicit(strings(&["2026-05-29T10:00:00Z", "2026-05-29T10:00:01Z"])),
+        );
+        assert!(ok.validate("time", Some(2), false).is_ok());
+        let stalled = coord(
+            CoordinateDType::Datetime,
+            true,
+            explicit(strings(&["2026-05-29T10:00:01Z", "2026-05-29T10:00:01Z"])),
+        );
+        assert!(stalled.validate("time", Some(2), false).is_err());
+    }
+
+    #[test]
+    fn regular_grid_coordinates_validate_numeric_sized_nonzero_ordered() {
+        let ok = coord(
+            CoordinateDType::Numeric,
+            true,
+            CoordinateValues::RegularGrid {
+                start: 400.0,
+                step: 2.0,
+            },
+        );
+        assert!(ok.validate("wl", Some(100), false).is_ok());
+        let descending = coord(
+            CoordinateDType::Numeric,
+            true,
+            CoordinateValues::RegularGrid {
+                start: 400.0,
+                step: -2.0,
+            },
+        );
+        assert!(descending.validate("wl", Some(100), false).is_ok());
+        let categorical = coord(
+            CoordinateDType::Categorical,
+            true,
+            CoordinateValues::RegularGrid {
+                start: 0.0,
+                step: 1.0,
+            },
+        );
+        assert!(categorical.validate("wl", Some(3), false).is_err());
+        let no_size = coord(
+            CoordinateDType::Numeric,
+            true,
+            CoordinateValues::RegularGrid {
+                start: 0.0,
+                step: 1.0,
+            },
+        );
+        assert!(no_size.validate("wl", None, false).is_err());
+        let zero_step = coord(
+            CoordinateDType::Numeric,
+            true,
+            CoordinateValues::RegularGrid {
+                start: 0.0,
+                step: 0.0,
+            },
+        );
+        assert!(zero_step.validate("wl", Some(3), false).is_err());
+        let unordered = coord(
+            CoordinateDType::Numeric,
+            false,
+            CoordinateValues::RegularGrid {
+                start: 0.0,
+                step: 1.0,
+            },
+        );
+        assert!(unordered.validate("wl", Some(3), false).is_err());
+    }
+
+    #[test]
+    fn explicit_coordinates_must_match_known_size_and_be_non_empty() {
+        let wrong_len = coord(CoordinateDType::Numeric, false, explicit(nums(&[1.0, 2.0])));
+        assert!(wrong_len.validate("wl", Some(3), false).is_err());
+        let empty = coord(CoordinateDType::Numeric, false, explicit(Vec::new()));
+        assert!(empty.validate("wl", Some(0), false).is_err());
+    }
+
+    #[test]
+    fn axis_validate_integrates_coordinate_and_unit_rules() {
+        let blank_unit = AxisSpec {
+            name: "wl".to_string(),
+            kind: AxisKind::Wavenumber,
+            unit: Some("  ".to_string()),
+            size: Some(2),
+            variable: false,
+            coordinate: None,
+        };
+        assert!(blank_unit.validate().is_err());
+
+        let variable_with_coordinate = AxisSpec {
+            name: "wl".to_string(),
+            kind: AxisKind::Feature,
+            unit: None,
+            size: None,
+            variable: true,
+            coordinate: Some(coord(
+                CoordinateDType::Numeric,
+                false,
+                explicit(nums(&[1.0])),
+            )),
+        };
+        assert!(variable_with_coordinate.validate().is_err());
+
+        let ok = AxisSpec {
+            name: "wl".to_string(),
+            kind: AxisKind::Wavenumber,
+            unit: Some("cm-1".to_string()),
+            size: Some(3),
+            variable: false,
+            coordinate: Some(coord(
+                CoordinateDType::Numeric,
+                true,
+                explicit(nums(&[400.0, 402.0, 404.0])),
+            )),
+        };
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn coordinate_spec_round_trips_through_json() {
+        let explicit_spec = coord(
+            CoordinateDType::Categorical,
+            true,
+            explicit(strings(&["R", "G", "B"])),
+        );
+        let text = serde_json::to_string(&explicit_spec).unwrap();
+        assert!(text.contains("\"kind\":\"explicit\""));
+        assert_eq!(
+            serde_json::from_str::<CoordinateSpec>(&text).unwrap(),
+            explicit_spec
+        );
+
+        let grid_spec = coord(
+            CoordinateDType::Numeric,
+            true,
+            CoordinateValues::RegularGrid {
+                start: 400.0,
+                step: 2.0,
+            },
+        );
+        let text = serde_json::to_string(&grid_spec).unwrap();
+        assert!(text.contains("\"kind\":\"regular_grid\""));
+        assert_eq!(
+            serde_json::from_str::<CoordinateSpec>(&text).unwrap(),
+            grid_spec
+        );
+    }
+
+    #[test]
+    fn axis_spec_rejects_legacy_coordinates_field() {
+        // The pre-Phase-C untyped field is removed; deny_unknown_fields makes a
+        // stale `coordinates` a hard error rather than silently dropped data.
+        let legacy = r#"{"name":"wl","kind":"wavelength","unit":"nm","size":2,"variable":false,"coordinates":[900,1000]}"#;
+        assert!(serde_json::from_str::<AxisSpec>(legacy).is_err());
+
+        let typed = r#"{"name":"wl","kind":"wavelength","unit":"nm","size":2,"variable":false,"coordinate":{"dtype":"numeric","ordered":true,"values":{"kind":"explicit","values":[900,1000]}}}"#;
+        let axis = serde_json::from_str::<AxisSpec>(typed).unwrap();
+        assert!(axis.validate().is_ok());
+        assert!(axis.coordinate.is_some());
+    }
+
+    #[test]
+    fn datetime_coordinates_reject_impossible_calendar_dates() {
+        for bad in [
+            "2026-02-31T00:00:00Z", // February never has 31 days
+            "2026-04-31T00:00:00Z", // April has 30 days
+            "2025-02-29T00:00:00Z", // 2025 is not a leap year
+            "2026-01-01T00:00:60Z", // leap-second :60 not accepted in v1
+        ] {
+            let spec = coord(CoordinateDType::Datetime, false, explicit(strings(&[bad])));
+            assert!(
+                spec.validate("time", Some(1), false).is_err(),
+                "expected reject for {bad}"
+            );
+        }
+        // 2024 is a leap year, so Feb 29 is valid.
+        let leap_day = coord(
+            CoordinateDType::Datetime,
+            false,
+            explicit(strings(&["2024-02-29T23:59:59Z"])),
+        );
+        assert!(leap_day.validate("time", Some(1), false).is_ok());
     }
 }

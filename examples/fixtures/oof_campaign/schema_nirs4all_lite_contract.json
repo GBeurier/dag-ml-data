@@ -12,8 +12,8 @@
         "type_id": "dense_signal",
         "rank": 2,
         "axes": [
-          { "name": "sample", "kind": "sample", "unit": null, "size": 6, "variable": false, "coordinates": null },
-          { "name": "wavelength", "kind": "wavelength", "unit": "nm", "size": 4, "variable": false, "coordinates": [900, 1000, 1100, 1200] }
+          { "name": "sample", "kind": "sample", "unit": null, "size": 6, "variable": false },
+          { "name": "wavelength", "kind": "wavelength", "unit": "nm", "size": 4, "variable": false, "coordinate": { "dtype": "numeric", "ordered": true, "values": { "kind": "explicit", "values": [900, 1000, 1100, 1200] } } }
         ],
         "container": "ndarray",
         "dtype": "float32",
@@ -40,8 +40,8 @@
       "type_id": "table",
       "rank": 2,
       "axes": [
-        { "name": "sample", "kind": "sample", "unit": null, "size": 6, "variable": false, "coordinates": null },
-        { "name": "target", "kind": "target", "unit": null, "size": 1, "variable": false, "coordinates": ["y"] }
+        { "name": "sample", "kind": "sample", "unit": null, "size": 6, "variable": false },
+        { "name": "target", "kind": "target", "unit": null, "size": 1, "variable": false, "coordinate": { "dtype": "categorical", "ordered": false, "values": { "kind": "explicit", "values": ["y"] } } }
       ],
       "container": "dataframe",
       "dtype": "float32",

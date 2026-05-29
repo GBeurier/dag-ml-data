@@ -156,16 +156,37 @@ class AxisSpec:
     unit: str | None = None        # "nm", "cm-1", "s", "px", None
     size: int | None = None        # None when variable=True
     variable: bool = False         # True for ragged / dynamic axes
-    coordinates: tuple[Any, ...] | None = None  # JSON-able sequence (e.g. wavelengths)
+    coordinate: CoordinateSpec | None = None  # typed axis coordinates
+
+CoordinateDType = Literal["numeric", "categorical", "datetime"]
+
+@dataclass(frozen=True)
+class CoordinateSpec:
+    dtype: CoordinateDType
+    ordered: bool = False
+    # values is a tagged union ("kind"):
+    #   {"kind": "explicit", "values": [...]}  one JSON value per axis index
+    #   {"kind": "regular_grid", "start": float, "step": float}  value(i)=start+i*step
+    values: CoordinateValues
 ```
 
 Rules:
 
 - `kind="sample"` axis is mandatory in every `RepresentationSpec.axes`.
 - `size` and `variable` are mutually exclusive: if `variable=True`, `size` is `None`.
-- `coordinates` length must match `size` when both are provided. Coordinates must be
-  JSON-serialisable (`int`, `float`, `str`, `bool`).
-- Two `AxisSpec`s are equal iff all fields are equal. Coordinates use tuple equality.
+- `unit` must be non-empty when present.
+- A `coordinate` is rejected on a `variable` axis. `AxisSpec` denies unknown fields,
+  so the removed untyped `coordinates` field is a hard error, not silently dropped.
+- `explicit` coordinate length must match `size` when both are provided; an explicit
+  list must be non-empty. `numeric` values are finite numbers; `categorical` values are
+  unique non-empty strings; `datetime` values are canonical RFC 3339 UTC second-precision
+  strings (`YYYY-MM-DDThh:mm:ssZ`, calendar-validated).
+- `ordered` numeric / datetime coordinates must be strictly monotonic (ascending or
+  descending). For `categorical`, `ordered` is the declared label order (labels are not
+  compared).
+- `regular_grid` requires `dtype="numeric"`, a known `size`, finite `start`/`step`,
+  `step != 0`, and `ordered=true` (the grid sign sets the direction).
+- Two `AxisSpec`s are equal iff all fields are equal.
 
 ### 2.3 Representation
 
@@ -574,8 +595,9 @@ Plugin contracts:
 - `table` accepts `dataframe` containers (pandas-like) or `ndarray` for the
   numeric subset.
 - `text` is ragged. `text_token_ids` requires a vocab id reference in
-  `representation.dtype = "int32"` and an associated `coordinates` on the token
-  axis denoting the vocabulary id.
+  `representation.dtype = "int32"`; the vocabulary is exposed as side data
+  (`AuxInputSpec(kind="side_data")`), not an axis coordinate, since the token axis
+  is variable and variable axes cannot carry a `coordinate`.
 
 ---
 
@@ -1538,7 +1560,7 @@ class MLDataset(Protocol):
 
 Resolution:
 
-- `kind="axis_coordinates"`: returns `AxisSpec.coordinates` of the axis named
+- `kind="axis_coordinates"`: returns `AxisSpec.coordinate` of the axis named
   `spec.axis` in the source `spec.source_id`. Example: `wavelengths` for NIRS.
 - `kind="source_metadata"`: returns `SourceDescriptor.schema[spec.name]` or
   raises if missing.
@@ -1567,7 +1589,9 @@ SourceDescriptor(
             AxisSpec("sample", "sample"),
             AxisSpec("processing", "processing"),
             AxisSpec("wavelength", "wavelength", unit="nm", size=512,
-                     coordinates=tuple(np.linspace(800, 2500, 512).tolist())),
+                     coordinate=CoordinateSpec(
+                         dtype="numeric", ordered=True,
+                         values={"kind": "regular_grid", "start": 800.0, "step": 3.327})),
         ),
         container="ndarray",
         dtype="float32",
@@ -1583,8 +1607,11 @@ An adapter (e.g. `SpectralDerivative`) requests:
 ```python
 spec = AuxInputSpec(name="wavelengths", kind="axis_coordinates",
                     axis="wavelength", source_id="nir")
-wls  = dataset.auxiliary(spec, view)
-# wls == (800.0, 802.4, ..., 2500.0)
+coord = dataset.auxiliary(spec, view)
+# coord == CoordinateSpec(dtype="numeric", ordered=True,
+#                         values={"kind": "regular_grid", "start": 800.0, "step": 3.327})
+# The caller materialises the explicit grid when needed:
+#   wls = [coord.values["start"] + i * coord.values["step"] for i in range(size)]
 ```
 
 ---
@@ -1597,7 +1624,7 @@ Every dataclass listed below must round-trip through JSON without loss:
 
 | Type                  | Serialiser entry                                                |
 |-----------------------|-----------------------------------------------------------------|
-| `AxisSpec`            | `{name, kind, unit, size, variable, coordinates}`               |
+| `AxisSpec`            | `{name, kind, unit, size, variable, coordinate}`                |
 | `RepresentationSpec`  | `{id, type_id, rank, axes:[...], container, dtype, sparse, ragged}` |
 | `SourceDescriptor`    | `{id, name, type_id, modality, native_representation, sample_key, granularity, schema, tags}` |
 | `DatasetSchema`       | `{dataset_id, sample_ids, sources, targets, metadata}`          |
@@ -1805,7 +1832,7 @@ To add a new domain type, follow this checklist.
 ### 14.3 Anti-patterns
 
 - **Do not** add a domain-specific knob (e.g. `wavelengths=`) directly on
-  `MLDataset`. Add it to `AxisSpec.coordinates` and request it via
+  `MLDataset`. Add it to `AxisSpec.coordinate` and request it via
   `AuxInputSpec(kind="axis_coordinates")`.
 - **Do not** flatten a multidimensional structure inside the type plugin and
   expose only `tabular_numeric`. Always expose the native representation;
