@@ -67,8 +67,9 @@ def main() -> None:
     parser.add_argument(
         "--min-percent",
         type=float,
-        default=18.0,
-        help="minimum documented public-item percentage",
+        default=31.0,
+        help="minimum documented public-item percentage (ratchet floor: raise "
+        "toward the current measured value as coverage improves)",
     )
     parser.add_argument(
         "--show-missing",
