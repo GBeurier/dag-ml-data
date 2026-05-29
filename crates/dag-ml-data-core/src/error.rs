@@ -49,6 +49,14 @@ pub enum DataError {
     #[error("relation boundary violation ({kind}): {detail}")]
     RelationBoundaryViolation { kind: &'static str, detail: String },
 
+    /// An aggregation reducer is incompatible with the prediction task it was
+    /// applied to (for example `vote` on a regression task) — ADR-07.
+    #[error("aggregation reducer `{reducer}` is incompatible with a {task} task")]
+    IncompatibleReducer {
+        reducer: &'static str,
+        task: &'static str,
+    },
+
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 }
@@ -87,6 +95,9 @@ impl DataError {
             Self::RelationBoundaryViolation { .. } => {
                 "Keep every repetition group and augmentation origin within a single fold; the supplied fold set leaks across the train/validation boundary."
             }
+            Self::IncompatibleReducer { .. } => {
+                "The `vote` reducer aggregates classification predictions only; use a numeric reducer (mean, weighted_mean, median, robust_mean, exclude_outliers) or a custom reducer for a regression task."
+            }
             Self::Serialization(_) => {
                 "Check that the JSON payload matches the supported dag-ml-data contract version."
             }
@@ -120,6 +131,10 @@ impl DataError {
             Self::RelationBoundaryViolation { kind, detail } => {
                 context.insert("kind".to_string(), json!(kind));
                 context.insert("detail".to_string(), json!(detail));
+            }
+            Self::IncompatibleReducer { reducer, task } => {
+                context.insert("reducer".to_string(), json!(reducer));
+                context.insert("task".to_string(), json!(task));
             }
             Self::Serialization(error) => {
                 context.insert("detail".to_string(), json!(error.to_string()));
@@ -164,6 +179,7 @@ impl DataError {
             Self::RelationBoundaryViolation { .. } => {
                 ("data", "relation_boundary_violation", "error")
             }
+            Self::IncompatibleReducer { .. } => ("data", "incompatible_reducer", "error"),
             Self::Serialization(_) => ("compatibility", "serialization_error", "error"),
         }
     }
@@ -181,6 +197,7 @@ impl DataError {
             Self::InvalidIdentifier { .. } => (0, 1),
             Self::Validation(_) => (2, 1),
             Self::RelationBoundaryViolation { .. } => (2, 2),
+            Self::IncompatibleReducer { .. } => (2, 3),
             Self::UnknownHandle { .. } => (1, 1),
             Self::FingerprintMismatch { .. } => (8, 2),
             Self::Serialization(_) => (8, 1),

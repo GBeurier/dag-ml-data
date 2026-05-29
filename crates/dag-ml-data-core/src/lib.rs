@@ -4,6 +4,7 @@
 //! does not execute ML phases and does not own heavy host buffers.
 
 pub mod adapter;
+pub mod aggregation;
 pub mod alignment;
 pub mod buffer;
 pub mod buffer_file_store;
@@ -22,6 +23,7 @@ pub mod planner;
 pub mod relation;
 
 pub use adapter::*;
+pub use aggregation::*;
 pub use alignment::*;
 pub use buffer::*;
 pub use buffer_file_store::*;
