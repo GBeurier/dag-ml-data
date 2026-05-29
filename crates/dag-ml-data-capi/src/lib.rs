@@ -6,15 +6,15 @@ use std::slice;
 
 use dag_ml_data_core::{
     collate_feature_block, fold_set_fingerprint, fuse_feature_blocks, schema_fingerprint,
-    CollationPolicy, CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope,
-    CoordinatorFeatureBlock, CoordinatorFeatureTable, CoordinatorHandleArena,
-    CoordinatorMultiTargetBlock, CoordinatorTargetBlock, CoordinatorTargetTable, DataError,
-    DataView, DatasetSchema, FeatureFusionPolicy, FittedAdapterManifest,
-    FittedAdapterMaterializationRequest, FittedAdapterRef, FoldSet, InMemoryFittedAdapterStore,
-    NdTensorBlock, NdTensorInput, NdTensorStore, NumericFeatureBufferStore,
-    NumericFeatureMatrixF64, NumericFeatureMatrixF64Columnar, NumericTensorBlock, ObservationId,
-    RepresentationId, RuntimeFittedAdapterStore, SampleAlignmentPlan, SampleRelationTable,
-    SourceFeatureBlock, TargetId,
+    AggregationPolicy, CollationPolicy, CoordinatorDataMaterializationRequest,
+    CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
+    CoordinatorHandleArena, CoordinatorMultiTargetBlock, CoordinatorTargetBlock,
+    CoordinatorTargetTable, DataError, DataView, DatasetSchema, FeatureFusionPolicy,
+    FittedAdapterManifest, FittedAdapterMaterializationRequest, FittedAdapterRef, FoldSet,
+    InMemoryFittedAdapterStore, NdTensorBlock, NdTensorInput, NdTensorStore,
+    NumericFeatureBufferStore, NumericFeatureMatrixF64, NumericFeatureMatrixF64Columnar,
+    NumericTensorBlock, ObservationId, RepresentationId, RuntimeFittedAdapterStore,
+    SampleAlignmentPlan, SampleRelationTable, SourceFeatureBlock, TargetId,
 };
 #[cfg(test)]
 use dag_ml_data_core::{SampleId, SourceId};
@@ -658,6 +658,50 @@ pub unsafe extern "C" fn dagmldata_fold_set_validate_json(
     let json = slice::from_raw_parts(json_ptr, json_len);
     match serde_json::from_slice::<FoldSet>(json) {
         Ok(fold_set) => match fold_set.validate() {
+            Ok(()) => DagMlDataStatusCode::Ok,
+            Err(error) => {
+                set_display_error(error_out, error);
+                DagMlDataStatusCode::ValidationError
+            }
+        },
+        Err(error) => {
+            set_display_error(error_out, error);
+            DagMlDataStatusCode::ValidationError
+        }
+    }
+}
+
+/// Validates a JSON aggregation-policy payload (ADR-07).
+///
+/// The payload is the flat `AggregationPolicy` shape — a reducer name plus the
+/// single parameter that reducer accepts, e.g.
+/// `{"reducer":"robust_mean","trim_fraction":0.1}`. Unknown keys are rejected,
+/// the reducer's own parameter is range-checked, and parameters belonging to a
+/// different reducer are refused. This is the parameter-shape check only; the
+/// task-sensitivity rule (`vote` on regression) is enforced by the host with the
+/// task context it owns.
+///
+/// # Safety
+///
+/// When `json_ptr` is non-null it must point to `json_len` readable bytes for
+/// the duration of the call. `error_out` may be null; when non-null it must
+/// point to writable memory for one `DagMlDataString`. Returned strings must be
+/// released with `dagmldata_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagmldata_aggregation_policy_validate_json(
+    json_ptr: *const u8,
+    json_len: usize,
+    error_out: *mut DagMlDataString,
+) -> DagMlDataStatusCode {
+    clear_string(error_out);
+    if json_ptr.is_null() {
+        set_error_message(error_out, "json pointer is null");
+        return DagMlDataStatusCode::InvalidArgument;
+    }
+
+    let json = slice::from_raw_parts(json_ptr, json_len);
+    match serde_json::from_slice::<AggregationPolicy>(json) {
+        Ok(policy) => match policy.validate() {
             Ok(()) => DagMlDataStatusCode::Ok,
             Err(error) => {
                 set_display_error(error_out, error);
@@ -4908,6 +4952,46 @@ mod tests {
         let message = unsafe { string_value(error) };
         assert!(
             message.contains("train/validation overlap"),
+            "unexpected: {message}"
+        );
+    }
+
+    #[test]
+    fn validates_aggregation_policy_json_over_abi() {
+        // valid: robust_mean with an in-range trim_fraction
+        let ok = br#"{"reducer":"robust_mean","trim_fraction":0.1}"#;
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_aggregation_policy_validate_json(ok.as_ptr(), ok.len(), &mut error)
+        };
+        assert_eq!(status, DagMlDataStatusCode::Ok);
+        assert!(error.ptr.is_null());
+
+        // unknown key is rejected at the boundary
+        let unknown = br#"{"reducer":"mean","skipna":false}"#;
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_aggregation_policy_validate_json(unknown.as_ptr(), unknown.len(), &mut error)
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        // string_value takes ownership and frees the error string.
+        let message = unsafe { string_value(error) };
+        assert!(!message.is_empty());
+
+        // cross-parameter contamination is refused (mean takes no params)
+        let contaminated = br#"{"reducer":"mean","trim_fraction":0.1}"#;
+        let mut error = DagMlDataString::default();
+        let status = unsafe {
+            dagmldata_aggregation_policy_validate_json(
+                contaminated.as_ptr(),
+                contaminated.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        let message = unsafe { string_value(error) };
+        assert!(
+            message.contains("does not accept parameter"),
             "unexpected: {message}"
         );
     }

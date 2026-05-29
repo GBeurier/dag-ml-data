@@ -239,6 +239,7 @@ void dagmldata_arrow_array_free(ArrowArray *array);
 void dagmldata_arrow_schema_free(ArrowSchema *schema);
 DagMlDataStatusCode dagmldata_schema_fingerprint_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *fingerprint_out, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_fold_set_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *error_out);
+DagMlDataStatusCode dagmldata_aggregation_policy_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_fold_set_fingerprint_json(const uint8_t *json_ptr, size_t json_len, DagMlDataString *fingerprint_out, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_fold_set_validate_against_relations_json(const uint8_t *fold_set_ptr, size_t fold_set_len, const uint8_t *relations_ptr, size_t relations_len, DagMlDataString *error_out);
 DagMlDataStatusCode dagmldata_fitted_adapter_ref_validate_json(const uint8_t *json_ptr, size_t json_len, uint8_t require_portable, DagMlDataString *error_out);
