@@ -305,12 +305,30 @@ Implemented:
   `dagmldata_inmemory_provider_new_from_arrow_ipc` behind the
   `arrow-ipc` feature flag so core consumers don't pay the Arrow
   dependency by default;
+- a dedicated `dag-ml-data-provider` crate factors the in-memory provider
+  behind a `DagMlDataProvider` trait with a single `Mutex<ProviderArenas>`
+  (linearizable materialize / make-view / release) and a shared
+  `JsonInMemoryProvider` facade. Language shims consume the C ABI: a
+  stdlib-only Python `ctypes` package (`dag_ml_data_provider`), a
+  `dag-ml-data-wasm` binding, and a workspace-excluded extendr R package
+  (`dagmldata`);
+- borrowed N-D tensor transport: core `NdTensor*` (rank 1..=16, axis 0 = sample,
+  keyed by `observation_id`) is materialized and bound under the provider lock.
+  The C ABI accepts borrowed `DagMlDataBorrowedTensorView`s (strided input copied
+  to canonical row-major) and returns view-filtered `DagMlDataOwnedTensor`s via
+  `dagmldata_inmemory_provider_new_with_tensor_views` /
+  `nd_tensor_manifest_json` / `nd_tensor_export_json` / `nd_tensor_free`, with
+  `DAG_ML_DATA_BORROWED_TENSOR_VIEW_ABI_VERSION` and
+  `DAG_ML_DATA_OWNED_TENSOR_ABI_VERSION` mirrored in the conformance pack;
+- typed axis coordinate contract: `AxisSpec.coordinate: Option<CoordinateSpec>`
+  (numeric / categorical / datetime dtype, `ordered`, explicit list or numeric
+  regular grid) replaces the untyped `coordinates`, with full validation and
+  `deny_unknown_fields`;
 
 Not implemented yet:
 
-- production provider arenas for fused feature exports and production tensor
-  buffer export beyond the in-memory `DagMlDataTensorF64` and
-  `DagMlDataTensorF32` conformance;
+- production provider arenas for fused feature exports (the borrowed N-D tensor
+  transport is now implemented; fused-feature exports remain in-memory-only);
 - nirs4all connector (descoped — owned by `nirs4all-io`, see ADR-0001).
 
 Next recommended task:
