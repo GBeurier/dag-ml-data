@@ -9,6 +9,11 @@ pub mod alignment;
 pub mod buffer;
 pub mod buffer_file_store;
 pub mod collation;
+/// Internal streaming-hash primitive for bulk numeric content fingerprints.
+/// Crate-private: it is not part of the public data contract, and keeping it
+/// internal prevents an untrusted `ExactSizeIterator` from reaching
+/// `absorb_str_collection`.
+pub(crate) mod content_hash;
 pub mod coordinator;
 pub mod error;
 pub mod fingerprint;

@@ -104,7 +104,11 @@ typedef enum DagMlDataTensorDType {
 /* Borrowed N-D tensor view. Axis 0 is the sample/observation axis
  * (shape[0] == ids_len). strides_bytes may be NULL (contiguous row-major) or
  * strictly positive byte strides; the constructor copies into canonical
- * row-major bytes and discards strides. All pointers are borrowed for the
+ * row-major bytes and discards strides. Multibyte elements (F64/F32/I32) MUST
+ * be little-endian: the constructor copies element bytes verbatim and never
+ * byte-swaps, and the reproducibility fingerprint hashes them as-is, so the
+ * little-endian encoding is part of the contract (a big-endian caller must
+ * canonicalize before passing the view). All pointers are borrowed for the
  * duration of the constructor call only. */
 typedef struct DagMlDataBorrowedTensorView {
     uint32_t abi_version;

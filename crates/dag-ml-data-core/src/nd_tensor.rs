@@ -16,8 +16,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::content_hash::StreamingHasher;
 use crate::coordinator::CoordinatorRelationSet;
 use crate::error::{DataError, Result};
 use crate::ids::{ObservationId, RepresentationId, SampleId, SourceId};
@@ -53,6 +53,22 @@ impl NdTensorDType {
             NdTensorDType::Bool => 1,
         }
     }
+
+    /// Stable, explicit tag absorbed into the content fingerprint. Hard-coded
+    /// (not the enum's memory discriminant or its serde name) so the dtype is
+    /// part of the preimage and reordering variants here can never silently
+    /// change a fingerprint. Two tensors whose `data` bytes happen to coincide
+    /// but whose dtypes differ (e.g. `[N]` `U8` vs the low byte of an `I32`)
+    /// fingerprint differently.
+    fn fingerprint_tag(self) -> u64 {
+        match self {
+            NdTensorDType::F64 => 1,
+            NdTensorDType::F32 => 2,
+            NdTensorDType::U8 => 3,
+            NdTensorDType::I32 => 4,
+            NdTensorDType::Bool => 5,
+        }
+    }
 }
 
 /// A canonical (contiguous row-major) N-D tensor handed to the store. The C ABI
@@ -71,6 +87,14 @@ pub struct NdTensorInput {
     /// sample mapping comes from the coordinator relations at export time).
     pub sample_ids: Option<Vec<SampleId>>,
     /// Contiguous row-major bytes; `len == product(shape) * dtype.element_size()`.
+    ///
+    /// Multibyte elements (`F64`/`F32`/`I32`) MUST be encoded **little-endian**.
+    /// This layer copies the bytes verbatim and never reinterprets them as
+    /// native-endian values, so the byte order is part of the input contract,
+    /// not something the layer can fix up. The content fingerprint hashes these
+    /// bytes as-is; pinning little-endian here is what makes the fingerprint
+    /// platform-independent (a big-endian host must canonicalize to LE before
+    /// constructing the input).
     pub data: Vec<u8>,
     /// Optional per-axis-0-row presence mask; `len == shape[0]`.
     pub row_presence: Option<Vec<bool>>,
@@ -331,31 +355,60 @@ impl NdTensor {
         })
     }
 
+    /// Reproducibility fingerprint of the tensor's logical content as a 64-char
+    /// lowercase hex SHA-256.
+    ///
+    /// Streamed, never serialized to an intermediate byte vector: the bulk
+    /// `data` payload is fed straight through the hasher (the old
+    /// `serde_json::to_vec` path materialized the whole `Vec<u8>` as a JSON
+    /// array of integers, multiplying both time and transient memory).
+    ///
+    /// Preimage layout (every multi-byte field little-endian; every
+    /// variable-length field length-prefixed):
+    ///
+    /// ```text
+    /// domain tag  b"dag-ml-data.nd-tensor.v2\0"   (fixed literal)
+    /// tensor_id         : str   (u64 byte-len, then UTF-8)
+    /// representation_id : str
+    /// container         : str
+    /// dtype             : u64   (stable fingerprint tag, see fingerprint_tag)
+    /// shape             : u64 rank, then each dim as u64
+    /// observation_ids   : str[] (u64 count, then each str)
+    /// data              : u64 byte-len, then the contiguous row-major bytes
+    /// row_presence      : u64 tag (0 = absent), or (1, u64 len, one 0/1 byte each)
+    /// ```
+    ///
+    /// `data` is the host's **canonical contiguous row-major** payload: the
+    /// element bytes are already in the platform-independent little-endian
+    /// encoding the C-ABI copies in verbatim (the layer never re-interprets
+    /// them as native-endian values), so feeding the raw bytes IS the
+    /// per-dtype LE encoding. The dtype tag and the byte-length prefix mean
+    /// identical bytes under a different dtype or a different shape never
+    /// collide.
     fn fingerprint(&self) -> Result<String> {
-        #[derive(Serialize)]
-        struct FingerprintPayload<'a> {
-            tensor_id: &'a str,
-            representation_id: &'a RepresentationId,
-            container: &'a str,
-            dtype: NdTensorDType,
-            shape: &'a [usize],
-            observation_ids: &'a [ObservationId],
-            data: &'a [u8],
-            row_presence: &'a Option<Vec<bool>>,
+        let mut hasher = StreamingHasher::new(b"dag-ml-data.nd-tensor.v2\0");
+        hasher.absorb_str(&self.tensor_id);
+        hasher.absorb_str(self.representation_id.as_str());
+        hasher.absorb_str(&self.container);
+        hasher.absorb_u64(self.dtype.fingerprint_tag());
+        hasher.absorb_len(self.shape.len());
+        for dim in &self.shape {
+            hasher.absorb_len(*dim);
         }
-
-        let payload = FingerprintPayload {
-            tensor_id: &self.tensor_id,
-            representation_id: &self.representation_id,
-            container: &self.container,
-            dtype: self.dtype,
-            shape: &self.shape,
-            observation_ids: &self.observation_ids,
-            data: &self.data,
-            row_presence: &self.row_presence,
-        };
-        let json = serde_json::to_vec(&payload)?;
-        Ok(to_hex(&Sha256::digest(json)))
+        hasher.absorb_str_collection(self.observation_ids.iter().map(ObservationId::as_str));
+        hasher.absorb_len(self.data.len());
+        hasher.absorb_raw(&self.data);
+        match &self.row_presence {
+            None => hasher.absorb_u64(0),
+            Some(presence) => {
+                hasher.absorb_u64(1);
+                hasher.absorb_len(presence.len());
+                for present in presence {
+                    hasher.absorb_raw(&[u8::from(*present)]);
+                }
+            }
+        }
+        Ok(hasher.finalize_hex())
     }
 
     fn manifest(&self) -> Result<NdTensorManifest> {
@@ -570,14 +623,6 @@ impl NdTensorArena {
     }
 }
 
-fn to_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,5 +830,187 @@ mod tests {
         assert_eq!(manifests[0].data_bytes, 12);
         assert_eq!(manifests[0].element_bytes, 1);
         assert_eq!(manifests[0].tensor_fingerprint.len(), 64);
+    }
+
+    fn fp(input: NdTensorInput) -> String {
+        NdTensor::from_input(input).unwrap().fingerprint().unwrap()
+    }
+
+    #[test]
+    fn tensor_fingerprint_is_64_lowercase_hex() {
+        let fingerprint = fp(rgb_input());
+        assert_eq!(fingerprint.len(), 64);
+        assert!(fingerprint
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn tensor_fingerprint_is_deterministic_across_calls_and_clone() {
+        let tensor = NdTensor::from_input(rgb_input()).unwrap();
+        let once = tensor.fingerprint().unwrap();
+        assert_eq!(once, tensor.fingerprint().unwrap());
+        assert_eq!(once, tensor.clone().fingerprint().unwrap());
+    }
+
+    #[test]
+    fn tensor_fingerprint_changes_when_a_single_data_byte_flips() {
+        let baseline = fp(rgb_input());
+        let mut flipped = rgb_input();
+        flipped.data[0] ^= 0xFF;
+        assert_ne!(baseline, fp(flipped));
+    }
+
+    #[test]
+    fn tensor_fingerprint_changes_when_tensor_id_is_renamed() {
+        let baseline = fp(rgb_input());
+        let mut renamed = rgb_input();
+        renamed.tensor_id = "rgb_renamed".to_string();
+        assert_ne!(baseline, fp(renamed));
+    }
+
+    #[test]
+    fn tensor_fingerprint_changes_when_observation_ids_are_reordered() {
+        // Permute both the rows' bytes and their ids together so the tensor
+        // stays a valid permutation of the same logical rows.
+        let baseline = fp(rgb_input());
+        let mut reordered = rgb_input();
+        reordered.observation_ids.swap(0, 2);
+        // Each row is 4 bytes ([_,2,2] u8); swap row 0 and row 2.
+        let (head, tail) = reordered.data.split_at_mut(8);
+        head[0..4].swap_with_slice(&mut tail[0..4]);
+        assert_ne!(baseline, fp(reordered));
+    }
+
+    #[test]
+    fn tensor_fingerprint_distinguishes_transposed_shapes_with_identical_bytes() {
+        // Same 12 bytes, axis-0 size 3 either way; [3,2,2] vs [3,4] differ only
+        // in the trailing shape, which the rank+dims framing must separate.
+        let base = NdTensorInput {
+            tensor_id: "t".to_string(),
+            representation_id: RepresentationId::new("rgb_image").unwrap(),
+            container: "ndarray".to_string(),
+            dtype: NdTensorDType::U8,
+            shape: vec![3, 2, 2],
+            observation_ids: vec![
+                ObservationId::new("obs.s1").unwrap(),
+                ObservationId::new("obs.s2").unwrap(),
+                ObservationId::new("obs.s3").unwrap(),
+            ],
+            sample_ids: None,
+            data: (0u8..12).collect(),
+            row_presence: None,
+        };
+        let mut reshaped = base.clone();
+        reshaped.shape = vec![3, 4];
+        assert_ne!(fp(base), fp(reshaped));
+    }
+
+    #[test]
+    fn tensor_fingerprint_distinguishes_dtype_with_identical_bytes() {
+        // Four bytes, axis-0 size 1: one I32 element vs four U8 elements share
+        // the same payload bytes; the dtype tag must separate them.
+        let as_i32 = NdTensorInput {
+            tensor_id: "t".to_string(),
+            representation_id: RepresentationId::new("rgb_image").unwrap(),
+            container: "ndarray".to_string(),
+            dtype: NdTensorDType::I32,
+            shape: vec![1, 1],
+            observation_ids: vec![ObservationId::new("obs.s1").unwrap()],
+            sample_ids: None,
+            data: vec![1, 2, 3, 4],
+            row_presence: None,
+        };
+        let mut as_u8 = as_i32.clone();
+        as_u8.dtype = NdTensorDType::U8;
+        as_u8.shape = vec![1, 4];
+        assert_ne!(fp(as_i32), fp(as_u8));
+    }
+
+    #[test]
+    fn tensor_fingerprint_hashes_data_bytes_verbatim_in_declared_order() {
+        // Conformance: the layer hashes element bytes as-is and never
+        // byte-swaps, so the little-endian input contract is what makes the
+        // fingerprint platform-independent. An f32 = 1.0 is `00 00 80 3f` LE;
+        // feeding the byte-reversed (big-endian) arrangement of the same
+        // logical value must change the fingerprint, proving order is honored.
+        let f32_one_le: [u8; 4] = 1.0f32.to_le_bytes(); // 00 00 80 3f
+        let le = NdTensorInput {
+            tensor_id: "t".to_string(),
+            representation_id: RepresentationId::new("hyperspectral").unwrap(),
+            container: "ndarray".to_string(),
+            dtype: NdTensorDType::F32,
+            shape: vec![1, 1],
+            observation_ids: vec![ObservationId::new("obs.s1").unwrap()],
+            sample_ids: None,
+            data: f32_one_le.to_vec(),
+            row_presence: None,
+        };
+        let mut be = le.clone();
+        let mut reversed = f32_one_le;
+        reversed.reverse(); // 3f 80 00 00 — the BE arrangement
+        be.data = reversed.to_vec();
+        // Two LE builds match; the BE arrangement differs.
+        assert_eq!(fp(le.clone()), fp(le.clone()));
+        assert_ne!(fp(le), fp(be));
+    }
+
+    #[test]
+    fn tensor_fingerprint_distinguishes_row_presence_states() {
+        // No presence vs all-present-present mask are different logical states
+        // and must fingerprint differently (the absent-tag vs the framed mask).
+        let baseline = fp(rgb_input());
+        let mut with_presence = rgb_input();
+        with_presence.row_presence = Some(vec![true, true, true]);
+        let present_fp = fp(with_presence);
+        assert_ne!(baseline, present_fp);
+
+        let mut one_absent = rgb_input();
+        one_absent.row_presence = Some(vec![true, false, true]);
+        assert_ne!(present_fp, fp(one_absent));
+    }
+
+    #[test]
+    #[ignore = "perf sanity probe; run with --release --ignored --nocapture"]
+    fn tensor_fingerprint_large_payload_under_500ms() {
+        // Stream a ~12 MB u8-equivalent / ~12.7 M-element f32 payload; the
+        // streamed hash must stay well under the 500 ms budget (the old
+        // serde_json path expanded every byte to a JSON integer first). The
+        // budget is asserted only in optimized builds — an unoptimized
+        // `cargo test` runs sha2 with overflow checks and no SIMD, so its wall
+        // time is not "native" performance. The number is always printed.
+        let rows = 3021usize;
+        let cols = 1050usize;
+        let element_size = NdTensorDType::F32.element_size();
+        let data = vec![0x3Cu8; rows * cols * element_size];
+        let input = NdTensorInput {
+            tensor_id: "big".to_string(),
+            representation_id: RepresentationId::new("hyperspectral").unwrap(),
+            container: "ndarray".to_string(),
+            dtype: NdTensorDType::F32,
+            shape: vec![rows, cols],
+            observation_ids: (0..rows)
+                .map(|r| ObservationId::new(format!("obs.{r}")).unwrap())
+                .collect(),
+            sample_ids: None,
+            data,
+            row_presence: None,
+        };
+        let tensor = NdTensor::from_input(input).unwrap();
+        let start = std::time::Instant::now();
+        let fingerprint = tensor.fingerprint().unwrap();
+        let elapsed = start.elapsed();
+        println!(
+            "nd tensor fingerprint({rows}x{cols} f32) = {:.3} ms (fp={fingerprint})",
+            elapsed.as_secs_f64() * 1e3
+        );
+        assert_eq!(fingerprint.len(), 64);
+        if !cfg!(debug_assertions) {
+            assert!(
+                elapsed.as_millis() < 500,
+                "tensor fingerprint took {} ms (>= 500 ms budget)",
+                elapsed.as_millis()
+            );
+        }
     }
 }

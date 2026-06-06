@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::content_hash::StreamingHasher;
 use crate::coordinator::CoordinatorRelationSet;
 use crate::error::{DataError, Result};
 use crate::handle::{CoordinatorFeatureBlock, CoordinatorFeatureBlockF64, CoordinatorFeatureTable};
@@ -209,26 +209,59 @@ impl NumericFeatureBuffer {
         self.row_index_by_observation.contains_key(observation_id)
     }
 
+    /// Reproducibility fingerprint of the buffer's logical content as a 64-char
+    /// lowercase hex SHA-256.
+    ///
+    /// The preimage is fed to the hasher incrementally — there is NO
+    /// `O(n_cells)` intermediate byte vector or per-cell boxed value — so a
+    /// multi-million-cell matrix costs one fixed scratch buffer, not a
+    /// transient copy of the whole payload (the old `serde_json::to_vec` path).
+    ///
+    /// Preimage layout (every multi-byte field little-endian; every
+    /// variable-length field/collection length-prefixed so framing is
+    /// unambiguous):
+    ///
+    /// ```text
+    /// domain tag  b"dag-ml-data.numeric-feature-buffer.v2\0"   (fixed literal)
+    /// feature_set_id        : str   (u64 byte-len, then UTF-8)
+    /// representation_id     : str   (u64 byte-len, then UTF-8)
+    /// feature_names         : str[] (u64 count, then each str)
+    /// observation_ids       : str[] (u64 count, then each str)
+    /// n_rows                : u64   (fixed-width LE)
+    /// n_cols                : u64   (fixed-width LE)
+    /// cells row-major over (row, col):
+    ///   each cell           : 1 presence byte (1=Some, 0=None) + 8 LE f64 bytes
+    /// ```
+    ///
+    /// Rationale for the load-bearing choices:
+    /// * **Shape is hashed explicitly** as fixed-width `n_rows`/`n_cols`, and the
+    ///   cell stream is emitted in one fixed traversal, so a `2x3` and a `3x2`
+    ///   buffer with identical flat values produce different digests.
+    /// * **Storage is column-major** (`columns[feature][row]`); we deliberately
+    ///   traverse **row-major** over `(row, col)` and document that fixed order
+    ///   here. The constructors normalize both row-major and column-major typed
+    ///   inputs into the same `columns` storage, so the same logical matrix
+    ///   always streams in the same order regardless of input layout.
+    /// * **Masked cells** emit a `0` presence byte then 8 zero value bytes, a
+    ///   fixed 9-byte stride. The presence byte alone separates `None` from
+    ///   `Some(0.0)` (whose value bytes are also all zero), so a mask flip is
+    ///   never indistinguishable from a real value.
     pub fn fingerprint(&self) -> Result<String> {
-        #[derive(Serialize)]
-        struct FingerprintPayload<'a> {
-            feature_set_id: &'a str,
-            representation_id: &'a RepresentationId,
-            feature_names: &'a [String],
-            observation_ids: &'a [ObservationId],
-            columns: &'a [Vec<Option<f64>>],
+        let mut hasher = StreamingHasher::new(b"dag-ml-data.numeric-feature-buffer.v2\0");
+        hasher.absorb_str(&self.feature_set_id);
+        hasher.absorb_str(self.representation_id.as_str());
+        hasher.absorb_str_collection(self.feature_names.iter().map(String::as_str));
+        hasher.absorb_str_collection(self.observation_ids.iter().map(ObservationId::as_str));
+        let n_rows = self.row_count();
+        let n_cols = self.feature_count();
+        hasher.absorb_len(n_rows);
+        hasher.absorb_len(n_cols);
+        for row in 0..n_rows {
+            for column in &self.columns {
+                hasher.absorb_cell(column[row]);
+            }
         }
-
-        let payload = FingerprintPayload {
-            feature_set_id: &self.feature_set_id,
-            representation_id: &self.representation_id,
-            feature_names: &self.feature_names,
-            observation_ids: &self.observation_ids,
-            columns: &self.columns,
-        };
-        let json = serde_json::to_vec(&payload)?;
-        let digest = Sha256::digest(json);
-        Ok(to_hex(&digest))
+        Ok(hasher.finalize_hex())
     }
 
     pub fn manifest(&self) -> Result<NumericFeatureBufferManifest> {
@@ -894,15 +927,6 @@ fn validate_feature_shape(
     Ok(())
 }
 
-fn to_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write;
-        write!(&mut out, "{byte:02x}").expect("writing to string cannot fail");
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1260,6 +1284,237 @@ mod tests {
             row_major.fingerprint().unwrap(),
             columnar.fingerprint().unwrap()
         );
+    }
+
+    /// Builds an `rows x cols` buffer whose flat row-major values are
+    /// `0,1,2,...`, with generated feature / observation ids, no masking.
+    fn dense_buffer(rows: usize, cols: usize) -> NumericFeatureBuffer {
+        let columns = (0..cols)
+            .map(|c| (0..rows).map(|r| (r * cols + c) as f64).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let matrix = NumericFeatureMatrixF64Columnar {
+            feature_set_id: "x".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            feature_names: (0..cols).map(|c| format!("f{c}")).collect(),
+            observation_ids: (0..rows).map(|r| oid(&format!("obs.{r}"))).collect(),
+            columns,
+            validity_masks: None,
+        };
+        NumericFeatureBuffer::from_f64_column_matrix(matrix).unwrap()
+    }
+
+    #[test]
+    fn fingerprint_is_64_lowercase_hex() {
+        let fp = NumericFeatureBuffer::from_feature_table(table())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        assert_eq!(fp.len(), 64);
+        assert!(fp
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn fingerprint_is_deterministic_across_calls_and_clone() {
+        let buffer = NumericFeatureBuffer::from_feature_table(table()).unwrap();
+        let once = buffer.fingerprint().unwrap();
+        let twice = buffer.fingerprint().unwrap();
+        assert_eq!(once, twice, "same buffer hashed twice must match");
+        let clone = buffer.clone();
+        assert_eq!(
+            once,
+            clone.fingerprint().unwrap(),
+            "a clone must fingerprint identically"
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_when_a_single_cell_flips() {
+        let baseline = f64_column_matrix();
+        let base_fp = NumericFeatureBuffer::from_f64_column_matrix(baseline.clone())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        let mut flipped = baseline;
+        flipped.columns[0][0] += 1.0;
+        let flipped_fp = NumericFeatureBuffer::from_f64_column_matrix(flipped)
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        assert_ne!(base_fp, flipped_fp);
+    }
+
+    #[test]
+    fn fingerprint_changes_when_a_feature_is_renamed() {
+        let baseline = f64_column_matrix();
+        let base_fp = NumericFeatureBuffer::from_f64_column_matrix(baseline.clone())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        let mut renamed = baseline;
+        renamed.feature_names[0] = "f0_renamed".to_string();
+        let renamed_fp = NumericFeatureBuffer::from_f64_column_matrix(renamed)
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        assert_ne!(base_fp, renamed_fp);
+    }
+
+    #[test]
+    fn fingerprint_changes_when_observation_ids_are_reordered() {
+        // Reorder rows AND their values together so the buffer stays a valid
+        // permutation of the same logical rows; only row order changes.
+        let baseline = f64_column_matrix();
+        let base_fp = NumericFeatureBuffer::from_f64_column_matrix(baseline.clone())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        let mut reordered = baseline.clone();
+        reordered.observation_ids.swap(0, 2);
+        for column in &mut reordered.columns {
+            column.swap(0, 2);
+        }
+        if let Some(masks) = reordered.validity_masks.as_mut() {
+            for mask in masks {
+                mask.swap(0, 2);
+            }
+        }
+        let reordered_fp = NumericFeatureBuffer::from_f64_column_matrix(reordered)
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        assert_ne!(base_fp, reordered_fp);
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_transposed_shapes_with_identical_flat_values() {
+        // 2x3 and 3x2 share the flat row-major value sequence 0..6 but differ in
+        // shape. At the buffer level this is over-determined (the feature-name
+        // and observation-id collection counts also differ); the focused proof
+        // that the explicit n_rows/n_cols framing alone is load-bearing is
+        // `shape_framing_alone_changes_digest`, which holds the cell stream
+        // constant and varies only the shape integers.
+        let two_by_three = dense_buffer(2, 3).fingerprint().unwrap();
+        let three_by_two = dense_buffer(3, 2).fingerprint().unwrap();
+        assert_ne!(two_by_three, three_by_two);
+    }
+
+    #[test]
+    fn shape_framing_alone_changes_digest() {
+        // Reproduce just the shape + cell portion of the buffer preimage with
+        // the SAME six cells but transposed (n_rows, n_cols), proving the shape
+        // integers are what separate 2x3 from 3x2 — independent of names/ids.
+        let cells: [Option<f64>; 6] = [
+            Some(0.0),
+            Some(1.0),
+            Some(2.0),
+            Some(3.0),
+            Some(4.0),
+            Some(5.0),
+        ];
+        let digest = |rows: u64, cols: u64| {
+            let mut hasher = StreamingHasher::new(b"shape-probe\0");
+            hasher.absorb_u64(rows);
+            hasher.absorb_u64(cols);
+            for cell in cells {
+                hasher.absorb_cell(cell);
+            }
+            hasher.finalize_hex()
+        };
+        assert_ne!(digest(2, 3), digest(3, 2));
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_masked_cell_from_real_zero() {
+        // None vs Some(0.0): the value bytes are identical (all zero); only the
+        // presence byte separates them.
+        let masked = NumericFeatureMatrixF64Columnar {
+            feature_set_id: "x".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            feature_names: vec!["f0".to_string()],
+            observation_ids: vec![oid("obs.0")],
+            columns: vec![vec![0.0]],
+            validity_masks: Some(vec![vec![false]]),
+        };
+        let real_zero = NumericFeatureMatrixF64Columnar {
+            feature_set_id: "x".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            feature_names: vec!["f0".to_string()],
+            observation_ids: vec![oid("obs.0")],
+            columns: vec![vec![0.0]],
+            validity_masks: None,
+        };
+        let masked_fp = NumericFeatureBuffer::from_f64_column_matrix(masked)
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        let zero_fp = NumericFeatureBuffer::from_f64_column_matrix(real_zero)
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        assert_ne!(masked_fp, zero_fp);
+    }
+
+    #[test]
+    fn fingerprint_changes_when_representation_changes() {
+        let baseline = f64_column_matrix();
+        let base_fp = NumericFeatureBuffer::from_f64_column_matrix(baseline.clone())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        let mut other = baseline;
+        other.representation_id = RepresentationId::new("dense_signal").unwrap();
+        let other_fp = NumericFeatureBuffer::from_f64_column_matrix(other)
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+        assert_ne!(base_fp, other_fp);
+    }
+
+    #[test]
+    #[ignore = "perf sanity probe; run with --release --ignored --nocapture"]
+    fn fingerprint_large_buffer_under_500ms() {
+        // The historical serde_json path cost ~2.8 s on a 3021x1050 matrix in a
+        // WASM context (a ~31 MB transient allocation). Optimized native must be
+        // far under 500 ms with the streamed hash. The 500 ms budget is asserted
+        // only in optimized builds: an unoptimized `cargo test` runs the sha2
+        // compression with overflow checks and no SIMD, so its wall time is not
+        // representative of "native" performance and would be a false failure.
+        // The number is always printed.
+        let rows = 3021usize;
+        let cols = 1050usize;
+        let columns = (0..cols)
+            .map(|c| {
+                (0..rows)
+                    .map(|r| (r as f64) * 0.5 + (c as f64))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let matrix = NumericFeatureMatrixF64Columnar {
+            feature_set_id: "big".to_string(),
+            representation_id: RepresentationId::new("tabular_numeric").unwrap(),
+            feature_names: (0..cols).map(|c| format!("f{c}")).collect(),
+            observation_ids: (0..rows).map(|r| oid(&format!("obs.{r}"))).collect(),
+            columns,
+            validity_masks: None,
+        };
+        let buffer = NumericFeatureBuffer::from_f64_column_matrix(matrix).unwrap();
+        let start = std::time::Instant::now();
+        let fp = buffer.fingerprint().unwrap();
+        let elapsed = start.elapsed();
+        println!(
+            "fingerprint({rows}x{cols}) = {:.3} ms (fp={fp})",
+            elapsed.as_secs_f64() * 1e3
+        );
+        assert_eq!(fp.len(), 64);
+        if !cfg!(debug_assertions) {
+            assert!(
+                elapsed.as_millis() < 500,
+                "fingerprint took {} ms (>= 500 ms budget)",
+                elapsed.as_millis()
+            );
+        }
     }
 
     #[test]

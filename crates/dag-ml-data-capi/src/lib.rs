@@ -3525,7 +3525,10 @@ unsafe fn borrowed_tensor_view_to_input(
             "{label} data pointer is null"
         )));
     } else if view.strides_bytes.is_null() {
-        // Contiguous row-major: the payload is already canonical.
+        // Contiguous row-major: the payload is already canonical. Element bytes
+        // are copied verbatim and never byte-swapped, so multibyte dtypes must
+        // already be little-endian per the borrowed-view contract (this is what
+        // keeps the tensor fingerprint platform-independent).
         if view.data_len != canonical_bytes {
             return Err(dag_ml_data_core::DataError::Validation(format!(
                 "{label} contiguous data has {} bytes for shape {shape:?} dtype {dtype:?} ({canonical_bytes} expected)",
