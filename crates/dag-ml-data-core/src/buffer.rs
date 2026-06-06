@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use crate::coordinator::CoordinatorRelationSet;
 use crate::error::{DataError, Result};
-use crate::handle::{CoordinatorFeatureBlock, CoordinatorFeatureTable};
+use crate::handle::{CoordinatorFeatureBlock, CoordinatorFeatureBlockF64, CoordinatorFeatureTable};
 use crate::ids::{ObservationId, RepresentationId, SourceId};
 
 pub const NUMERIC_FEATURE_BUFFER_MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -375,6 +375,64 @@ impl NumericFeatureBuffer {
         })
     }
 
+    /// Like [`Self::project_relations`] but flattens the cells row-major
+    /// straight into one `Vec<f64>` — no `rows × cols` boxed
+    /// [`serde_json::Value`]s. This is the hot path for large numeric blocks
+    /// crossing a typed-array binding boundary. Masked (invalid) cells are an
+    /// error: the typed projection has no `Null` to project them into.
+    pub fn project_relations_f64(
+        &self,
+        relations: &CoordinatorRelationSet,
+        source_id: Option<&SourceId>,
+        columns: Option<&[String]>,
+    ) -> Result<CoordinatorFeatureBlockF64> {
+        relations.validate()?;
+        let selected_indices = self.selected_indices(columns)?;
+        let mut observation_ids = Vec::with_capacity(relations.records.len());
+        let mut sample_ids = Vec::with_capacity(relations.records.len());
+        let mut values = Vec::with_capacity(relations.records.len() * selected_indices.len());
+
+        for relation in relations.records.iter().filter(|relation| {
+            source_id
+                .map(|source_id| relation.source_id.as_ref() == Some(source_id))
+                .unwrap_or(true)
+        }) {
+            let row_idx = self
+                .row_index_by_observation
+                .get(&relation.observation_id)
+                .ok_or_else(|| {
+                    DataError::Validation(format!(
+                        "feature table `{}` has no row for observation `{}`",
+                        self.feature_set_id, relation.observation_id
+                    ))
+                })?;
+            for feature_idx in &selected_indices {
+                values.push(self.columns[*feature_idx][*row_idx].ok_or_else(|| {
+                    DataError::Validation(format!(
+                        "feature table `{}` observation `{}` feature `{}` is masked; the typed f64 projection requires fully numeric values",
+                        self.feature_set_id,
+                        relation.observation_id,
+                        self.feature_names[*feature_idx]
+                    ))
+                })?);
+            }
+            observation_ids.push(relation.observation_id.clone());
+            sample_ids.push(relation.sample_id.clone());
+        }
+
+        Ok(CoordinatorFeatureBlockF64 {
+            feature_set_id: self.feature_set_id.clone(),
+            representation_id: self.representation_id.clone(),
+            feature_names: selected_indices
+                .iter()
+                .map(|idx| self.feature_names[*idx].clone())
+                .collect(),
+            observation_ids,
+            sample_ids,
+            values,
+        })
+    }
+
     fn binding_for_sources(
         &self,
         source_ids: Vec<SourceId>,
@@ -642,6 +700,19 @@ impl NumericFeatureBufferStore {
         })?;
         buffer.project_relations(relations, source_id, columns)
     }
+
+    pub fn project_relations_f64(
+        &self,
+        feature_set_id: &str,
+        relations: &CoordinatorRelationSet,
+        source_id: Option<&SourceId>,
+        columns: Option<&[String]>,
+    ) -> Result<CoordinatorFeatureBlockF64> {
+        let buffer = self.buffers.get(feature_set_id).ok_or_else(|| {
+            DataError::Validation(format!("unknown feature buffer `{feature_set_id}`"))
+        })?;
+        buffer.project_relations_f64(relations, source_id, columns)
+    }
 }
 
 impl NumericFeatureBufferArena {
@@ -703,6 +774,19 @@ impl NumericFeatureBufferArena {
         self.validate_bound_sources(data_handle, feature_set_id, relations, source_id)?;
         self.store
             .project_relations(feature_set_id, relations, source_id, columns)
+    }
+
+    pub fn project_bound_relations_f64(
+        &self,
+        data_handle: u64,
+        feature_set_id: &str,
+        relations: &CoordinatorRelationSet,
+        source_id: Option<&SourceId>,
+        columns: Option<&[String]>,
+    ) -> Result<CoordinatorFeatureBlockF64> {
+        self.validate_bound_sources(data_handle, feature_set_id, relations, source_id)?;
+        self.store
+            .project_relations_f64(feature_set_id, relations, source_id, columns)
     }
 
     fn validate_bound_sources(
@@ -940,6 +1024,44 @@ mod tests {
             block.values,
             vec![vec![serde_json::Value::Null], vec![serde_json::json!(10.0)]]
         );
+    }
+
+    #[test]
+    fn typed_f64_projection_matches_boxed_projection() {
+        // Unmasked buffer: project_relations_f64 must yield the boxed block's
+        // rows concatenated row-major, with identical ids/names/ordering.
+        let mut matrix = f64_matrix();
+        matrix.validity_mask = None;
+        matrix.values = vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0];
+        let buffer = NumericFeatureBuffer::from_f64_matrix(matrix).unwrap();
+
+        let boxed = buffer.project_relations(&relations(), None, None).unwrap();
+        let typed = buffer
+            .project_relations_f64(&relations(), None, None)
+            .unwrap();
+
+        assert_eq!(typed.feature_set_id, boxed.feature_set_id);
+        assert_eq!(typed.representation_id, boxed.representation_id);
+        assert_eq!(typed.feature_names, boxed.feature_names);
+        assert_eq!(typed.observation_ids, boxed.observation_ids);
+        assert_eq!(typed.sample_ids, boxed.sample_ids);
+        let expected: Vec<f64> = boxed
+            .values
+            .iter()
+            .flat_map(|row| row.iter().map(|v| v.as_f64().unwrap()))
+            .collect();
+        assert_eq!(typed.values, expected);
+    }
+
+    #[test]
+    fn typed_f64_projection_rejects_masked_cells() {
+        // f64_matrix() masks obs.s2.nir/f1 — the boxed path projects Null, the
+        // typed path must refuse (it has no Null to project into).
+        let buffer = NumericFeatureBuffer::from_f64_matrix(f64_matrix()).unwrap();
+        let error = buffer
+            .project_relations_f64(&relations(), None, None)
+            .unwrap_err();
+        assert!(format!("{error}").contains("is masked"));
     }
 
     #[test]

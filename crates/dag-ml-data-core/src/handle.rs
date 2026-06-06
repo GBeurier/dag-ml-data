@@ -230,6 +230,21 @@ pub struct CoordinatorFeatureBlock {
     pub values: Vec<Vec<serde_json::Value>>,
 }
 
+/// Typed sibling of [`CoordinatorFeatureBlock`]: the same projection with the
+/// cells flattened row-major into one `Vec<f64>` instead of per-cell JSON
+/// values. Produced by the `*_f64` projection path so a large numeric block
+/// never allocates `rows × cols` boxed [`serde_json::Value`]s. Masked cells
+/// are rejected by that path (it has no `Null` to project them into).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoordinatorFeatureBlockF64 {
+    pub feature_set_id: String,
+    pub representation_id: RepresentationId,
+    pub feature_names: Vec<String>,
+    pub observation_ids: Vec<ObservationId>,
+    pub sample_ids: Vec<SampleId>,
+    pub values: Vec<f64>,
+}
+
 #[derive(Debug)]
 pub struct CoordinatorHandleArena {
     owner_controller: String,

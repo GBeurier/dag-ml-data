@@ -23,11 +23,12 @@ use std::sync::{Mutex, MutexGuard};
 use dag_ml_data_core::{
     fuse_feature_blocks, CollationPolicy, CoordinatorDataHandleRecord,
     CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorDataViewRecord,
-    CoordinatorFeatureBlock, CoordinatorHandleArena, CoordinatorRelationSet,
-    CoordinatorTargetBlock, CoordinatorTargetTable, DataError, DataView, FeatureFusionPolicy,
-    NdTensorArena, NdTensorBinding, NdTensorBlock, NdTensorManifest, NdTensorStore,
-    NumericFeatureBufferArena, NumericFeatureBufferBinding, NumericFeatureBufferManifest,
-    NumericFeatureBufferStore, Result, SampleAlignmentPlan, SourceFeatureBlock, SourceId, TargetId,
+    CoordinatorFeatureBlock, CoordinatorFeatureBlockF64, CoordinatorHandleArena,
+    CoordinatorRelationSet, CoordinatorTargetBlock, CoordinatorTargetTable, DataError, DataView,
+    FeatureFusionPolicy, NdTensorArena, NdTensorBinding, NdTensorBlock, NdTensorManifest,
+    NdTensorStore, NumericFeatureBufferArena, NumericFeatureBufferBinding,
+    NumericFeatureBufferManifest, NumericFeatureBufferStore, Result, SampleAlignmentPlan,
+    SourceFeatureBlock, SourceId, TargetId,
 };
 use serde::Deserialize;
 
@@ -221,6 +222,44 @@ impl InMemoryProvider {
             feature_set_id,
             &relations,
             source_id,
+            selected_columns.as_deref(),
+        )
+    }
+
+    /// Typed sibling of [`DagMlDataProvider::feature_block`]: projects the
+    /// feature set over the view straight into a flat row-major `Vec<f64>` —
+    /// no `rows × cols` boxed JSON values. The view's own column projection
+    /// (if any) is honored, exactly like the untyped path. Masked cells are an
+    /// error. This is the hot path for large numeric matrices crossing a
+    /// typed-array binding boundary (e.g. WASM `Float64Array`).
+    pub fn feature_block_f64(
+        &self,
+        view_handle: u64,
+        feature_set_id: &str,
+    ) -> Result<CoordinatorFeatureBlockF64> {
+        let arenas = self.lock_arenas()?;
+        let view_record =
+            arenas
+                .handles
+                .view_record(view_handle)
+                .ok_or(DataError::UnknownHandle {
+                    kind: "view",
+                    handle: view_handle,
+                })?;
+        let parent_record = arenas
+            .handles
+            .handle_record(view_record.parent_handle.handle)
+            .ok_or(DataError::UnknownHandle {
+                kind: "data",
+                handle: view_record.parent_handle.handle,
+            })?;
+        let relations = arenas.handles.view_identity(view_handle)?;
+        let selected_columns = view_record.view.columns.clone();
+        arenas.features.project_bound_relations_f64(
+            parent_record.handle.handle,
+            feature_set_id,
+            &relations,
+            None,
             selected_columns.as_deref(),
         )
     }

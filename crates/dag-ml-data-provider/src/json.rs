@@ -57,6 +57,11 @@ impl JsonInMemoryProvider {
     /// numeric input off the JSON value-transport path (ABI.md): a binding can
     /// hand a `Float64Array` straight through as one typed-array copy instead of
     /// stringifying O(rows×cols) decimals.
+    ///
+    /// DENSE-ONLY by contract: the matrix carries no `validity_mask` and every
+    /// value must be finite. Masked/missing data must come through the JSON
+    /// matrix path (`from_json` with `f64_feature_matrices_json`), which the
+    /// boxed [`Self::feature_block`] projection can serve as `null` cells.
     pub fn from_json_with_f64_values(
         envelope_json: &str,
         target_tables_json: Option<&str>,
@@ -123,9 +128,12 @@ impl JsonInMemoryProvider {
     /// Like [`Self::feature_block`] but returns the numeric matrix as a flat,
     /// row-major `Vec<f64>` plus a compact JSON layout sidecar (ids + shape, no
     /// per-cell values). This keeps the hot numeric OUTPUT off the JSON
-    /// value-transport path (ABI.md): instead of serializing O(rows×cols)
-    /// decimals into a string the caller re-parses, a binding marshals the f64
-    /// slice as one typed-array copy and reads the small layout separately.
+    /// value-transport path (ABI.md) END TO END: the typed projection flattens
+    /// straight from the columnar buffer — neither an O(rows×cols) JSON string
+    /// nor `rows × cols` boxed `serde_json::Value`s are ever allocated. A
+    /// binding marshals the f64 slice as one typed-array copy and reads the
+    /// small layout separately. Masked cells are an error (no `Null` to
+    /// project them into).
     pub fn feature_block_f64(
         &self,
         view_handle: &str,
@@ -133,27 +141,9 @@ impl JsonInMemoryProvider {
     ) -> Result<(String, Vec<f64>)> {
         let block = self
             .provider
-            .feature_block(parse_handle(view_handle)?, feature_set_id)?;
+            .feature_block_f64(parse_handle(view_handle)?, feature_set_id)?;
+        let n_rows = block.observation_ids.len();
         let n_cols = block.feature_names.len();
-        let n_rows = block.values.len();
-        let mut values = Vec::with_capacity(n_rows * n_cols);
-        for (row_idx, row) in block.values.iter().enumerate() {
-            if row.len() != n_cols {
-                return Err(DataError::Validation(format!(
-                    "feature block row {row_idx} has {} values, expected {n_cols}",
-                    row.len()
-                )));
-            }
-            for cell in row {
-                values.push(cell.as_f64().ok_or_else(|| {
-                    DataError::Validation(
-                        "feature block holds a non-numeric value; feature_block_f64 requires a \
-                         numeric feature set"
-                            .to_string(),
-                    )
-                })?);
-            }
-        }
         let layout = serde_json::json!({
             "feature_set_id": block.feature_set_id,
             "representation_id": block.representation_id,
@@ -164,7 +154,7 @@ impl JsonInMemoryProvider {
             "n_cols": n_cols,
         });
         let layout_json = serde_json::to_string(&layout).map_err(DataError::Serialization)?;
-        Ok((layout_json, values))
+        Ok((layout_json, block.values))
     }
 
     /// Collates a selector (single feature set or multi-source fusion) into a
