@@ -39,6 +39,33 @@ pub struct WasmInMemoryProvider {
     core: dag_ml_data_provider::JsonInMemoryProvider,
 }
 
+/// A typed feature projection: a compact JSON `layout` (ids + shape) plus the
+/// flat row-major `values`. The `values` getter marshals the f64 slice as one
+/// `Float64Array` copy — no O(rows×cols) JSON string for the browser to parse.
+#[cfg(feature = "provider")]
+#[wasm_bindgen]
+pub struct WasmFeatureBlockF64 {
+    layout: String,
+    values: Vec<f64>,
+}
+
+#[cfg(feature = "provider")]
+#[wasm_bindgen]
+impl WasmFeatureBlockF64 {
+    /// Compact JSON: `{ feature_set_id, representation_id, feature_names,
+    /// sample_ids, observation_ids, n_rows, n_cols }` — no per-cell values.
+    #[wasm_bindgen(getter)]
+    pub fn layout(&self) -> String {
+        self.layout.clone()
+    }
+
+    /// Flat row-major f64 values as a `Float64Array`. Consumes the block so the
+    /// buffer is moved out without a second copy in WASM memory.
+    pub fn into_values(self) -> Vec<f64> {
+        self.values
+    }
+}
+
 #[cfg(feature = "provider")]
 #[wasm_bindgen]
 impl WasmInMemoryProvider {
@@ -54,6 +81,29 @@ impl WasmInMemoryProvider {
             target_tables_json.as_deref(),
             feature_tables_json.as_deref(),
             f64_feature_matrices_json.as_deref(),
+        )
+        .map_err(js_core_error)?;
+        Ok(Self { core })
+    }
+
+    /// Typed-input constructor: the feature matrix's flat row-major `values`
+    /// arrive as a `Float64Array` (copied straight into WASM memory) instead of
+    /// a JSON array, so a large matrix never goes through `JSON.stringify` /
+    /// boxed-array encoding on the JS side. `feature_matrix_meta_json` carries
+    /// the matrix metadata (`feature_set_id`, `representation_id`,
+    /// `feature_names`, `observation_ids`) WITHOUT a `values` field.
+    #[wasm_bindgen(js_name = withF64Features)]
+    pub fn with_f64_features(
+        envelope_json: &str,
+        target_tables_json: Option<String>,
+        feature_matrix_meta_json: &str,
+        values: Vec<f64>,
+    ) -> Result<WasmInMemoryProvider, JsValue> {
+        let core = dag_ml_data_provider::JsonInMemoryProvider::from_json_with_f64_values(
+            envelope_json,
+            target_tables_json.as_deref(),
+            feature_matrix_meta_json,
+            values,
         )
         .map_err(js_core_error)?;
         Ok(Self { core })
@@ -87,6 +137,22 @@ impl WasmInMemoryProvider {
         self.core
             .feature_block(view_handle, feature_set_id)
             .map_err(js_core_error)
+    }
+
+    /// Typed-output projection: returns a [`WasmFeatureBlockF64`] whose `values`
+    /// are a flat `Float64Array`, avoiding the O(rows×cols) JSON of
+    /// [`Self::feature_block`] (the prime memory/latency cost on large datasets).
+    #[wasm_bindgen(js_name = featureBlockF64)]
+    pub fn feature_block_f64(
+        &self,
+        view_handle: &str,
+        feature_set_id: &str,
+    ) -> Result<WasmFeatureBlockF64, JsValue> {
+        let (layout, values) = self
+            .core
+            .feature_block_f64(view_handle, feature_set_id)
+            .map_err(js_core_error)?;
+        Ok(WasmFeatureBlockF64 { layout, values })
     }
 
     pub fn feature_collation(
@@ -319,11 +385,13 @@ fn contract_manifest() -> serde_json::Value {
         manifest["provider_surface"] = serde_json::json!("eager-inwasm-provider");
         manifest["provider_exports"] = serde_json::json!([
             "WasmInMemoryProvider.new",
+            "WasmInMemoryProvider.withF64Features",
             "WasmInMemoryProvider.materialize",
             "WasmInMemoryProvider.make_view",
             "WasmInMemoryProvider.view_identity",
             "WasmInMemoryProvider.target_block",
             "WasmInMemoryProvider.feature_block",
+            "WasmInMemoryProvider.featureBlockF64",
             "WasmInMemoryProvider.feature_collation",
             "WasmInMemoryProvider.feature_buffer_manifests",
             "WasmInMemoryProvider.data_feature_buffer_bindings",
@@ -335,10 +403,12 @@ fn contract_manifest() -> serde_json::Value {
             "view_identity",
             "target_block",
             "feature_block",
+            "feature_block_f64",
             "feature_collation",
             "feature_buffer_manifests",
             "data_feature_buffer_bindings",
-            "release"
+            "release",
+            "f64_typed_feature_io"
         ]);
     }
     manifest

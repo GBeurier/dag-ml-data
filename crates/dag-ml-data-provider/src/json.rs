@@ -17,9 +17,11 @@ use std::collections::BTreeMap;
 use dag_ml_data_core::{
     collate_feature_block, CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope,
     CoordinatorFeatureTable, CoordinatorTargetTable, DataError, DataView,
-    NumericFeatureBufferStore, NumericFeatureMatrixF64, Result, TargetId,
+    NumericFeatureBufferStore, NumericFeatureMatrixF64, ObservationId, RepresentationId, Result,
+    TargetId,
 };
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 
 use crate::{DagMlDataProvider, InMemoryProvider, ProviderFeatureCollationRequest};
 
@@ -42,6 +44,39 @@ impl JsonInMemoryProvider {
             serde_json::from_str(envelope_json).map_err(DataError::Serialization)?;
         let target_tables = parse_target_tables(target_tables_json)?;
         let feature_store = parse_feature_store(feature_tables_json, f64_feature_matrices_json)?;
+        Ok(Self {
+            provider: InMemoryProvider::new(envelope, target_tables, feature_store)?,
+        })
+    }
+
+    /// Builds the provider from a JSON envelope/targets plus exactly ONE f64
+    /// feature matrix whose flat row-major `values` are supplied as a typed
+    /// slice rather than encoded in JSON. The metadata (`feature_set_id`,
+    /// `representation_id`, `feature_names`, `observation_ids`) rides in
+    /// `feature_matrix_meta_json` WITHOUT a `values` field. This keeps the hot
+    /// numeric input off the JSON value-transport path (ABI.md): a binding can
+    /// hand a `Float64Array` straight through as one typed-array copy instead of
+    /// stringifying O(rows×cols) decimals.
+    pub fn from_json_with_f64_values(
+        envelope_json: &str,
+        target_tables_json: Option<&str>,
+        feature_matrix_meta_json: &str,
+        values: Vec<f64>,
+    ) -> Result<Self> {
+        let envelope: CoordinatorDataPlanEnvelope =
+            serde_json::from_str(envelope_json).map_err(DataError::Serialization)?;
+        let target_tables = parse_target_tables(target_tables_json)?;
+        let meta: F64FeatureMatrixMeta =
+            serde_json::from_str(feature_matrix_meta_json).map_err(DataError::Serialization)?;
+        let matrix = NumericFeatureMatrixF64 {
+            feature_set_id: meta.feature_set_id,
+            representation_id: meta.representation_id,
+            feature_names: meta.feature_names,
+            observation_ids: meta.observation_ids,
+            values,
+            validity_mask: None,
+        };
+        let feature_store = NumericFeatureBufferStore::from_f64_matrices(vec![matrix])?;
         Ok(Self {
             provider: InMemoryProvider::new(envelope, target_tables, feature_store)?,
         })
@@ -83,6 +118,53 @@ impl JsonInMemoryProvider {
             .provider
             .feature_block(parse_handle(view_handle)?, feature_set_id)?;
         serde_json::to_string(&block).map_err(DataError::Serialization)
+    }
+
+    /// Like [`Self::feature_block`] but returns the numeric matrix as a flat,
+    /// row-major `Vec<f64>` plus a compact JSON layout sidecar (ids + shape, no
+    /// per-cell values). This keeps the hot numeric OUTPUT off the JSON
+    /// value-transport path (ABI.md): instead of serializing O(rows×cols)
+    /// decimals into a string the caller re-parses, a binding marshals the f64
+    /// slice as one typed-array copy and reads the small layout separately.
+    pub fn feature_block_f64(
+        &self,
+        view_handle: &str,
+        feature_set_id: &str,
+    ) -> Result<(String, Vec<f64>)> {
+        let block = self
+            .provider
+            .feature_block(parse_handle(view_handle)?, feature_set_id)?;
+        let n_cols = block.feature_names.len();
+        let n_rows = block.values.len();
+        let mut values = Vec::with_capacity(n_rows * n_cols);
+        for (row_idx, row) in block.values.iter().enumerate() {
+            if row.len() != n_cols {
+                return Err(DataError::Validation(format!(
+                    "feature block row {row_idx} has {} values, expected {n_cols}",
+                    row.len()
+                )));
+            }
+            for cell in row {
+                values.push(cell.as_f64().ok_or_else(|| {
+                    DataError::Validation(
+                        "feature block holds a non-numeric value; feature_block_f64 requires a \
+                         numeric feature set"
+                            .to_string(),
+                    )
+                })?);
+            }
+        }
+        let layout = serde_json::json!({
+            "feature_set_id": block.feature_set_id,
+            "representation_id": block.representation_id,
+            "feature_names": block.feature_names,
+            "sample_ids": block.sample_ids,
+            "observation_ids": block.observation_ids,
+            "n_rows": n_rows,
+            "n_cols": n_cols,
+        });
+        let layout_json = serde_json::to_string(&layout).map_err(DataError::Serialization)?;
+        Ok((layout_json, values))
     }
 
     /// Collates a selector (single feature set or multi-source fusion) into a
@@ -158,6 +240,16 @@ fn parse_feature_store(
     }
 }
 
+/// Metadata for the typed-values constructor: a `NumericFeatureMatrixF64`
+/// minus its `values` (those arrive as a typed slice, not JSON).
+#[derive(Deserialize)]
+struct F64FeatureMatrixMeta {
+    feature_set_id: String,
+    representation_id: RepresentationId,
+    feature_names: Vec<String>,
+    observation_ids: Vec<ObservationId>,
+}
+
 /// Parses an optional JSON array; absent or blank input yields an empty Vec.
 fn parse_json_array<T: DeserializeOwned>(json: Option<&str>) -> Result<Vec<T>> {
     match json.map(str::trim).filter(|value| !value.is_empty()) {
@@ -222,6 +314,55 @@ mod tests {
         assert_eq!(tensor["shape"], serde_json::json!([3, 2]));
         assert!(tensor.get("values").is_some());
         assert!(tensor.get("presence_mask").is_some());
+    }
+
+    #[test]
+    fn feature_block_f64_matches_json_block() {
+        let provider = provider();
+        let data_handle = provider.materialize(REQUEST).unwrap();
+        let view = serde_json::json!({"sample_ids": ["S002", "S001"], "include_augmented": false})
+            .to_string();
+        let view_handle = provider.make_view(&data_handle, &view).unwrap();
+
+        let json_block: serde_json::Value =
+            serde_json::from_str(&provider.feature_block(&view_handle, "x").unwrap()).unwrap();
+        let (layout_json, values) = provider.feature_block_f64(&view_handle, "x").unwrap();
+        let layout: serde_json::Value = serde_json::from_str(&layout_json).unwrap();
+
+        // Same observation ordering + feature names, and the flat f64 values are
+        // the JSON block's rows concatenated row-major (no per-cell JSON).
+        assert_eq!(layout["observation_ids"], json_block["observation_ids"]);
+        assert_eq!(layout["feature_names"], json_block["feature_names"]);
+        assert_eq!(layout["n_cols"], serde_json::json!(2));
+        let expected: Vec<f64> = json_block["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|row| row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()))
+            .collect();
+        assert_eq!(values, expected);
+        assert_eq!(values.len() as i64, layout["n_rows"].as_i64().unwrap() * 2);
+    }
+
+    #[test]
+    fn from_json_with_f64_values_round_trips() {
+        // Same matrix as F64_MATRICES, but values come through the typed slice.
+        let meta = r#"{
+            "feature_set_id": "x",
+            "representation_id": "tabular_numeric",
+            "feature_names": ["f0", "f1"],
+            "observation_ids": ["obs.S001.base", "obs.S001.rep1", "obs.S001.aug0", "obs.S002.base"]
+        }"#;
+        let values = vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0];
+        let provider =
+            JsonInMemoryProvider::from_json_with_f64_values(ENVELOPE, None, meta, values).unwrap();
+        let data_handle = provider.materialize(REQUEST).unwrap();
+        let view = serde_json::json!({"sample_ids": ["S002", "S001"], "include_augmented": false})
+            .to_string();
+        let view_handle = provider.make_view(&data_handle, &view).unwrap();
+        let (_, values) = provider.feature_block_f64(&view_handle, "x").unwrap();
+        // S002.base row then S001.base, S001.rep1 (augmented excluded).
+        assert_eq!(values, vec![4.0, 40.0, 1.0, 10.0, 2.0, 20.0]);
     }
 
     #[test]
