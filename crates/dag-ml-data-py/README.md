@@ -8,10 +8,15 @@ own host data buffers, execute adapters or use the C ABI provider vtable.
 
 ## Build
 
+This crate is excluded from the root cargo workspace (its `abi3-py311` floor
+would force a Python >= 3.11 host on `cargo test --workspace` / `cargo
+llvm-cov`), so build and test it through its own manifest against a Python
+>= 3.11 interpreter:
+
 ```bash
-cargo test -p dag-ml-data-py
-maturin build --release --features extension-module
-python3 ../../scripts/smoke_python_bindings.py  # after installing the wheel
+PYO3_PYTHON=python3.11 cargo test --manifest-path crates/dag-ml-data-py/Cargo.toml
+maturin build --release --features extension-module   # run from this crate dir
+python3 ../../scripts/smoke_python_bindings.py        # after installing the wheel
 ```
 
 ## Python Surface

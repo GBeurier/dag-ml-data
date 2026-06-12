@@ -45,7 +45,9 @@ examples/
 cargo fmt --all --check
 cargo +1.83.0 check --workspace --all-targets
 cargo test --workspace
-cargo test -p dag-ml-data-py -p dag-ml-data-wasm
+cargo test -p dag-ml-data-wasm
+# dag-ml-data-py is excluded from the workspace (abi3-py311); test it standalone:
+PYO3_PYTHON=python3.11 cargo test --manifest-path crates/dag-ml-data-py/Cargo.toml
 python3 scripts/validate_release_metadata.py
 python3 scripts/check_error_taxonomy.py
 python3 scripts/check_deprecations.py

@@ -7,14 +7,25 @@ members = [
     "crates/dag-ml-data-cli",
     "crates/dag-ml-data-arrow",
     "crates/dag-ml-data-provider",
-    "crates/dag-ml-data-py",
     "crates/dag-ml-data-wasm",
 ]
-# The R (extendr) provider binding links against libR, so it is its own
-# standalone package — kept out of the default workspace + publish gate. Build it
-# with `cargo build --manifest-path crates/dag-ml-data-r/src/rust/Cargo.toml` or
-# `R CMD INSTALL crates/dag-ml-data-r`.
-exclude = ["crates/dag-ml-data-r"]
+exclude = [
+    # The R (extendr) provider binding links against libR, so it is its own
+    # standalone package — kept out of the default workspace + publish gate.
+    # Build it with
+    # `cargo build --manifest-path crates/dag-ml-data-r/src/rust/Cargo.toml` or
+    # `R CMD INSTALL crates/dag-ml-data-r`.
+    "crates/dag-ml-data-r",
+    # The PyO3 binding pins a minimum Python (`abi3-py311`), so pyo3-build-config
+    # refuses to build it against an older default interpreter. It is a leaf
+    # cdylib shipped as a PyPI wheel built with maturin against its own manifest
+    # (`cd crates/dag-ml-data-py && maturin build`) — never published to
+    # crates.io — so it is kept out of the default workspace + publish gate.
+    # `cargo test --workspace` and `cargo llvm-cov` then no longer require
+    # Python >= 3.11 on the host. Build/test it standalone with
+    # `cargo test --manifest-path crates/dag-ml-data-py/Cargo.toml`.
+    "crates/dag-ml-data-py",
+]
 
 [workspace.package]
 version = "0.1.0-alpha.0"
