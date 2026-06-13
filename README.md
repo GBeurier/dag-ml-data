@@ -95,3 +95,9 @@ The first useful milestone is a schema and planning core that can:
    materialize/view/identity/target/feature operations;
 10. provide a stdlib-only Python ABI smoke wrapper that external bindings can
     use as a starting conformance target.
+
+## License
+
+`dag-ml-data` is dual-licensed open-source — **`CeCILL-2.1 OR AGPL-3.0-or-later`** (your choice).
+See [`LICENSING.md`](LICENSING.md), the full texts under [`LICENSES/`](LICENSES/), and third-party
+attributions in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
