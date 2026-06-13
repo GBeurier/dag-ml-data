@@ -19,3 +19,14 @@ To change a shared ADR: edit it in `dag-ml`, copy verbatim here, run the contrac
 ## ADRs not mirrored here
 
 ADRs 03, 04, 08–18 govern the execution coordinator, bridge, packaging, CI, and governance — they live only in `dag-ml/docs/adr/`. Read them there when a `dag-ml-data` change touches the runtime, the C ABI lifecycle, or the release train (ADR-10).
+
+```{toctree}
+:maxdepth: 1
+:hidden:
+
+ADR-01-compatibility-ledger
+ADR-02-schema-evolution-sla
+ADR-05-repetition-cv-invariant
+ADR-06-signal-type-ownership
+ADR-07-aggregation-reducers
+```

@@ -8,6 +8,7 @@ extensions = [
     "myst_parser",
     "sphinx_copybutton",
     "sphinx_design",
+    "sphinx.ext.autosectionlabel",
 ]
 
 source_suffix = {
@@ -20,7 +21,9 @@ exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
-    "design/source/*",
+    # The full ML_DATA implementation source spec (and its index) is internal
+    # design material kept close to the code, not part of the published nav.
+    "design",
 ]
 
 myst_enable_extensions = [
@@ -28,13 +31,17 @@ myst_enable_extensions = [
     "deflist",
     "fieldlist",
     "substitution",
+    "tasklist",
+    "attrs_inline",
+    "dollarmath",
 ]
 myst_heading_anchors = 3
+
+# Prefix autosectionlabel targets with the document name so identical headings
+# across pages (e.g. "Status", "References") do not collide into duplicate
+# label warnings.
+autosectionlabel_prefix_document = True
 
 html_theme = "alabaster"
 html_title = "dag-ml-data"
 html_static_path: list[str] = []
-
-# The first public docs navigation is intentionally smaller than the complete
-# historical design archive. The build still validates linked pages.
-suppress_warnings = ["toc.not_included"]
