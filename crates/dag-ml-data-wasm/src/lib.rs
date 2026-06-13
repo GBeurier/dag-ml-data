@@ -5,7 +5,7 @@
 //! `nirs4all-lite` can run them in a browser before delegating heavy data
 //! access to a host provider.
 //!
-//! The opt-in `provider` feature adds [`WasmInMemoryProvider`], an EAGER
+//! The opt-in `provider` feature adds the `WasmInMemoryProvider` type, an EAGER
 //! in-WASM provider over `dag-ml-data-provider`'s `InMemoryProvider` (JSON in,
 //! JSON out, decimal-string handles). An async JS buffer-fetcher provider
 //! (fetching host buffers on demand via a Promise) is intentionally deferred to

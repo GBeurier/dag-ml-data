@@ -4,6 +4,11 @@
 # with maturin for the PyPI wheel, so it pins its own package metadata and
 # dependency versions (kept in sync with the root workspace) instead of
 # inheriting `*.workspace = true`, exactly like the excluded `dag-ml-data-r`.
+#
+# Keep this as a workspace root so maturin still works when the repo is checked
+# out inside another Cargo workspace during cross-repo CI.
+[workspace]
+
 [package]
 name = "dag-ml-data-py"
 description = "Python bindings for dag-ml-data JSON contracts."
