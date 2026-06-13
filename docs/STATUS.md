@@ -60,8 +60,9 @@ Implemented:
   matching the current PyO3 0.28.x floor;
 - CI supply-chain audit gate with pinned `cargo-audit` and
   `cargo audit --deny warnings`;
-- CI Python wheel metadata smoke for name/version, `Requires-Python`, MIT
-  license packaging, `abi3`, native extension, stubs and `py.typed`;
+- CI Python wheel metadata smoke for name/version, `Requires-Python`,
+  `CeCILL-2.1 OR AGPL-3.0-or-later` license packaging, `abi3`, native
+  extension, stubs and `py.typed`;
 - CI WASM package tarball gate via `wasm-pack pack` for browser-target npm
   artifacts;
 - CI npm tarball metadata gate via `npm pack --dry-run --json` for WASM

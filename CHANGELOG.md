@@ -47,8 +47,8 @@ Coordinator-envelope and other wire-shape changes follow
   `SampleRelationTable`, `FoldSet`, `CoordinatorDataPlanEnvelope`) and typed
   planning/envelope helpers on top of the stable JSON functions.
 - Python wheel metadata smoke now validates built wheel name/version,
-  `Requires-Python`, MIT license file, `abi3` tag, native extension, stubs and
-  `py.typed` before install smokes run.
+  `Requires-Python`, `CeCILL-2.1 OR AGPL-3.0-or-later` license file, `abi3` tag,
+  native extension, stubs and `py.typed` before install smokes run.
 - CI now gates Rust documentation with `RUSTDOCFLAGS="-D warnings" cargo doc`
   and runs a workspace package dry-run so publishability regressions fail
   before release.
