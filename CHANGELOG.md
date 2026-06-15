@@ -10,6 +10,10 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [0.2.0] - 2026-06-15
+
 ### Added
 - `docs/adr/` — the five Phase-0 ADRs where the data layer is the primary
   enforcement site (compatibility ledger, schema evolution SLA, repetition-CV
@@ -131,5 +135,6 @@ Foundation scaffold. Executable Rust crates with:
 - Object-level Python APIs above the JSON-contract PyO3 bindings and ctypes
   provider smoke (roadmap workstream D).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.1.0-alpha.0...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/GBeurier/dag-ml-data/releases/tag/v0.2.0
 [0.1.0-alpha.0]: https://github.com/GBeurier/dag-ml-data/releases/tag/v0.1.0-alpha.0

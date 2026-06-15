@@ -1,8 +1,15 @@
 # Status
 
-Current state: foundation scaffold plus coordinator data-plan envelope,
-materialized data/view handle smokes, target alignment smoke and minimal Arrow
-identity/target/feature export.
+Current state: 0.2.0 release surface for the data-contract and provider
+conformance layer.
+
+The release scope is intentionally bounded: schema/planning contracts,
+coordinator envelopes, relations/FoldSet validation, deterministic fingerprints,
+numeric buffers, N-D tensor transport, fitted adapter refs, in-memory provider
+conformance, C ABI helpers, Python/WASM JSON-contract bindings and cross-repo
+`dag-ml` fixtures are shipped and gated. Production host providers beyond the
+in-memory conformance backend, host-filtered branch views and the nirs4all
+connector remain explicit post-0.2.0 backlog.
 
 Implemented:
 
@@ -347,22 +354,19 @@ Implemented:
   public-doc ratchet floor is raised to track the current coverage (33% floor,
   measured 33.7%).
 
-Not implemented yet:
+Post-0.2.0 backlog:
 
 - production provider arenas for fused feature exports (the borrowed N-D tensor
   transport is now implemented; fused-feature exports remain in-memory-only);
-- reconcile the ADR-07 aggregation drift: dag-ml's coordinator-level
-  `aggregation_policy.method` enum omits `robust_mean` / `exclude_outliers` and
-  carries coordinator-only modes (`none`, `custom_controller`). The two layers
-  are intentionally distinct for now (no shared schema); a follow-up should add
-  canonical-reducer support / an explicit mapping in dag-ml and publish a shared
-  `aggregation_reducer_policy.v1` schema;
+- keep the documented ADR-07 aggregation mapping current; `robust_mean` /
+  `exclude_outliers` remain data-side reducers unless a future shared
+  `aggregation_reducer_policy.v1` schema is added;
 - wire `require_signal_type_match` into materialize/predict — blocked on a paired
   `dag-ml` lineage/bundle change that carries the expected signal type (no
   speculative `expected_signal_type` request field added);
 - nirs4all connector (descoped — owned by `nirs4all-io`, see ADR-0001).
 
-Next recommended task:
+Next recommended post-0.2.0 task:
 
 Write the honest host-adapter backlog in `dag-ml/docs/HOST_ADAPTER_BACKLOG.md`:
 process-adapter JSONL pattern is the only stable wire protocol for

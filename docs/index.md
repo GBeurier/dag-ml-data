@@ -21,6 +21,9 @@ owned by `nirs4all-io`; this repo stays NIRS-agnostic.
 | Check shipped vs pending scope | [Status](STATUS.md) |
 | Run the documented gates | [Test plan](TEST_PLAN.md) |
 | Review roadmap and release gates | [Roadmap](ROADMAP.md) |
+| Check the supported release surface | [Supported surface](SUPPORTED.md) |
+| Map aggregation with `dag-ml` | [Aggregation interop](AGGREGATION_INTEROP.md) |
+| Run release performance probes | [Performance probes](PERFORMANCE.md) |
 | Map nirs4all replacement data capabilities | [Capability matrix](CAPABILITY_MATRIX.md) |
 | Inspect shared contracts | [Contract manifests](contracts/README.md) |
 | Review shared decisions | [Architecture decisions](adr/README.md) |
@@ -103,6 +106,9 @@ MVP_ACCEPTANCE
 OOF_FIXTURES
 STATUS
 TEST_PLAN
+SUPPORTED
+AGGREGATION_INTEROP
+PERFORMANCE
 ```
 
 ```{toctree}

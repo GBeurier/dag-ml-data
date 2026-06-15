@@ -16,6 +16,9 @@ Use this as a validation map before development starts.
 | Roadmap | `docs/ROADMAP.md` | Sequenced delivery phases | Every phase has an observable definition of done |
 | Status | `docs/STATUS.md` | Current scaffold state and next actions | No hidden implementation claims |
 | Test plan | `docs/TEST_PLAN.md` | Schema, planner and ABI tests | Fingerprints and path solving are covered |
+| Supported surface | `docs/SUPPORTED.md` | Release support matrix and public-signature policy | Production, conformance, experimental and backlog surfaces are separated |
+| Aggregation interop | `docs/AGGREGATION_INTEROP.md` | Mapping between data-side reducers and coordinator aggregation policies | Cross-repo reducer drift is explicit |
+| Performance probes | `docs/PERFORMANCE.md` | Private 0.2.0 performance sanity probes | Critical data-path regressions are measurable |
 | Source design | `docs/design/source/ml_data_specification_v1.md` | Full ML_DATA contract | Used as implementation source of truth |
 | Core crate | `crates/dag-ml-data-core` | Schema, representation and data-plan primitives | `cargo test -p dag-ml-data-core` passes |
 | C ABI crate | `crates/dag-ml-data-capi` | FFI-safe helpers and `DataVTable` shape | Header mirrors Rust ABI structs |

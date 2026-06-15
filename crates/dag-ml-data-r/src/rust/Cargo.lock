@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-data-core"
-version = "0.1.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-data-provider"
-version = "0.1.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "dag-ml-data-core",
  "serde",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-data-r"
-version = "0.1.0-alpha.0"
+version = "0.2.0"
 dependencies = [
  "dag-ml-data-core",
  "dag-ml-data-provider",

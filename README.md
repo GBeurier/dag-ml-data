@@ -8,12 +8,12 @@ sample relations, representation adapters, data plans, alignment/collation
 contracts and schema fingerprints. It does not own ML phases, CV orchestration,
 OOF joins or model execution; those belong to `dag-ml`.
 
-> Status: foundation scaffold plus coordinator envelope, handle/materialized-view
-> smoke, target alignment smoke, an in-memory C ABI provider vtable and a
-> reusable Python `ctypes` smoke wrapper for identity/target/feature Arrow
-> exports. The project has executable Rust crates, C ABI header, CLI
-> fingerprinting/planning/materialization commands, ADR-11 structured error
-> descriptors, design documents, rationale, roadmap, CI and contract tests.
+> Status: 0.2.0 release hardening complete. The schema/planning contracts, coordinator envelope,
+> handle/view lifecycle, in-memory provider vtable, Arrow/tensor exports,
+> Python `ctypes` conformance package and cross-repo `dag-ml` fixtures are
+> executable and gated. Production support is intentionally scoped; see
+> [`docs/SUPPORTED.md`](docs/SUPPORTED.md) before treating a provider backend or
+> binding surface as release-supported.
 
 ## Repository Layout
 
@@ -32,6 +32,7 @@ docs/
   RATIONALE.md        # why this is separate from dag-ml
   ROADMAP.md          # delivery phases and gates
   STATUS.md           # current state and next tasks
+  SUPPORTED.md        # release support matrix and public-signature policy
   TEST_PLAN.md        # contract/conformance test strategy
   design/source/      # moved ML_DATA source specification
 examples/
@@ -75,9 +76,9 @@ node scripts/smoke_wasm_web_bindings.mjs "$web_out_dir"
 node scripts/smoke_wasm_tarball_metadata.mjs "$web_out_dir"
 ```
 
-## First Implementation Target
+## 0.2.0 Release Scope
 
-The first useful milestone is a schema and planning core that can:
+The supported 0.2.0 scope is a schema and planning core that can:
 
 1. parse and validate canonical dataset schemas;
 2. describe semantic axes and representations;
