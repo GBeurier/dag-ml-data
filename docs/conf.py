@@ -9,6 +9,7 @@ extensions = [
     "sphinx_copybutton",
     "sphinx_design",
     "sphinx.ext.autosectionlabel",
+    "sphinxext.opengraph",
 ]
 
 source_suffix = {
@@ -44,4 +45,9 @@ autosectionlabel_prefix_document = True
 
 html_theme = "alabaster"
 html_title = "dag-ml-data"
-html_static_path: list[str] = []
+html_static_path: list[str] = ["_static"]
+html_logo = "_static/brand/stacked.png"
+html_favicon = "_static/brand/favicon.ico"
+
+ogp_site_url = "https://dag-ml-data.readthedocs.io/en/latest/"
+ogp_image = "https://dag-ml-data.readthedocs.io/en/latest/_static/brand/og.png"
