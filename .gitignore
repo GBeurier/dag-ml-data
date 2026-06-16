@@ -14,3 +14,10 @@ crates/*/pkg-web/
 
 # local code-intelligence index
 .codegraph/
+
+# --- untracked build/process docs (kept locally, 2026-06-16) ---
+docs/MVP_ACCEPTANCE.md
+docs/ROADMAP.md
+docs/STATUS.md
+docs/TEST_PLAN.md
+docs/TOC.md
