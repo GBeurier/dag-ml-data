@@ -638,6 +638,7 @@ mod tests {
             origin_sample_id: None,
             source_id: Some(SourceId::new(source).unwrap()),
             is_augmented: false,
+            excluded: false,
         }
     }
 

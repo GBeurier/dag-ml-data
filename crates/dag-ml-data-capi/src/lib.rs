@@ -9311,6 +9311,7 @@ mod tests {
                         origin_sample_id: None,
                         source_id: Some(SourceId::new("nir").unwrap()),
                         is_augmented: false,
+                        excluded: false,
                     },
                     CoordinatorRelation {
                         observation_id: ObservationId::new("obs.S001.r2").unwrap(),
@@ -9320,6 +9321,7 @@ mod tests {
                         origin_sample_id: None,
                         source_id: Some(SourceId::new("nir").unwrap()),
                         is_augmented: false,
+                        excluded: false,
                     },
                     CoordinatorRelation {
                         observation_id: ObservationId::new("obs.S002.r1").unwrap(),
@@ -9329,6 +9331,7 @@ mod tests {
                         origin_sample_id: None,
                         source_id: Some(SourceId::new("nir").unwrap()),
                         is_augmented: false,
+                        excluded: false,
                     },
                     CoordinatorRelation {
                         observation_id: ObservationId::new("chem.S001").unwrap(),
@@ -9338,6 +9341,7 @@ mod tests {
                         origin_sample_id: None,
                         source_id: Some(SourceId::new("chem").unwrap()),
                         is_augmented: false,
+                        excluded: false,
                     },
                     CoordinatorRelation {
                         observation_id: ObservationId::new("chem.S002").unwrap(),
@@ -9347,6 +9351,7 @@ mod tests {
                         origin_sample_id: None,
                         source_id: Some(SourceId::new("chem").unwrap()),
                         is_augmented: false,
+                        excluded: false,
                     },
                 ],
             }),
