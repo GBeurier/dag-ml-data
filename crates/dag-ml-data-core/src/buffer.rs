@@ -1009,6 +1009,7 @@ mod tests {
             origin_sample_id: None,
             source_id: Some(source(source_id)),
             is_augmented: false,
+            excluded: false,
         }
     }
 

@@ -862,6 +862,7 @@ fn filter_relations(
                 .unwrap_or(true)
         })
         .filter(|relation| view.include_augmented || !relation.1.is_augmented)
+        .filter(|relation| view.include_excluded || !relation.1.excluded)
         .map(|(idx, relation)| (idx, relation.clone()))
         .collect::<Vec<_>>();
     if filtered.is_empty() {
@@ -1002,6 +1003,7 @@ mod tests {
                 origin_sample_id: None,
                 source_id: Some(chem.clone()),
                 is_augmented: false,
+                excluded: false,
             });
         envelope.validate().unwrap();
 
@@ -1059,6 +1061,61 @@ mod tests {
     }
 
     #[test]
+    fn view_drops_excluded_rows_for_training_and_keeps_them_otherwise() {
+        // Mark the sole S002 observation excluded. Under a training policy
+        // (`include_excluded=false`) it must be filtered out; under a
+        // validation/predict policy (`include_excluded=true`) it must be kept.
+        let mut envelope = envelope();
+        for record in &mut envelope.coordinator_relations.as_mut().unwrap().records {
+            if record.observation_id.as_str() == "obs.S002.base" {
+                record.excluded = true;
+            }
+        }
+        // `relation_fingerprint` is a replay key for the *source* relation
+        // table, not for the derived coordinator_relations we just edited, so
+        // it stays intact: the embedded coordinator relations are validated
+        // structurally, and `excluded` does not participate in that fingerprint.
+        envelope.validate().unwrap();
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope, &request()).unwrap();
+
+        // Training view: excluded S002 row is dropped.
+        let train_view = DataView {
+            include_augmented: true,
+            include_excluded: false,
+            ..Default::default()
+        };
+        let train_record = arena.make_view(data.handle.handle, &train_view).unwrap();
+        let train_identity = arena.view_identity(train_record.handle.handle).unwrap();
+        assert!(
+            train_identity
+                .records
+                .iter()
+                .all(|record| record.sample_id.as_str() != "S002"),
+            "excluded sample S002 must be absent from a training view"
+        );
+        assert_eq!(train_record.relation_record_count, 3);
+
+        // Validation/predict view: excluded S002 row is retained.
+        let predict_view = DataView {
+            include_augmented: true,
+            include_excluded: true,
+            ..Default::default()
+        };
+        let predict_record = arena.make_view(data.handle.handle, &predict_view).unwrap();
+        let predict_identity = arena.view_identity(predict_record.handle.handle).unwrap();
+        assert!(
+            predict_identity
+                .records
+                .iter()
+                .any(|record| record.sample_id.as_str() == "S002"),
+            "excluded sample S002 must be present in a validation/predict view"
+        );
+        assert_eq!(predict_record.relation_record_count, 4);
+    }
+
+    #[test]
     fn branch_view_by_source_filters_relations_to_branch_sources() {
         use crate::coordinator::{
             CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
@@ -1091,6 +1148,7 @@ mod tests {
                 origin_sample_id: None,
                 source_id: Some(chem.clone()),
                 is_augmented: false,
+                excluded: false,
             });
         envelope.validate().unwrap();
         let mut request = request();

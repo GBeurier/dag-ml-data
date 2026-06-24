@@ -32,6 +32,8 @@ pub struct CoordinatorRelation {
     pub source_id: Option<SourceId>,
     #[serde(default)]
     pub is_augmented: bool,
+    #[serde(default)]
+    pub excluded: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -309,6 +311,7 @@ pub fn coordinator_relations_from_sample_table(
                 origin_sample_id,
                 source_id: row.source_id.clone(),
                 is_augmented: row.augmented,
+                excluded: row.excluded,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -366,6 +369,46 @@ mod tests {
             Some("S001".to_string())
         );
         assert!(augmented.is_augmented);
+    }
+
+    #[test]
+    fn conversion_carries_excluded_bit() {
+        use crate::ids::ObservationId;
+        use crate::relation::{SampleRelation, SampleRelationTable};
+
+        let row = |observation: &str, sample: &str, excluded: bool| SampleRelation {
+            observation_id: ObservationId::new(observation).unwrap(),
+            sample_id: SampleId::new(sample).unwrap(),
+            source_id: None,
+            target_id: None,
+            group_id: None,
+            origin_id: None,
+            repetition_id: None,
+            augmented: false,
+            excluded,
+            metadata: BTreeMap::new(),
+            augmentation: None,
+        };
+        let table = SampleRelationTable {
+            rows: vec![row("obs.X", "X", true), row("obs.Y", "Y", false)],
+        };
+
+        let converted = coordinator_relations_from_sample_table(&table).unwrap();
+        let x = converted
+            .records
+            .iter()
+            .find(|record| record.observation_id.as_str() == "obs.X")
+            .unwrap();
+        let y = converted
+            .records
+            .iter()
+            .find(|record| record.observation_id.as_str() == "obs.Y")
+            .unwrap();
+        assert!(
+            x.excluded,
+            "excluded bit must propagate into coordinator relation"
+        );
+        assert!(!y.excluded, "non-excluded rows stay excluded=false");
     }
 
     #[test]
