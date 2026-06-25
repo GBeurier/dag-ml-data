@@ -1392,6 +1392,61 @@ mod tests {
     }
 
     #[test]
+    fn branch_view_empty_partition_intersection_raises_a_clear_error() {
+        // A branch_view scoped to group=B, intersected with a fold restriction
+        // (sample_ids) that contains ONLY S001 samples, selects no relations —
+        // the empty partition ∩ fold case. The arena must surface this explicitly
+        // rather than returning an empty view (no silent mis-coverage).
+        use crate::coordinator::{
+            CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
+        };
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let envelope = tagged_envelope();
+        let data = arena.materialize(&envelope, &request()).unwrap();
+
+        // The S001 sample id only (group=A); group=B (S002) is disjoint from this.
+        // `DataView.sample_ids` rejects duplicates, so collect the distinct id.
+        let s001_samples: Vec<SampleId> = envelope
+            .coordinator_relations
+            .as_ref()
+            .unwrap()
+            .records
+            .iter()
+            .filter(|record| record.sample_id.as_str() == "S001")
+            .map(|record| record.sample_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert!(!s001_samples.is_empty(), "fixture must carry S001 samples");
+
+        let view = DataView {
+            branch_view: Some(CoordinatorBranchView {
+                view_id: "branch_view:group_B".to_string(),
+                branch_id: "branch:group_B".to_string(),
+                mode: CoordinatorBranchViewMode::ByMetadata,
+                selector: CoordinatorBranchViewSelector {
+                    metadata: BTreeMap::from([("group".to_string(), serde_json::json!("B"))]),
+                    ..Default::default()
+                },
+                allow_overlap: false,
+                metadata: BTreeMap::new(),
+            }),
+            sample_ids: Some(s001_samples),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let error = arena
+            .make_view(data.handle.handle, &view)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("selected no coordinator relations"),
+            "empty branch ∩ fold must raise a clear error: {error}"
+        );
+    }
+
+    #[test]
     fn branch_view_by_filter_mode_still_requires_host_filtering() {
         use crate::coordinator::{
             CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
