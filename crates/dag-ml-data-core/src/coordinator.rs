@@ -34,6 +34,13 @@ pub struct CoordinatorRelation {
     pub is_augmented: bool,
     #[serde(default)]
     pub excluded: bool,
+    // Metadata + tags carried from the source `SampleRelation` so `by_metadata`
+    // and `by_tag` branch views filter natively in the in-memory provider.
+    // Skipped when empty so existing coordinator relations stay byte-identical.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -312,6 +319,8 @@ pub fn coordinator_relations_from_sample_table(
                 source_id: row.source_id.clone(),
                 is_augmented: row.augmented,
                 excluded: row.excluded,
+                metadata: row.metadata.clone(),
+                tags: row.tags.clone(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -387,6 +396,7 @@ mod tests {
             augmented: false,
             excluded,
             metadata: BTreeMap::new(),
+            tags: Vec::new(),
             augmentation: None,
         };
         let table = SampleRelationTable {

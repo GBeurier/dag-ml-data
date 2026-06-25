@@ -9203,6 +9203,7 @@ mod tests {
             augmented: false,
             excluded: false,
             metadata: BTreeMap::new(),
+            tags: Vec::new(),
             augmentation: None,
         };
         let relations = SampleRelationTable {
@@ -9312,6 +9313,8 @@ mod tests {
                         source_id: Some(SourceId::new("nir").unwrap()),
                         is_augmented: false,
                         excluded: false,
+                        metadata: BTreeMap::new(),
+                        tags: Vec::new(),
                     },
                     CoordinatorRelation {
                         observation_id: ObservationId::new("obs.S001.r2").unwrap(),
@@ -9322,6 +9325,8 @@ mod tests {
                         source_id: Some(SourceId::new("nir").unwrap()),
                         is_augmented: false,
                         excluded: false,
+                        metadata: BTreeMap::new(),
+                        tags: Vec::new(),
                     },
                     CoordinatorRelation {
                         observation_id: ObservationId::new("obs.S002.r1").unwrap(),
@@ -9332,6 +9337,8 @@ mod tests {
                         source_id: Some(SourceId::new("nir").unwrap()),
                         is_augmented: false,
                         excluded: false,
+                        metadata: BTreeMap::new(),
+                        tags: Vec::new(),
                     },
                     CoordinatorRelation {
                         observation_id: ObservationId::new("chem.S001").unwrap(),
@@ -9342,6 +9349,8 @@ mod tests {
                         source_id: Some(SourceId::new("chem").unwrap()),
                         is_augmented: false,
                         excluded: false,
+                        metadata: BTreeMap::new(),
+                        tags: Vec::new(),
                     },
                     CoordinatorRelation {
                         observation_id: ObservationId::new("chem.S002").unwrap(),
@@ -9352,6 +9361,8 @@ mod tests {
                         source_id: Some(SourceId::new("chem").unwrap()),
                         is_augmented: false,
                         excluded: false,
+                        metadata: BTreeMap::new(),
+                        tags: Vec::new(),
                     },
                 ],
             }),
