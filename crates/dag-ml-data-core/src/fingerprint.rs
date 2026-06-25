@@ -258,6 +258,31 @@ mod tests {
     }
 
     #[test]
+    fn empty_tags_keep_relation_fingerprint_byte_identical() {
+        // `tags` is skip-serialized when empty, so attaching an empty Vec to a
+        // row must not change the source-relation fingerprint; a non-empty value
+        // does change it (it changes which samples a `by_tag` view selects).
+        let base: crate::relation::SampleRelationTable = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/oof_campaign/sample_relations_grouped_augmented.json"
+        ))
+        .unwrap();
+
+        let mut explicit_empty = base.clone();
+        explicit_empty.rows[0].tags = Vec::new();
+        assert_eq!(
+            sample_relation_fingerprint(&base).unwrap(),
+            sample_relation_fingerprint(&explicit_empty).unwrap()
+        );
+
+        let mut with_tags = base.clone();
+        with_tags.rows[0].tags = vec!["clean".to_string()];
+        assert_ne!(
+            sample_relation_fingerprint(&base).unwrap(),
+            sample_relation_fingerprint(&with_tags).unwrap()
+        );
+    }
+
+    #[test]
     fn fold_set_fingerprint_is_independent_of_ordering() {
         let mut left = FoldSet {
             id: "cv.partition".to_string(),

@@ -639,6 +639,8 @@ mod tests {
             source_id: Some(SourceId::new(source).unwrap()),
             is_augmented: false,
             excluded: false,
+            metadata: BTreeMap::new(),
+            tags: Vec::new(),
         }
     }
 

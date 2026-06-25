@@ -805,26 +805,41 @@ fn filter_relations(
     // handle); the branch selector is the subset this branch cares about.
     // Intersection prevents a branch from silently widening past what was
     // actually materialized.
-    let branch_source_filter = match view.branch_view.as_ref() {
-        Some(branch_view) => match branch_view.mode {
-            crate::coordinator::CoordinatorBranchViewMode::BySource => Some(
-                branch_view
-                    .selector
-                    .source_ids
-                    .iter()
-                    .collect::<BTreeSet<_>>(),
-            ),
-            crate::coordinator::CoordinatorBranchViewMode::Separation => None,
-            other_mode => {
+    let mut branch_source_filter: Option<BTreeSet<&SourceId>> = None;
+    let mut branch_metadata_filter: Option<&BTreeMap<String, serde_json::Value>> = None;
+    let mut branch_tag_filter: Option<BTreeSet<&String>> = None;
+    if let Some(branch_view) = view.branch_view.as_ref() {
+        match branch_view.mode {
+            crate::coordinator::CoordinatorBranchViewMode::BySource => {
+                branch_source_filter = Some(
+                    branch_view
+                        .selector
+                        .source_ids
+                        .iter()
+                        .collect::<BTreeSet<_>>(),
+                );
+            }
+            // A relation matches a `by_metadata` selector iff its own metadata
+            // contains every selector key with an equal value; `by_tag` iff its
+            // tags contain every selector tag.
+            crate::coordinator::CoordinatorBranchViewMode::ByMetadata => {
+                branch_metadata_filter = Some(&branch_view.selector.metadata);
+            }
+            crate::coordinator::CoordinatorBranchViewMode::ByTag => {
+                branch_tag_filter = Some(branch_view.selector.tags.iter().collect::<BTreeSet<_>>());
+            }
+            crate::coordinator::CoordinatorBranchViewMode::Separation => {}
+            // `by_filter` needs a deterministic predicate DSL that the in-memory
+            // arena does not yet evaluate; it stays host-side for now.
+            other_mode @ crate::coordinator::CoordinatorBranchViewMode::ByFilter => {
                 return Err(DataError::Validation(format!(
                     "coordinator branch view `{}` mode={:?} requires host-side filtering; \
-                     in-memory arena only natively executes by_source",
+                     in-memory arena natively executes by_source, by_metadata and by_tag",
                     branch_view.view_id, other_mode,
                 )));
             }
-        },
-        None => None,
-    };
+        }
+    }
     let mut filtered = relations
         .iter()
         .enumerate()
@@ -859,6 +874,23 @@ fn filter_relations(
                         .map(|source_id| sources.contains(source_id))
                         .unwrap_or(false)
                 })
+                .unwrap_or(true)
+        })
+        .filter(|relation| {
+            let relation = relation.1;
+            branch_metadata_filter
+                .map(|selector| {
+                    selector
+                        .iter()
+                        .all(|(key, value)| relation.metadata.get(key) == Some(value))
+                })
+                .unwrap_or(true)
+        })
+        .filter(|relation| {
+            let relation = relation.1;
+            branch_tag_filter
+                .as_ref()
+                .map(|tags| tags.iter().all(|tag| relation.tags.contains(tag)))
                 .unwrap_or(true)
         })
         .filter(|relation| view.include_augmented || !relation.1.is_augmented)
@@ -1004,6 +1036,8 @@ mod tests {
                 source_id: Some(chem.clone()),
                 is_augmented: false,
                 excluded: false,
+                metadata: BTreeMap::new(),
+                tags: Vec::new(),
             });
         envelope.validate().unwrap();
 
@@ -1149,6 +1183,8 @@ mod tests {
                 source_id: Some(chem.clone()),
                 is_augmented: false,
                 excluded: false,
+                metadata: BTreeMap::new(),
+                tags: Vec::new(),
             });
         envelope.validate().unwrap();
         let mut request = request();
@@ -1216,61 +1252,176 @@ mod tests {
         assert!(!identity.records.is_empty());
     }
 
+    /// Build the shared envelope, tagging S001 observations with
+    /// `metadata={"group":"A"}` + `tags=["clean"]` and the S002 observation
+    /// with `metadata={"group":"B"}` + `tags=["dirty"]`, so `by_metadata` /
+    /// `by_tag` branch views have something to discriminate on. Editing the
+    /// derived `coordinator_relations` does not invalidate the source
+    /// `relation_fingerprint` (it is a replay key for the source table, not the
+    /// derived view).
+    fn tagged_envelope() -> CoordinatorDataPlanEnvelope {
+        let mut envelope = envelope();
+        for record in &mut envelope.coordinator_relations.as_mut().unwrap().records {
+            let (group, tag) = if record.sample_id.as_str() == "S002" {
+                ("B", "dirty")
+            } else {
+                ("A", "clean")
+            };
+            record
+                .metadata
+                .insert("group".to_string(), serde_json::json!(group));
+            record.tags = vec![tag.to_string()];
+        }
+        envelope.validate().unwrap();
+        envelope
+    }
+
     #[test]
-    fn branch_view_by_metadata_tag_filter_modes_require_host_filtering() {
+    fn branch_view_by_metadata_filters_relations_natively() {
+        use crate::coordinator::{
+            CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
+        };
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&tagged_envelope(), &request()).unwrap();
+
+        let by_metadata = |group: &str| CoordinatorBranchView {
+            view_id: format!("branch_view:group_{group}"),
+            branch_id: format!("branch:group_{group}"),
+            mode: CoordinatorBranchViewMode::ByMetadata,
+            selector: CoordinatorBranchViewSelector {
+                metadata: BTreeMap::from([("group".to_string(), serde_json::json!(group))]),
+                ..Default::default()
+            },
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        };
+
+        // group=A INCLUDES the S001 relations and EXCLUDES S002.
+        let view_a = DataView {
+            branch_view: Some(by_metadata("A")),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let record_a = arena.make_view(data.handle.handle, &view_a).unwrap();
+        let identity_a = arena.view_identity(record_a.handle.handle).unwrap();
+        assert!(
+            identity_a
+                .records
+                .iter()
+                .all(|record| record.sample_id.as_str() == "S001"),
+            "by_metadata group=A must include only S001 relations"
+        );
+        assert!(
+            identity_a
+                .records
+                .iter()
+                .any(|record| record.sample_id.as_str() == "S001"),
+            "by_metadata group=A must keep the matching S001 relations"
+        );
+
+        // group=B INCLUDES S002 and EXCLUDES S001.
+        let view_b = DataView {
+            branch_view: Some(by_metadata("B")),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let record_b = arena.make_view(data.handle.handle, &view_b).unwrap();
+        let identity_b = arena.view_identity(record_b.handle.handle).unwrap();
+        assert!(
+            identity_b
+                .records
+                .iter()
+                .all(|record| record.sample_id.as_str() == "S002"),
+            "by_metadata group=B must exclude S001 relations"
+        );
+    }
+
+    #[test]
+    fn branch_view_by_tag_filters_relations_natively() {
+        use crate::coordinator::{
+            CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
+        };
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&tagged_envelope(), &request()).unwrap();
+
+        let by_tag = |tag: &str| CoordinatorBranchView {
+            view_id: format!("branch_view:tag_{tag}"),
+            branch_id: format!("branch:tag_{tag}"),
+            mode: CoordinatorBranchViewMode::ByTag,
+            selector: CoordinatorBranchViewSelector {
+                tags: vec![tag.to_string()],
+                ..Default::default()
+            },
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        };
+
+        // tag=clean INCLUDES S001 and EXCLUDES S002.
+        let view_clean = DataView {
+            branch_view: Some(by_tag("clean")),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let record_clean = arena.make_view(data.handle.handle, &view_clean).unwrap();
+        let identity_clean = arena.view_identity(record_clean.handle.handle).unwrap();
+        assert!(
+            identity_clean
+                .records
+                .iter()
+                .all(|record| record.sample_id.as_str() == "S001"),
+            "by_tag clean must include only S001 relations"
+        );
+
+        // tag=dirty INCLUDES S002 and EXCLUDES S001.
+        let view_dirty = DataView {
+            branch_view: Some(by_tag("dirty")),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let record_dirty = arena.make_view(data.handle.handle, &view_dirty).unwrap();
+        let identity_dirty = arena.view_identity(record_dirty.handle.handle).unwrap();
+        assert!(
+            identity_dirty
+                .records
+                .iter()
+                .all(|record| record.sample_id.as_str() == "S002"),
+            "by_tag dirty must exclude S001 relations"
+        );
+    }
+
+    #[test]
+    fn branch_view_by_filter_mode_still_requires_host_filtering() {
         use crate::coordinator::{
             CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
         };
 
         let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
         let data = arena.materialize(&envelope(), &request()).unwrap();
-        for (mode, selector, label) in [
-            (
-                CoordinatorBranchViewMode::ByMetadata,
-                CoordinatorBranchViewSelector {
-                    metadata: BTreeMap::from([("site".to_string(), serde_json::json!("a"))]),
-                    ..Default::default()
-                },
-                "by_metadata",
-            ),
-            (
-                CoordinatorBranchViewMode::ByTag,
-                CoordinatorBranchViewSelector {
-                    tags: vec!["clean".to_string()],
-                    ..Default::default()
-                },
-                "by_tag",
-            ),
-            (
-                CoordinatorBranchViewMode::ByFilter,
-                CoordinatorBranchViewSelector {
+        let view = DataView {
+            branch_view: Some(CoordinatorBranchView {
+                view_id: "branch_view:by_filter".to_string(),
+                branch_id: "branch:0".to_string(),
+                mode: CoordinatorBranchViewMode::ByFilter,
+                selector: CoordinatorBranchViewSelector {
                     filter: Some(serde_json::json!({"op": "always"})),
                     ..Default::default()
                 },
-                "by_filter",
-            ),
-        ] {
-            let view = DataView {
-                branch_view: Some(CoordinatorBranchView {
-                    view_id: format!("branch_view:{label}"),
-                    branch_id: "branch:0".to_string(),
-                    mode,
-                    selector,
-                    allow_overlap: false,
-                    metadata: BTreeMap::new(),
-                }),
-                include_augmented: true,
-                ..Default::default()
-            };
-            let error = arena
-                .make_view(data.handle.handle, &view)
-                .expect_err("host-only branch view modes must reject in-memory execution");
-            let message = format!("{error}");
-            assert!(
-                message.contains("requires host-side filtering"),
-                "expected host-filtering error for {label}, got: {message}"
-            );
-        }
+                allow_overlap: false,
+                metadata: BTreeMap::new(),
+            }),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let error = arena
+            .make_view(data.handle.handle, &view)
+            .expect_err("by_filter has no native predicate DSL yet and must stay host-side");
+        let message = format!("{error}");
+        assert!(
+            message.contains("requires host-side filtering"),
+            "expected host-filtering error for by_filter, got: {message}"
+        );
     }
 
     #[test]

@@ -561,6 +561,7 @@ mod tests {
             augmented: false,
             excluded: false,
             metadata: BTreeMap::new(),
+            tags: Vec::new(),
             augmentation: None,
         };
         let relations = SampleRelationTable {

@@ -60,6 +60,11 @@ pub struct SampleRelation {
     pub excluded: bool,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    // Free-form labels a host can attach to a relation row. Skipped when empty
+    // so existing relation sets keep byte-identical fingerprints; carried onto
+    // `CoordinatorRelation` so `by_tag` branch views filter natively.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub augmentation: Option<AugmentationMetadata>,
 }
@@ -421,6 +426,7 @@ mod tests {
             augmented: false,
             excluded: false,
             metadata: BTreeMap::new(),
+            tags: Vec::new(),
             augmentation: None,
         }
     }

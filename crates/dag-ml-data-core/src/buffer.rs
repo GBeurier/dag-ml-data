@@ -1010,6 +1010,8 @@ mod tests {
             source_id: Some(source(source_id)),
             is_augmented: false,
             excluded: false,
+            metadata: BTreeMap::new(),
+            tags: Vec::new(),
         }
     }
 
