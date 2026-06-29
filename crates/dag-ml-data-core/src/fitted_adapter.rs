@@ -425,7 +425,7 @@ fn validate_fingerprint(label: &str, value: &str, adapter_id: &str) -> Result<()
 /// Parsing is platform-independent so portable manifests validate identically
 /// everywhere; it adds no dependency. Kept byte-for-byte equivalent with
 /// `dag-ml`'s `validate_relative_artifact_uri` in
-/// `crates/dag-ml-core/src/runtime.rs` so portable refs accepted by one repo
+/// `crates/dag-ml-core/src/runtime/prediction_store.rs` so portable refs accepted by one repo
 /// are accepted by the other.
 fn validate_relative_uri(adapter_id: &str, uri: &str) -> Result<()> {
     if uri.is_empty() {

@@ -1,8 +1,11 @@
 # Supported Surface
 
-This page is the 0.2.0 support contract for `dag-ml-data`. It separates
+This page is the 0.2.1 support contract for `dag-ml-data`. It separates
 production-facing data contracts from conformance providers and backlog work.
-It does not change any public ABI, JSON schema, Rust, Python or WASM signature.
+The 0.2.1 surface adds the built-in scientific data-model catalogue helpers
+(`builtin_data_models`, `builtin_representations`, `builtin_adapter_registry`,
+`tabular_numeric_model_input_spec`) as new additive Rust, Python and WASM
+exports; no existing public ABI, JSON schema, or function signature changed.
 
 ## Support Levels
 
@@ -18,6 +21,7 @@ It does not change any public ABI, JSON schema, Rust, Python or WASM signature.
 | Area | Level | Notes |
 |---|---|---|
 | Dataset schema, ids, axes and representation contracts | Supported | Rust validation, JSON-compatible structs and deterministic fingerprints are gated. |
+| Built-in scientific data-model catalogue | Supported | Canonical `RepresentationSpec` constructors cover `signal_1d`, `signal_with_processings`, `raman_signal`, `ftir_signal`, `tabular_numeric`, `tabular_mixed`, `feature_block_set`, `series_mv`, genotype markers, images, `cube_hwb`, masks, `sample_metadata`, rank-1/rank-2 targets, `mass_spectrum` and text tokens; adapter declarations are planner contracts only. |
 | Model-input planning and adapter path solving | Supported | Fixture planning and deterministic path selection are tested. |
 | Coordinator data-plan envelope v1 | Supported | Shared schema/fixture drift is checked against `dag-ml`. |
 | Sample relations and FoldSet boundary validation | Supported | Group/origin/repetition leakage checks are exposed through Rust, C ABI, Python and WASM helpers. |

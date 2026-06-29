@@ -146,7 +146,7 @@ AxisKind = Literal[
     "sample", "feature", "processing",
     "time", "height", "width", "channel",
     "node", "edge", "variant", "token", "target",
-    "wavelength", "frequency", "depth",
+    "wavelength", "wavenumber", "frequency", "depth",
 ]
 
 @dataclass(frozen=True)
@@ -204,9 +204,9 @@ class RepresentationSpec:
 ```
 
 Allowed `container` values (extensible by plugins, but core supports):
-`ndarray`, `dataframe`, `sparse_csr`, `sparse_csc`, `graph_batch`,
-`list_of_arrays`, `dict_of_arrays`, `pil_image_batch`, `torch_tensor`,
-`object_array`.
+`ndarray`, `array`, `dataframe`, `feature_block_set`, `ragged_array`, `list`,
+`sparse_csr`, `sparse_csc`, `graph_batch`, `list_of_arrays`, `dict_of_arrays`,
+`pil_image_batch`, `torch_tensor`, `object_array`.
 
 Rules:
 
@@ -1829,7 +1829,47 @@ To add a new domain type, follow this checklist.
 | Multispectral satellite | `multichannel_image` (core)      | `mc_image`                                              | reuse `image.embedding`, add `satellite.index_features` (NDVI, NDWI, ...) | `(sample, h, w, band)`                                          |
 | IR thermography         | `multichannel_image` (core)      | `mc_image` (single-band float)                          | `image.embedding`, `thermal.stat_features`                             | `(sample, h, w)` or `(sample, h, w, 1)`                         |
 
-### 14.3 Anti-patterns
+### 14.3 Built-in representation catalogue
+
+The Rust `builtin_models` module exposes the supported baseline catalogue below.
+Each row is a canonical `RepresentationSpec`; alternate storage technologies
+such as Arrow, xarray, JSON metadata payloads or image-batch wrappers are host
+import/export profiles unless the contract later adds an explicit multi-container
+field.
+
+| Domain | `type_id` | `representation_id` | Axes | Canonical container |
+|--------|-----------|---------------------|------|---------------------|
+| NIRS / spectra | `dense_signal` | `signal_1d` | `(sample, wavelength)` | `ndarray` |
+| NIRS / spectra with processings | `dense_signal` | `signal_with_processings` | `(sample, processing, wavelength)` | `ndarray` |
+| Raman | `dense_signal` | `raman_signal` | `(sample, wavenumber)` | `ndarray` |
+| FTIR | `dense_signal` | `ftir_signal` | `(sample, wavenumber)` | `ndarray` |
+| Numeric tabular | `table` | `tabular_numeric` | `(sample, feature)` | `dataframe` |
+| Mixed tabular | `table` | `tabular_mixed` | `(sample, column)` | `dataframe` |
+| Named feature blocks | `multi_block` | `feature_block_set` | `(sample, block, feature)` | `feature_block_set` |
+| Time/climate series | `time_series` | `series_mv` | `(sample, time, variable)` | `ndarray` |
+| Genotype variants | `genotype_matrix` | `variant_matrix` | `(sample, variant)` | `ndarray` |
+| Genotype dosage | `genotype_matrix` | `dosage_matrix` | `(sample, variant)` | `ndarray` |
+| RGB image | `image_rgb` | `rgb_image` | `(sample, height, width, channel)` | `ndarray` |
+| Grayscale image | `gray_image` | `gray_image` | `(sample, height, width)` | `ndarray` |
+| Multichannel image | `multichannel_image` | `mc_image` | `(sample, height, width, channel)` | `ndarray` |
+| Multispectral image | `multichannel_image` | `multispectral_image` | `(sample, height, width, band)` | `ndarray` |
+| Hyperspectral cube | `hyperspectral_cube` | `cube_hwb` | `(sample, height, width, band)` | `ndarray` |
+| Segmentation mask | `label_mask` | `segmentation_mask` | `(sample, height, width)` | `ndarray` |
+| ROI mask | `label_mask` | `roi_mask` | `(sample, height, width)` | `ndarray` |
+| Sample metadata | `metadata` | `sample_metadata` | `(sample, field)` | `dataframe` |
+| Numeric target | `target` | `target_numeric` | `(sample)` | `array` |
+| Categorical target | `target` | `target_categorical` | `(sample)` | `array` |
+| Multivariate numeric target | `target` | `target_numeric_matrix` | `(sample, target)` | `array` |
+| Multivariate categorical target | `target` | `target_categorical_matrix` | `(sample, target)` | `array` |
+| Mass spectrum | `mass_spec` | `mass_spectrum` | `(sample, mz)` | `ragged_array` |
+| Raw text | `text` | `text_raw` | `(sample)` | `list` |
+| Token ids | `text` | `text_token_ids` | `(sample, token)` | `ragged_array` |
+
+`target_numeric`, `target_categorical`, `target_numeric_matrix` and
+`target_categorical_matrix` are target-side contracts. The default tabular
+model-input helper does not accept them as feature sources.
+
+### 14.4 Anti-patterns
 
 - **Do not** add a domain-specific knob (e.g. `wavelengths=`) directly on
   `MLDataset`. Add it to `AxisSpec.coordinate` and request it via

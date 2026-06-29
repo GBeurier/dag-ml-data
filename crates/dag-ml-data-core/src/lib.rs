@@ -8,6 +8,7 @@ pub mod aggregation;
 pub mod alignment;
 pub mod buffer;
 pub mod buffer_file_store;
+pub mod builtin_models;
 pub mod collation;
 /// Internal streaming-hash primitive for bulk numeric content fingerprints.
 /// Crate-private: it is not part of the public data contract, and keeping it
@@ -32,6 +33,7 @@ pub use aggregation::*;
 pub use alignment::*;
 pub use buffer::*;
 pub use buffer_file_store::*;
+pub use builtin_models::*;
 pub use collation::*;
 pub use coordinator::*;
 pub use error::{DataError, DataErrorDescriptor, Result};

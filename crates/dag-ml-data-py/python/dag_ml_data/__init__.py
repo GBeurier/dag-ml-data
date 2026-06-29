@@ -32,6 +32,28 @@ from ._dag_ml_data import (
 )
 
 try:
+    from ._dag_ml_data import (
+        builtin_adapter_registry_json,
+        builtin_data_models_json,
+        builtin_representations_json,
+        tabular_numeric_model_input_spec_json,
+    )
+except ImportError as _builtin_import_error:  # pragma: no cover - stale local extension only
+    _builtin_missing_reason = str(_builtin_import_error)
+
+    def _missing_builtin_json() -> str:
+        raise ImportError(
+            "dag-ml-data built-in model helpers require a rebuilt native "
+            "extension exposing the 0.2.1+ binding surface. "
+            f"Native import error: {_builtin_missing_reason}"
+        )
+
+    builtin_adapter_registry_json = _missing_builtin_json
+    builtin_data_models_json = _missing_builtin_json
+    builtin_representations_json = _missing_builtin_json
+    tabular_numeric_model_input_spec_json = _missing_builtin_json
+
+try:
     __version__ = _distribution_version("dag-ml-data")
 except PackageNotFoundError:
     __version__ = _native_version()
@@ -48,6 +70,10 @@ _FACADE_EXPORTS = [
     "CoordinatorDataPlanEnvelope",
     "plan_model_input",
     "build_coordinator_data_plan_envelope",
+    "builtin_adapter_registry",
+    "builtin_data_models",
+    "builtin_representations",
+    "tabular_numeric_model_input_spec",
     "validate_fold_set_against_sample_relations",
 ]
 
@@ -168,6 +194,26 @@ def contract_manifest_json() -> str:
     return json.dumps(manifest, sort_keys=True, separators=(",", ":"))
 
 
+def builtin_data_models() -> list[dict[str, Any]]:
+    """Return canonical built-in data model declarations."""
+    return json.loads(builtin_data_models_json())
+
+
+def builtin_representations() -> list[dict[str, Any]]:
+    """Return canonical built-in RepresentationSpec declarations."""
+    return json.loads(builtin_representations_json())
+
+
+def builtin_adapter_registry() -> AdapterRegistry:
+    """Return planner-visible adapters for built-in representations."""
+    return AdapterRegistry(builtin_adapter_registry_json())
+
+
+def tabular_numeric_model_input_spec() -> ModelInputSpec:
+    """Return the standard model input contract for tabular numeric features."""
+    return ModelInputSpec(tabular_numeric_model_input_spec_json())
+
+
 def plan_model_input(
     schema: Any,
     model_input: Any,
@@ -230,6 +276,12 @@ __all__ = [
     "SampleRelationTable",
     "build_coordinator_data_plan_envelope",
     "build_coordinator_data_plan_envelope_json",
+    "builtin_adapter_registry",
+    "builtin_adapter_registry_json",
+    "builtin_data_models",
+    "builtin_data_models_json",
+    "builtin_representations",
+    "builtin_representations_json",
     "contract_manifest_json",
     "data_plan_fingerprint_json",
     "dataset_schema_fingerprint_json",
@@ -237,6 +289,8 @@ __all__ = [
     "plan_model_input",
     "plan_model_input_json",
     "sample_relation_table_fingerprint_json",
+    "tabular_numeric_model_input_spec",
+    "tabular_numeric_model_input_spec_json",
     "validate_adapter_registry_json",
     "validate_coordinator_data_plan_envelope_json",
     "validate_data_plan_json",
