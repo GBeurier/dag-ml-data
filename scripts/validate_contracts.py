@@ -961,7 +961,9 @@ def main() -> int:
         local_fitted_adapter_source = load_text(
             ROOT / "crates/dag-ml-data-core/src/fitted_adapter.rs"
         )
-        sibling_runtime_source = load_text(sibling / "crates/dag-ml-core/src/runtime.rs")
+        sibling_runtime_source = load_text(
+            sibling / "crates/dag-ml-core/src/runtime/prediction_store.rs"
+        )
         local_uri_body = extract_function_body(
             local_fitted_adapter_source,
             "fn validate_relative_uri(",
@@ -970,7 +972,7 @@ def main() -> int:
         sibling_uri_body = extract_function_body(
             sibling_runtime_source,
             "fn validate_relative_artifact_uri(",
-            "dag-ml runtime.rs",
+            "dag-ml runtime/prediction_store.rs",
         )
         validate_relative_uri_rule_parity(local_uri_body, sibling_uri_body)
         # dag-ml does not yet publish a standalone coordinator_branch_view schema —

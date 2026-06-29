@@ -11,10 +11,11 @@ use pyo3::types::{PyAny, PyType};
 use serde::de::DeserializeOwned;
 
 use dag_ml_data_core::{
+    builtin_adapter_registry_spec, builtin_data_model_specs, builtin_representations,
     data_plan_fingerprint, fold_set_fingerprint, plan_model_input, sample_relation_fingerprint,
-    schema_fingerprint, AdapterRegistry, AdapterRegistrySpec, CoordinatorDataPlanEnvelope,
-    DataError as CoreDataError, DataPlan, DataPlanRequest, DatasetSchema, FoldSet, ModelInputSpec,
-    SampleRelationTable,
+    schema_fingerprint, tabular_numeric_model_input_spec, AdapterRegistry, AdapterRegistrySpec,
+    CoordinatorDataPlanEnvelope, DataError as CoreDataError, DataPlan, DataPlanRequest,
+    DatasetSchema, FoldSet, ModelInputSpec, SampleRelationTable,
 };
 
 create_exception!(_dag_ml_data, DagMlDataError, PyException);
@@ -46,6 +47,26 @@ fn version() -> &'static str {
 #[pyfunction]
 fn contract_manifest_json() -> PyResult<String> {
     serde_json::to_string(&contract_manifest()).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn builtin_data_models_json() -> PyResult<String> {
+    serde_json::to_string(&builtin_data_model_specs()).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn builtin_representations_json() -> PyResult<String> {
+    serde_json::to_string(&builtin_representations()).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn builtin_adapter_registry_json() -> PyResult<String> {
+    serde_json::to_string(&builtin_adapter_registry_spec()).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn tabular_numeric_model_input_spec_json() -> PyResult<String> {
+    serde_json::to_string(&tabular_numeric_model_input_spec()).map_err(py_serde_error)
 }
 
 #[pyfunction]
@@ -176,6 +197,13 @@ fn _dag_ml_data(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add_function(wrap_pyfunction!(version, module)?)?;
     module.add_function(wrap_pyfunction!(contract_manifest_json, module)?)?;
+    module.add_function(wrap_pyfunction!(builtin_data_models_json, module)?)?;
+    module.add_function(wrap_pyfunction!(builtin_representations_json, module)?)?;
+    module.add_function(wrap_pyfunction!(builtin_adapter_registry_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        tabular_numeric_model_input_spec_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(validate_dataset_schema_json, module)?)?;
     module.add_function(wrap_pyfunction!(dataset_schema_fingerprint_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_model_input_spec_json, module)?)?;
@@ -234,6 +262,7 @@ fn contract_manifest() -> serde_json::Value {
             "build_coordinator_data_plan_envelope",
             "validate_fold_set_against_sample_relations",
             "nirs4all_lite_schema_fields",
+            "builtin_data_models",
             "structured_error_descriptors"
         ],
         "shared": {
@@ -242,6 +271,10 @@ fn contract_manifest() -> serde_json::Value {
         "python_exports": [
             "version",
             "contract_manifest_json",
+            "builtin_data_models_json",
+            "builtin_representations_json",
+            "builtin_adapter_registry_json",
+            "tabular_numeric_model_input_spec_json",
             "validate_dataset_schema_json",
             "dataset_schema_fingerprint_json",
             "validate_model_input_spec_json",
@@ -260,6 +293,10 @@ fn contract_manifest() -> serde_json::Value {
         "wasm_exports": [
             "dag_ml_data_version",
             "contract_manifest_json",
+            "builtin_data_models_json",
+            "builtin_representations_json",
+            "builtin_adapter_registry_json",
+            "tabular_numeric_model_input_spec_json",
             "validate_dataset_schema_json",
             "dataset_schema_fingerprint_json",
             "validate_model_input_spec_json",
