@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_data_core::{
-    data_plan_fingerprint, plan_model_input, sample_relation_fingerprint, schema_fingerprint,
-    AdapterRegistry, AdapterRegistrySpec, CoordinatorDataMaterializationRequest,
-    CoordinatorDataPlanEnvelope, CoordinatorHandleArena, DataPlan, DataPlanRequest, DatasetSchema,
-    ModelInputSpec, SampleRelationTable, SourceId,
+    data_plan_fingerprint, plan_model_input, representation_registry, sample_relation_fingerprint,
+    schema_fingerprint, AdapterRegistry, AdapterRegistrySpec,
+    CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorHandleArena,
+    DataPlan, DataPlanRequest, DatasetSchema, ModelInputSpec, SampleRelationTable, SourceId,
 };
 
 #[derive(Debug, Parser)]
@@ -58,6 +58,10 @@ enum Command {
         #[arg(long = "source")]
         sources: Vec<String>,
     },
+    /// Print the frozen, published built-in representation registry
+    /// (`B-014`/`DMD-001`); the output is the
+    /// `docs/contracts/representation_registry.v1.json` contract artifact.
+    RepresentationRegistry,
 }
 
 fn main() -> Result<()> {
@@ -163,6 +167,12 @@ fn main() -> Result<()> {
             )
             .context("failed to plan model input")?;
             println!("{}", serde_json::to_string_pretty(&plan)?);
+        }
+        Command::RepresentationRegistry => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&representation_registry())?
+            );
         }
     }
 

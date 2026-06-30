@@ -110,3 +110,42 @@ The shared provider surface is `DagMlDataVTable` guarded by
 `DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION == 2`. `scripts/validate_contracts.py`
 and the C ABI tests verify that `dag_ml_data.h` and `dag_ml.h` can be included
 together in either order when the sibling checkout is available.
+
+## Representation Registry v1 (`B-014` / `DMD-001`)
+
+Manifest: `representation_registry.v1.json`
+
+Runtime type produced here: `RepresentationRegistry`
+(`crates/dag-ml-data-core/src/representation_registry.rs`)
+
+This is the **frozen, published catalogue of built-in representation IDs**.
+`B-014` is a freeze/publish problem, not an invention problem: the stable
+representation-ID vocabulary already lives in `builtin_models.rs` as `pub const`
+strings, a `BuiltinDataModel` enum and its constructors. This artifact publishes
+that existing vocabulary verbatim — **no new strings** — so cross-repo consumers
+can reference the frozen IDs by string: `ControllerManifest.data_requirements`
+ports (`L16`) and the `nirs4all-io` emit (`L7`) cite these IDs.
+
+Each of the 26 entries carries the representation-ID string, its
+`BuiltinDataModel` key, modality, an optional spectra+image MVP annotation and
+the complete frozen `RepresentationSpec` (axes, rank, dtype, container). The
+manifest is generated from the Rust source of truth and regenerated with:
+
+```bash
+cargo run -p dag-ml-data-cli -- representation-registry > docs/contracts/representation_registry.v1.json
+```
+
+The freeze is enforced in-repo by the
+`representation_registry::tests::published_registry_matches_builtin_models`
+drift test, which fails the moment a built-in representation changes without the
+manifest being regenerated. The `mvp` block records the `B-014` spectra+image
+MVP set: 12 IDs total — 8 `emitted` (already produced by the `nirs4all-io`
+bridge, per `IO_spec.md` §5) and 4 image IDs (`gray_image`, `rgb_image`,
+`mc_image`, `multispectral_image`) `landed_pending_emit` (landed in this crate;
+`nirs4all-io` emission tracked by `IO-010`).
+
+Unlike the envelope/fusion/branch-view/fitted-adapter schemas above, this
+registry is **not yet pinned in `conformance_pack.v1.json` / cross-repo
+`validate_contracts.py`**: that lockstep wiring (`L6` + `L20`, jointly with
+`dag-ml`, whose `ModelInputSpec.accepted_representations` is a `Vec<String>`)
+is the next `DMD-001` slice. Until then the Rust drift test is the freeze.
