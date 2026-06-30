@@ -353,6 +353,18 @@ Implemented:
   built, and the stdlib-only ctypes provider package pip-installed + smoked. The
   public-doc ratchet floor is raised to track the current coverage (33% floor,
   measured 33.7%).
+- frozen, published built-in representation registry (`B-014` / `DMD-001`):
+  `representation_registry()` derives a deterministic `RepresentationRegistry`
+  from `BUILTIN_DATA_MODELS` (26 IDs, each with its frozen `RepresentationSpec`,
+  `BuiltinDataModel` key, modality and an optional spectra+image MVP
+  annotation), published as the `docs/contracts/representation_registry.v1.json`
+  contract artifact and emitted by the CLI `representation-registry` command. A
+  drift test (`published_registry_matches_builtin_models`) freezes the manifest
+  against `builtin_models.rs`; no new representation vocabulary is introduced.
+  The `mvp` block records the spectra+image MVP set (12 IDs: 8 `emitted` by the
+  `nirs4all-io` bridge, 4 image IDs `landed_pending_emit` per `IO-010`).
+  Cross-repo `conformance_pack.v1.json` / `validate_contracts.py` lockstep
+  wiring with `dag-ml` is the next `DMD-001` slice.
 
 Post-0.2.0 backlog:
 
