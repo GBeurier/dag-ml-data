@@ -9,6 +9,7 @@ copy when a dag-ml checkout is available.
 
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import json
@@ -851,7 +852,25 @@ def validate_relative_uri_rule_parity(local_body: str, sibling_body: str) -> Non
         )
 
 
-def candidate_sibling_roots() -> list[Path]:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--require-sibling",
+        action="store_true",
+        help="Fail when the sibling dag-ml checkout is not available.",
+    )
+    parser.add_argument(
+        "--sibling-root",
+        type=Path,
+        default=None,
+        help="Explicit dag-ml checkout path; overrides env/default candidates.",
+    )
+    return parser.parse_args(argv)
+
+
+def candidate_sibling_roots(explicit_root: Path | None = None) -> list[Path]:
+    if explicit_root is not None:
+        return [explicit_root.expanduser()]
     candidates = []
     env_path = os.environ.get("DAG_ML_REPO")
     if env_path:
@@ -861,17 +880,20 @@ def candidate_sibling_roots() -> list[Path]:
     return candidates
 
 
-def sibling_root() -> Path | None:
+def sibling_root(explicit_root: Path | None = None) -> Path | None:
     env_path = os.environ.get("DAG_ML_REPO")
-    for candidate in candidate_sibling_roots():
+    for candidate in candidate_sibling_roots(explicit_root):
         if candidate.exists():
             return candidate.resolve()
+    if explicit_root is not None:
+        raise ContractError(f"--sibling-root points to a missing checkout: {explicit_root}")
     if env_path:
         raise ContractError(f"DAG_ML_REPO points to a missing checkout: {env_path}")
     return None
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     try:
         local_schema = load_json(ROOT / SCHEMA_REL)
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
@@ -927,8 +949,10 @@ def main() -> int:
             "dag-ml-data",
         )
 
-        sibling = sibling_root()
+        sibling = sibling_root(args.sibling_root)
         if sibling is None:
+            if args.require_sibling:
+                raise ContractError("sibling dag-ml checkout is required but was not found")
             print("validated dag-ml-data contract; sibling dag-ml checkout not present")
             return 0
 
