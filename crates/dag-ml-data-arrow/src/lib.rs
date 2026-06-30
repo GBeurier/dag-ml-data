@@ -32,8 +32,11 @@ use dag_ml_data_core::buffer::{NumericFeatureBufferStore, NumericFeatureMatrixF6
 use dag_ml_data_core::error::{DataError, Result};
 use dag_ml_data_core::ids::{ObservationId, RepresentationId};
 
+/// Arrow schema-metadata key carrying the source feature-set id.
 pub const SCHEMA_METADATA_FEATURE_SET_ID: &str = "dag_ml_data.feature_set_id";
+/// Arrow schema-metadata key carrying the representation id.
 pub const SCHEMA_METADATA_REPRESENTATION_ID: &str = "dag_ml_data.representation_id";
+/// Column name holding per-row observation ids in each record batch.
 pub const OBSERVATION_ID_COLUMN: &str = "observation_id";
 
 /// Parse an Arrow IPC stream from any `Read` source into a

@@ -24,9 +24,12 @@ use dag_ml_data_provider::{
 };
 use serde::Deserialize;
 
+/// Opaque handle to a host-owned object passed across the C ABI.
 pub type DagMlDataHandle = u64;
+/// ABI version of the host data-provider vtable; must match the C header.
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
 
+/// Status code returned by C ABI entry points.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DagMlDataStatusCode {
@@ -36,6 +39,7 @@ pub enum DagMlDataStatusCode {
     Panic = 255,
 }
 
+/// Semantic version (major/minor/patch) of the C ABI library.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DagMlDataVersion {
@@ -44,6 +48,7 @@ pub struct DagMlDataVersion {
     pub patch: u32,
 }
 
+/// Owned UTF-8 string returned across the ABI; release with the matching free function.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataString {
@@ -60,6 +65,7 @@ impl Default for DagMlDataString {
     }
 }
 
+/// Borrowed view over a caller-owned byte buffer.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataBytesView {
@@ -67,6 +73,7 @@ pub struct DagMlDataBytesView {
     pub len: usize,
 }
 
+/// Borrowed row-major f64 feature matrix supplied by the host.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataFeatureMatrixF64View {
@@ -82,6 +89,7 @@ pub struct DagMlDataFeatureMatrixF64View {
     pub validity_mask_len: usize,
 }
 
+/// Borrowed single f64 feature column with an optional validity mask.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataF64ColumnView {
@@ -91,6 +99,7 @@ pub struct DagMlDataF64ColumnView {
     pub validity_mask_len: usize,
 }
 
+/// Borrowed columnar f64 feature matrix supplied by the host.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataFeatureMatrixF64ColumnarView {
@@ -104,6 +113,7 @@ pub struct DagMlDataFeatureMatrixF64ColumnarView {
     pub columns_len: usize,
 }
 
+/// Owned array of `DagMlDataString` values returned across the ABI.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataStringArray {
@@ -120,6 +130,7 @@ impl Default for DagMlDataStringArray {
     }
 }
 
+/// Owned array of `usize` values returned across the ABI.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataUSizeArray {
@@ -136,6 +147,7 @@ impl Default for DagMlDataUSizeArray {
     }
 }
 
+/// Owned array of `f64` values returned across the ABI.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataF64Array {
@@ -152,6 +164,7 @@ impl Default for DagMlDataF64Array {
     }
 }
 
+/// Owned array of `f32` values returned across the ABI.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataF32Array {
@@ -168,6 +181,7 @@ impl Default for DagMlDataF32Array {
     }
 }
 
+/// Owned array of `u8` values (for example presence or validity masks).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataU8Array {
@@ -184,8 +198,10 @@ impl Default for DagMlDataU8Array {
     }
 }
 
+/// ABI version of the `DagMlDataTensorF64` transport struct.
 pub const DAG_ML_DATA_TENSOR_F64_ABI_VERSION: u32 = 1;
 
+/// Owned f64 N-dimensional tensor transport returned across the ABI.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataTensorF64 {
@@ -220,8 +236,10 @@ impl Default for DagMlDataTensorF64 {
     }
 }
 
+/// ABI version of the `DagMlDataTensorF32` transport struct.
 pub const DAG_ML_DATA_TENSOR_F32_ABI_VERSION: u32 = 1;
 
+/// Owned f32 N-dimensional tensor transport returned across the ABI.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct DagMlDataTensorF32 {
