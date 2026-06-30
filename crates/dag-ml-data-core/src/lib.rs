@@ -27,6 +27,7 @@ pub mod nd_tensor;
 pub mod plan;
 pub mod planner;
 pub mod relation;
+pub mod representation_registry;
 
 pub use adapter::*;
 pub use aggregation::*;
@@ -47,3 +48,4 @@ pub use nd_tensor::*;
 pub use plan::*;
 pub use planner::*;
 pub use relation::*;
+pub use representation_registry::*;
