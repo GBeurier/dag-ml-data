@@ -98,10 +98,14 @@ Schema: `feature_fusion_selector.schema.json`
 Canonical fixture: `examples/fixtures/oof_campaign/feature_fusion_selector_nir_chem.json`
 
 Runtime shape consumed by the in-memory provider `feature_arrow` hook:
-`{ schema_version, feature_set_id, sources, alignment, policy? }`, where each
-source maps a `source_id` to a provider-owned `feature_set_id` and optional
-column subset. This selector keeps the vtable ABI stable while making
-multi-source feature fusion explicit and conformance-testable.
+`{ schema_version, feature_set_id, sources, alignment, source_layout?, policy? }`,
+where each source maps a `source_id` to a provider-owned `feature_set_id` and
+optional column subset. The optional `source_layout` block is the by-source
+fallback contract: it declares authoritative `source_order`, one block per
+source with the per-source preprocessing output feature-set and representation,
+and the feature-axis concat span (`column_start`/`column_count`) that must be
+preserved. This selector keeps the vtable ABI stable while making multi-source
+feature fusion explicit and conformance-testable.
 
 ## Data Provider C ABI v2
 

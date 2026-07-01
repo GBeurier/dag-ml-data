@@ -25,8 +25,8 @@ use dag_ml_data_core::{
     CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorDataViewRecord,
     CoordinatorFeatureBlock, CoordinatorFeatureBlockF64, CoordinatorHandleArena,
     CoordinatorRelationSet, CoordinatorTargetBlock, CoordinatorTargetTable, DataError, DataView,
-    FeatureFusionPolicy, NdTensorArena, NdTensorBinding, NdTensorBlock, NdTensorManifest,
-    NdTensorStore, NumericFeatureBufferArena, NumericFeatureBufferBinding,
+    FeatureFusionPolicy, FeatureFusionSourceLayout, NdTensorArena, NdTensorBinding, NdTensorBlock,
+    NdTensorManifest, NdTensorStore, NumericFeatureBufferArena, NumericFeatureBufferBinding,
     NumericFeatureBufferManifest, NumericFeatureBufferStore, Result, SampleAlignmentPlan,
     SourceFeatureBlock, SourceId, TargetId,
 };
@@ -61,6 +61,9 @@ pub struct ProviderFeatureFusionSelector {
     pub sources: Vec<ProviderFeatureFusionSource>,
     /// Sample-alignment plan across the sources.
     pub alignment: SampleAlignmentPlan,
+    /// Optional by-source layout contract for source order and concat spans.
+    #[serde(default)]
+    pub source_layout: Option<FeatureFusionSourceLayout>,
     /// Fusion policy (namespacing, broadcasting, masks).
     #[serde(default)]
     pub policy: FeatureFusionPolicy,
@@ -287,6 +290,9 @@ impl InMemoryProvider {
                 source_id: source.source_id.clone(),
                 block,
             });
+        }
+        if let Some(layout) = &selector.source_layout {
+            layout.validate_for_source_blocks(&selector.feature_set_id, &sources)?;
         }
         fuse_feature_blocks(
             selector.feature_set_id.clone(),

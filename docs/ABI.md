@@ -164,8 +164,11 @@ from feature row identity.
 
 `dagmldata_coordinator_feature_fusion_arrow_json` exercises the pure Rust
 feature-fusion kernel through the C ABI. It accepts a request shaped as
-`{ feature_set_id, sources, alignment, policy? }`, where each source contains a
-`source_id` and a `CoordinatorFeatureBlock`. The exported Arrow table preserves
+`{ feature_set_id, sources, alignment, source_layout?, policy? }`, where each
+source contains a `source_id` and a `CoordinatorFeatureBlock`. When present,
+`source_layout` is validated against those concrete blocks: source order,
+per-source preprocessing output feature-set/representation, and contiguous
+feature-axis concat spans must match. The exported Arrow table preserves
 reference-source repeated observations, broadcasts singleton rows from secondary
 sources, namespaces fused feature columns by default and refuses incoherent
 presence masks or ambiguous repeated secondary sources.
@@ -231,8 +234,8 @@ observation-level feature tables, then implements:
 - `target_arrow`: returns sample-level numeric targets aligned to the view;
 - `feature_arrow`: returns observation-level numeric features aligned to the
   view and filtered by `DataView.columns` when passed a plain feature-set id;
-  when passed `{ feature_set_id, sources, alignment, policy? }` JSON, where
-  each source is `{ source_id, feature_set_id, columns? }`, it fuses
+  when passed `{ feature_set_id, sources, alignment, source_layout?, policy? }`
+  JSON, where each source is `{ source_id, feature_set_id, columns? }`, it fuses
   provider-owned source feature buffers through the core feature-fusion kernel;
 - `release` and `destroy`: release handles and provider state.
 
