@@ -25,6 +25,7 @@ SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 BRANCH_VIEW_SCHEMA_REL = Path("docs/contracts/coordinator_branch_view.schema.json")
 FITTED_ADAPTER_SCHEMA_REL = Path("docs/contracts/fitted_adapter_ref.schema.json")
+REPRESENTATION_REGISTRY_REL = Path("docs/contracts/representation_registry.v1.json")
 CONFORMANCE_PACK_REL = Path("docs/contracts/conformance_pack.v1.json")
 PARITY_ORACLE_REL = Path("docs/contracts/parity_oracle.v1.json")
 LOCAL_FIXTURE_REL = Path(
@@ -33,11 +34,17 @@ LOCAL_FIXTURE_REL = Path(
 LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/oof_campaign/feature_fusion_selector_nir_chem.json"
 )
+LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL = Path(
+    "examples/fixtures/data/model_input_spec_tabular_regressor.json"
+)
 SHARED_FOLD_SET_FIXTURE_REL = Path("examples/fixtures/shared/fold_set_cv_partition.json")
 LOCAL_C_HEADER_REL = Path("crates/dag-ml-data-capi/include/dag_ml_data.h")
 SIBLING_FIXTURE_REL = Path("examples/fixtures/data/coordinator_data_plan_envelope_nir.json")
 SIBLING_FEATURE_FUSION_FIXTURE_REL = Path(
     "examples/fixtures/data/feature_fusion_selector_nir_chem.json"
+)
+SIBLING_MODEL_INPUT_SPEC_FIXTURE_REL = Path(
+    "examples/fixtures/data/model_input_spec_tabular_regressor.json"
 )
 SIBLING_C_HEADER_REL = Path("crates/dag-ml-capi/include/dag_ml.h")
 LOCAL_SCHEMA_ID = (
@@ -365,6 +372,106 @@ def validate_feature_fusion_selector(selector: Any, label: str) -> None:
             )
 
 
+def validate_representation_registry(registry: Any, label: str) -> dict[str, dict[str, Any]]:
+    require(isinstance(registry, dict), f"{label} representation registry must be an object")
+    require(
+        registry.get("schema_version") == 1,
+        f"{label} representation registry schema_version must be 1",
+    )
+    require(
+        registry.get("registry_id") == "dag-ml-data.representation_registry.v1",
+        f"{label} representation registry id mismatch",
+    )
+    representations = registry.get("representations")
+    require(
+        isinstance(representations, list) and representations,
+        f"{label} representation registry entries must be non-empty",
+    )
+    by_id: dict[str, dict[str, Any]] = {}
+    for index, entry in enumerate(representations):
+        entry_label = f"{label}.representations[{index}]"
+        require(isinstance(entry, dict), f"{entry_label} must be an object")
+        representation_id = entry.get("representation_id")
+        require_non_empty_string(representation_id, f"{entry_label}.representation_id")
+        require(
+            representation_id not in by_id,
+            f"{label} duplicate representation `{representation_id}`",
+        )
+        representation = entry.get("representation")
+        require(isinstance(representation, dict), f"{entry_label}.representation must be an object")
+        require(
+            representation.get("id") == representation_id,
+            f"{entry_label}.representation.id mismatch",
+        )
+        require_non_empty_string(representation.get("type_id"), f"{entry_label}.type_id")
+        rank = representation.get("rank")
+        require(
+            rank is None or (isinstance(rank, int) and rank >= 0),
+            f"{entry_label}.rank must be null or non-negative int",
+        )
+        by_id[representation_id] = representation
+    return by_id
+
+
+def validate_model_input_spec(
+    value: Any,
+    label: str,
+    registry_by_id: dict[str, dict[str, Any]],
+) -> None:
+    require(isinstance(value, dict), f"{label} ModelInputSpec must be an object")
+    schema_version = value.get("schema_version")
+    if schema_version is not None:
+        require(schema_version == 1, f"{label}.schema_version must be 1 when present")
+    ports = value.get("ports")
+    require(isinstance(ports, list) and ports, f"{label}.ports must be non-empty")
+    seen_ports: set[str] = set()
+    for index, port in enumerate(ports):
+        port_label = f"{label}.ports[{index}]"
+        require(isinstance(port, dict), f"{port_label} must be an object")
+        name = port.get("name")
+        require_non_empty_string(name, f"{port_label}.name")
+        require(name not in seen_ports, f"{label} duplicate port `{name}`")
+        seen_ports.add(name)
+        accepted_representations = port.get("accepted_representations")
+        accepted_types = port.get("accepted_types")
+        require(
+            isinstance(accepted_representations, list) and accepted_representations,
+            f"{port_label}.accepted_representations must be non-empty",
+        )
+        require(
+            isinstance(accepted_types, list) and accepted_types,
+            f"{port_label}.accepted_types must be non-empty",
+        )
+        for accepted_type in accepted_types:
+            require_non_empty_string(accepted_type, f"{port_label}.accepted_types[]")
+        rank = port.get("rank")
+        require(
+            rank is None or (isinstance(rank, int) and 0 <= rank <= 16),
+            f"{port_label}.rank must be null or an int between 0 and 16",
+        )
+        for representation_id in accepted_representations:
+            require_non_empty_string(
+                representation_id,
+                f"{port_label}.accepted_representations[]",
+            )
+            representation = registry_by_id.get(representation_id)
+            require(
+                representation is not None,
+                f"{port_label} accepts unknown representation `{representation_id}`",
+            )
+            type_id = representation.get("type_id")
+            require(
+                type_id in accepted_types,
+                f"{port_label} representation `{representation_id}` type `{type_id}` is not accepted",
+            )
+            representation_rank = representation.get("rank")
+            if rank is not None and representation_rank is not None:
+                require(
+                    rank == representation_rank,
+                    f"{port_label} rank {rank} does not match representation `{representation_id}` rank {representation_rank}",
+                )
+
+
 def validate_identifier(value: Any, label: str) -> None:
     require(
         isinstance(value, str) and IDENTIFIER_RE.fullmatch(value) is not None,
@@ -560,8 +667,10 @@ def validate_conformance_pack(
     branch_view_schema: Any,
     fitted_adapter_schema: Any,
     parity_oracle: Any,
+    representation_registry: Any,
     fixture: Any,
     feature_fusion_fixture: Any,
+    model_input_spec_fixture: Any,
     header: str,
     label: str,
 ) -> None:
@@ -606,6 +715,13 @@ def validate_conformance_pack(
         1,
         f"{label} parity oracle contract",
     )
+    validate_digest_record(
+        contracts.get("representation_registry.v1"),
+        canonical_json_sha256(representation_registry),
+        "representation_registry_manifest",
+        1,
+        f"{label} representation registry contract",
+    )
 
     fixtures = pack.get("fixtures")
     require(isinstance(fixtures, dict), f"{label} conformance pack fixtures must be an object")
@@ -632,6 +748,18 @@ def validate_conformance_pack(
     require(
         fusion_fixture.get("contract") == "feature_fusion_selector.v1",
         f"{label} feature fusion fixture must reference feature fusion contract",
+    )
+    model_input_record = fixtures.get("model_input_spec_tabular_regressor.v1")
+    validate_digest_record(
+        model_input_record,
+        canonical_json_sha256(model_input_spec_fixture),
+        None,
+        None,
+        f"{label} model input spec fixture",
+    )
+    require(
+        model_input_record.get("contract") == "model_input_spec.v1",
+        f"{label} model input fixture must reference model input contract",
     )
 
     c_abi = pack.get("c_abi")
@@ -688,6 +816,8 @@ def validate_conformance_pack(
         "headers.include_order",
         "provider.f64_predict_replay",
         "fold_set.fingerprint_parity",
+        "representation_registry.parity",
+        "model_input_spec.fixture_equivalence",
     ):
         require(test_id in required_tests, f"{label} conformance pack must require `{test_id}`")
 
@@ -899,10 +1029,12 @@ def main(argv: list[str] | None = None) -> int:
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_branch_view_schema = load_json(ROOT / BRANCH_VIEW_SCHEMA_REL)
         local_fitted_adapter_schema = load_json(ROOT / FITTED_ADAPTER_SCHEMA_REL)
+        local_representation_registry = load_json(ROOT / REPRESENTATION_REGISTRY_REL)
         local_pack = load_json(ROOT / CONFORMANCE_PACK_REL)
         local_parity_oracle = load_json(ROOT / PARITY_ORACLE_REL)
         local_fixture = load_json(ROOT / LOCAL_FIXTURE_REL)
         local_feature_fusion_fixture = load_json(ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL)
+        local_model_input_spec_fixture = load_json(ROOT / LOCAL_MODEL_INPUT_SPEC_FIXTURE_REL)
         local_fold_set_fixture = load_json(ROOT / SHARED_FOLD_SET_FIXTURE_REL)
         local_header = load_text(ROOT / LOCAL_C_HEADER_REL)
         validate_schema_artifact(local_schema, LOCAL_SCHEMA_ID, "dag-ml-data")
@@ -923,6 +1055,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         validate_envelope(local_fixture, "dag-ml-data")
         validate_feature_fusion_selector(local_feature_fusion_fixture, "dag-ml-data")
+        local_registry_by_id = validate_representation_registry(
+            local_representation_registry,
+            "dag-ml-data",
+        )
+        validate_model_input_spec(
+            local_model_input_spec_fixture,
+            "dag-ml-data",
+            local_registry_by_id,
+        )
         validate_fold_set_fixture(local_fold_set_fixture, "dag-ml-data shared")
         require(
             canonical_fold_set_fingerprint(local_fold_set_fixture)
@@ -943,8 +1084,10 @@ def main(argv: list[str] | None = None) -> int:
             local_branch_view_schema,
             local_fitted_adapter_schema,
             local_parity_oracle,
+            local_representation_registry,
             local_fixture,
             local_feature_fusion_fixture,
+            local_model_input_spec_fixture,
             local_header,
             "dag-ml-data",
         )
@@ -960,9 +1103,13 @@ def main(argv: list[str] | None = None) -> int:
         sibling_feature_fusion_schema = load_json(sibling / FEATURE_FUSION_SCHEMA_REL)
         sibling_pack = load_json(sibling / CONFORMANCE_PACK_REL)
         sibling_parity_oracle = load_json(sibling / PARITY_ORACLE_REL)
+        sibling_representation_registry = load_json(sibling / REPRESENTATION_REGISTRY_REL)
         sibling_fixture = load_json(sibling / SIBLING_FIXTURE_REL)
         sibling_feature_fusion_fixture = load_json(
             sibling / SIBLING_FEATURE_FUSION_FIXTURE_REL
+        )
+        sibling_model_input_spec_fixture = load_json(
+            sibling / SIBLING_MODEL_INPUT_SPEC_FIXTURE_REL
         )
         sibling_fold_set_fixture = load_json(sibling / SHARED_FOLD_SET_FIXTURE_REL)
         sibling_header = load_text(sibling / SIBLING_C_HEADER_REL)
@@ -974,6 +1121,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         validate_envelope(sibling_fixture, "dag-ml")
         validate_feature_fusion_selector(sibling_feature_fusion_fixture, "dag-ml")
+        sibling_registry_by_id = validate_representation_registry(
+            sibling_representation_registry,
+            "dag-ml",
+        )
+        validate_model_input_spec(
+            sibling_model_input_spec_fixture,
+            "dag-ml",
+            sibling_registry_by_id,
+        )
         validate_fold_set_fixture(sibling_fold_set_fixture, "dag-ml shared")
         require(
             canonical_fold_set_fingerprint(sibling_fold_set_fixture)
@@ -1015,8 +1171,10 @@ def main(argv: list[str] | None = None) -> int:
             local_branch_view_schema,
             local_fitted_adapter_schema,
             sibling_parity_oracle,
+            sibling_representation_registry,
             sibling_fixture,
             sibling_feature_fusion_fixture,
+            sibling_model_input_spec_fixture,
             sibling_header,
             "dag-ml",
         )
@@ -1036,6 +1194,14 @@ def main(argv: list[str] | None = None) -> int:
         require(
             local_feature_fusion_fixture == sibling_feature_fusion_fixture,
             "feature fusion selector fixtures diverge",
+        )
+        require(
+            local_representation_registry == sibling_representation_registry,
+            "representation registries diverge",
+        )
+        require(
+            local_model_input_spec_fixture == sibling_model_input_spec_fixture,
+            "model input spec fixtures diverge",
         )
         require(
             canonical_fold_set_fingerprint(local_fold_set_fixture)

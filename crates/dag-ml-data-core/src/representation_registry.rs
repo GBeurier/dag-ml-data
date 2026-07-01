@@ -17,8 +17,11 @@
 //! moment a built-in representation changes without the published manifest
 //! being regenerated.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
+use crate::adapter::ModelInputSpec;
 use crate::builtin_models::{
     BuiltinDataModel, BUILTIN_DATA_MODELS, REPRESENTATION_FEATURE_BLOCK_SET,
     REPRESENTATION_GRAY_IMAGE, REPRESENTATION_MC_IMAGE, REPRESENTATION_MULTISPECTRAL_IMAGE,
@@ -27,6 +30,7 @@ use crate::builtin_models::{
     REPRESENTATION_TARGET_CATEGORICAL_MATRIX, REPRESENTATION_TARGET_NUMERIC,
     REPRESENTATION_TARGET_NUMERIC_MATRIX,
 };
+use crate::error::{DataError, Result};
 use crate::model::RepresentationSpec;
 
 /// Wire-shape version of the published representation registry manifest.
@@ -141,6 +145,98 @@ pub fn representation_registry() -> RepresentationRegistry {
     }
 }
 
+impl RepresentationRegistry {
+    /// Validate the published registry manifest shape and the embedded
+    /// representation specs before a consumer uses it for compatibility checks.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != REPRESENTATION_REGISTRY_SCHEMA_VERSION {
+            return Err(DataError::Validation(format!(
+                "representation registry uses unsupported schema_version {}, expected {}",
+                self.schema_version, REPRESENTATION_REGISTRY_SCHEMA_VERSION
+            )));
+        }
+        if self.registry_id != REPRESENTATION_REGISTRY_ID {
+            return Err(DataError::Validation(format!(
+                "representation registry id `{}` does not match `{}`",
+                self.registry_id, REPRESENTATION_REGISTRY_ID
+            )));
+        }
+        if self.representations.is_empty() {
+            return Err(DataError::Validation(
+                "representation registry contains no representations".to_string(),
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        for entry in &self.representations {
+            if entry.representation_id.trim().is_empty() {
+                return Err(DataError::Validation(
+                    "representation registry contains an empty representation_id".to_string(),
+                ));
+            }
+            if !ids.insert(entry.representation_id.as_str()) {
+                return Err(DataError::Validation(format!(
+                    "representation registry contains duplicate representation `{}`",
+                    entry.representation_id
+                )));
+            }
+            if entry.representation_id != entry.representation.id.as_str() {
+                return Err(DataError::Validation(format!(
+                    "representation registry entry `{}` does not match embedded representation id `{}`",
+                    entry.representation_id, entry.representation.id
+                )));
+            }
+            entry.representation.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Validate that a model-input/data-requirements contract consumes only
+/// published representation IDs, and that each accepted representation's frozen
+/// `type_id` and rank are allowed by the port.
+pub fn validate_model_input_spec_against_registry(
+    model_input: &ModelInputSpec,
+    registry: &RepresentationRegistry,
+) -> Result<()> {
+    registry.validate()?;
+    model_input.validate()?;
+    let by_id = registry
+        .representations
+        .iter()
+        .map(|entry| (entry.representation_id.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+    for port in &model_input.ports {
+        for representation_id in &port.accepted_representations {
+            let representation_key = representation_id.as_str();
+            let Some(entry) = by_id.get(representation_key) else {
+                return Err(DataError::Validation(format!(
+                    "model input port `{}` accepts unknown representation `{representation_key}`",
+                    port.name
+                )));
+            };
+            if !port
+                .accepted_types
+                .iter()
+                .any(|type_id| type_id == &entry.representation.type_id)
+            {
+                return Err(DataError::Validation(format!(
+                    "model input port `{}` representation `{}` has type `{}` not listed in accepted_types",
+                    port.name, representation_key, entry.representation.type_id
+                )));
+            }
+            if let Some(rank) = port.rank {
+                if entry.representation.rank != Some(rank) {
+                    return Err(DataError::Validation(format!(
+                        "model input port `{}` requires rank {rank} but representation `{}` has {:?}",
+                        port.name, representation_key, entry.representation.rank
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn registered_representation(model: BuiltinDataModel) -> RegisteredRepresentation {
     let representation = model.representation();
     let representation_id = representation.id.as_str().to_string();
@@ -173,6 +269,9 @@ fn mvp_status(representation_id: &str) -> Option<MvpStatus> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+
+    use crate::adapter::InputPortSpec;
+    use crate::ids::{RepresentationId, TypeId};
 
     use super::*;
 
@@ -290,5 +389,44 @@ mod tests {
         let json = serde_json::to_string(&registry).unwrap();
         let decoded: RepresentationRegistry = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, registry);
+    }
+
+    #[test]
+    fn model_input_spec_registry_validation_accepts_published_tabular_requirement() {
+        let spec = crate::tabular_numeric_model_input_spec();
+        validate_model_input_spec_against_registry(&spec, &representation_registry()).unwrap();
+    }
+
+    #[test]
+    fn model_input_spec_registry_validation_rejects_unknown_representation() {
+        let spec = ModelInputSpec {
+            ports: vec![InputPortSpec {
+                name: "x".to_string(),
+                accepted_representations: vec![RepresentationId::new("columnar_f64").unwrap()],
+                accepted_types: vec![TypeId::new("table").unwrap()],
+                rank: Some(2),
+                multi_source: false,
+                optional: false,
+            }],
+            default_fusion: None,
+        };
+        let error = validate_model_input_spec_against_registry(&spec, &representation_registry())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown representation"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn model_input_spec_registry_validation_rejects_type_drift() {
+        let mut spec = crate::tabular_numeric_model_input_spec();
+        spec.ports[0].accepted_types = vec![TypeId::new("f64").unwrap()];
+        let error = validate_model_input_spec_against_registry(&spec, &representation_registry())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not listed in accepted_types"),
+            "unexpected error: {error}"
+        );
     }
 }

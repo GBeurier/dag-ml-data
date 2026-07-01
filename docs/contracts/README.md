@@ -144,8 +144,7 @@ bridge, per `IO_spec.md` §5) and 4 image IDs (`gray_image`, `rgb_image`,
 `mc_image`, `multispectral_image`) `landed_pending_emit` (landed in this crate;
 `nirs4all-io` emission tracked by `IO-010`).
 
-Unlike the envelope/fusion/branch-view/fitted-adapter schemas above, this
-registry is **not yet pinned in `conformance_pack.v1.json` / cross-repo
-`validate_contracts.py`**: that lockstep wiring (`L6` + `L20`, jointly with
-`dag-ml`, whose `ModelInputSpec.accepted_representations` is a `Vec<String>`)
-is the next `DMD-001` slice. Until then the Rust drift test is the freeze.
+The registry is pinned in `conformance_pack.v1.json` and checked by
+cross-repo `validate_contracts.py`; `dag-ml` consumes the same representation
+IDs through `ModelInputSpec.accepted_representations`, while this crate keeps
+the typed source of truth as `RepresentationId` / `TypeId`.
