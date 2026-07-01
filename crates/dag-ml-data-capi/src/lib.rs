@@ -10,11 +10,12 @@ use dag_ml_data_core::{
     CoordinatorDataPlanEnvelope, CoordinatorFeatureBlock, CoordinatorFeatureTable,
     CoordinatorHandleArena, CoordinatorMultiTargetBlock, CoordinatorTargetBlock,
     CoordinatorTargetTable, DataError, DataView, DatasetSchema, FeatureFusionPolicy,
-    FittedAdapterManifest, FittedAdapterMaterializationRequest, FittedAdapterRef, FoldSet,
-    InMemoryFittedAdapterStore, NdTensorBlock, NdTensorInput, NdTensorStore,
-    NumericFeatureBufferStore, NumericFeatureMatrixF64, NumericFeatureMatrixF64Columnar,
-    NumericTensorBlock, ObservationId, RepresentationId, RuntimeFittedAdapterStore,
-    SampleAlignmentPlan, SampleRelationTable, SourceFeatureBlock, TargetId,
+    FeatureFusionSourceLayout, FittedAdapterManifest, FittedAdapterMaterializationRequest,
+    FittedAdapterRef, FoldSet, InMemoryFittedAdapterStore, NdTensorBlock, NdTensorInput,
+    NdTensorStore, NumericFeatureBufferStore, NumericFeatureMatrixF64,
+    NumericFeatureMatrixF64Columnar, NumericTensorBlock, ObservationId, RepresentationId,
+    RuntimeFittedAdapterStore, SampleAlignmentPlan, SampleRelationTable, SourceFeatureBlock,
+    TargetId,
 };
 #[cfg(test)]
 use dag_ml_data_core::{SampleId, SourceId};
@@ -1495,24 +1496,36 @@ pub unsafe extern "C" fn dagmldata_coordinator_feature_fusion_arrow_json(
 
     let json = slice::from_raw_parts(json_ptr, json_len);
     match serde_json::from_slice::<CoordinatorFeatureFusionArrowRequest>(json) {
-        Ok(request) => match fuse_feature_blocks(
-            request.feature_set_id,
-            &request.sources,
-            &request.alignment,
-            &request.policy,
-        )
-        .and_then(|block| build_feature_arrow(&block))
-        {
-            Ok((array, schema)) => {
-                *out_arrow_array = Box::into_raw(Box::new(array));
-                *out_arrow_schema = Box::into_raw(Box::new(schema));
-                DagMlDataStatusCode::Ok
+        Ok(request) => {
+            let result = request
+                .source_layout
+                .as_ref()
+                .map(|layout| {
+                    layout.validate_for_source_blocks(&request.feature_set_id, &request.sources)
+                })
+                .transpose()
+                .and_then(|_| {
+                    fuse_feature_blocks(
+                        request.feature_set_id,
+                        &request.sources,
+                        &request.alignment,
+                        &request.policy,
+                    )
+                })
+                .and_then(|block| build_feature_arrow(&block));
+
+            match result {
+                Ok((array, schema)) => {
+                    *out_arrow_array = Box::into_raw(Box::new(array));
+                    *out_arrow_schema = Box::into_raw(Box::new(schema));
+                    DagMlDataStatusCode::Ok
+                }
+                Err(error) => {
+                    set_display_error(error_out, error);
+                    DagMlDataStatusCode::ValidationError
+                }
             }
-            Err(error) => {
-                set_display_error(error_out, error);
-                DagMlDataStatusCode::ValidationError
-            }
-        },
+        }
         Err(error) => {
             set_display_error(error_out, error);
             DagMlDataStatusCode::ValidationError
@@ -3263,6 +3276,8 @@ struct CoordinatorFeatureFusionArrowRequest {
     feature_set_id: String,
     sources: Vec<SourceFeatureBlock>,
     alignment: SampleAlignmentPlan,
+    #[serde(default)]
+    source_layout: Option<FeatureFusionSourceLayout>,
     #[serde(default)]
     policy: FeatureFusionPolicy,
 }
@@ -5652,6 +5667,44 @@ mod tests {
                     {"source_id": "nir", "sample_ids": ["S001", "S002"], "present": [true, true]},
                     {"source_id": "chem", "sample_ids": ["S001", "S002"], "present": [true, true]}
                 ]
+            },
+            "source_layout": {
+                "kind": "by_source_concat",
+                "source_order": ["nir", "chem"],
+                "blocks": [
+                    {
+                        "source_id": "nir",
+                        "preprocessing_output": {
+                            "feature_set_id": "nir_x",
+                            "representation_id": "tabular_numeric",
+                            "adapter_id": "preprocess_nir",
+                            "fit_scope": "fold_train"
+                        },
+                        "column_start": 0,
+                        "column_count": 1,
+                        "feature_names": ["n0"]
+                    },
+                    {
+                        "source_id": "chem",
+                        "preprocessing_output": {
+                            "feature_set_id": "chem_x",
+                            "representation_id": "tabular_numeric",
+                            "adapter_id": "preprocess_chem",
+                            "fit_scope": "fold_train"
+                        },
+                        "column_start": 1,
+                        "column_count": 1,
+                        "feature_names": ["c0"]
+                    }
+                ],
+                "concat": {
+                    "feature_set_id": "fused",
+                    "representation_id": "tabular_numeric",
+                    "axis": "feature",
+                    "total_column_count": 2,
+                    "preserve_source_order": true,
+                    "namespace_columns": true
+                }
             }
         });
         let request = serde_json::to_vec(&request).unwrap();
@@ -6333,8 +6386,8 @@ mod tests {
                 "schema_version": 1,
                 "feature_set_id": "fused",
                 "sources": [
-                    {"source_id": "nir", "feature_set_id": "nir_x"},
-                    {"source_id": "chem", "feature_set_id": "chem_x"}
+                    {"source_id": "nir", "feature_set_id": "nir_x", "columns": ["n0"]},
+                    {"source_id": "chem", "feature_set_id": "chem_x", "columns": ["c0"]}
                 ],
                 "alignment": {
                     "mode": "inner",
@@ -6343,6 +6396,44 @@ mod tests {
                         {"source_id": "nir", "sample_ids": ["S001", "S002"], "present": [true, true]},
                         {"source_id": "chem", "sample_ids": ["S001", "S002"], "present": [true, true]}
                     ]
+                },
+                "source_layout": {
+                    "kind": "by_source_concat",
+                    "source_order": ["nir", "chem"],
+                    "blocks": [
+                        {
+                            "source_id": "nir",
+                            "preprocessing_output": {
+                                "feature_set_id": "nir_x",
+                                "representation_id": "tabular_numeric",
+                                "adapter_id": "preprocess_nir",
+                                "fit_scope": "fold_train"
+                            },
+                            "column_start": 0,
+                            "column_count": 1,
+                            "feature_names": ["n0"]
+                        },
+                        {
+                            "source_id": "chem",
+                            "preprocessing_output": {
+                                "feature_set_id": "chem_x",
+                                "representation_id": "tabular_numeric",
+                                "adapter_id": "preprocess_chem",
+                                "fit_scope": "fold_train"
+                            },
+                            "column_start": 1,
+                            "column_count": 1,
+                            "feature_names": ["c0"]
+                        }
+                    ],
+                    "concat": {
+                        "feature_set_id": "fused",
+                        "representation_id": "tabular_numeric",
+                        "axis": "feature",
+                        "total_column_count": 2,
+                        "preserve_source_order": true,
+                        "namespace_columns": true
+                    }
                 }
             },
             "policy": {

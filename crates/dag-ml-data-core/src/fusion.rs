@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::alignment::{SampleAlignmentPlan, SourceSampleSet};
 use crate::error::{DataError, Result};
 use crate::handle::CoordinatorFeatureBlock;
-use crate::ids::{ObservationId, SampleId, SourceId};
+use crate::ids::{ObservationId, RepresentationId, SampleId, SourceId};
+use crate::plan::FitScope;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FeatureFusionPolicy {
@@ -29,6 +30,280 @@ fn default_true() -> bool {
 pub struct SourceFeatureBlock {
     pub source_id: SourceId,
     pub block: CoordinatorFeatureBlock,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFeatureLayoutKind {
+    BySourceConcat,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceConcatAxis {
+    Feature,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SourcePreprocessingOutput {
+    pub feature_set_id: String,
+    pub representation_id: RepresentationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit_scope: Option<FitScope>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SourceFeatureLayoutBlock {
+    pub source_id: SourceId,
+    pub preprocessing_output: SourcePreprocessingOutput,
+    pub column_start: usize,
+    pub column_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feature_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SourceConcatLayout {
+    pub feature_set_id: String,
+    pub representation_id: RepresentationId,
+    pub axis: SourceConcatAxis,
+    pub total_column_count: usize,
+    #[serde(default = "default_true")]
+    pub preserve_source_order: bool,
+    #[serde(default = "default_true")]
+    pub namespace_columns: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FeatureFusionSourceLayout {
+    pub kind: SourceFeatureLayoutKind,
+    pub source_order: Vec<SourceId>,
+    pub blocks: Vec<SourceFeatureLayoutBlock>,
+    pub concat: SourceConcatLayout,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl SourcePreprocessingOutput {
+    pub fn validate(&self, label: &str) -> Result<()> {
+        if self.feature_set_id.trim().is_empty() {
+            return Err(DataError::Validation(format!(
+                "{label} preprocessing_output feature_set_id is empty"
+            )));
+        }
+        if self
+            .adapter_id
+            .as_ref()
+            .is_some_and(|adapter_id| adapter_id.trim().is_empty())
+        {
+            return Err(DataError::Validation(format!(
+                "{label} preprocessing_output adapter_id is empty"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl SourceFeatureLayoutBlock {
+    pub fn validate(&self, label: &str) -> Result<()> {
+        self.preprocessing_output.validate(label)?;
+        if self.column_count == 0 {
+            return Err(DataError::Validation(format!(
+                "{label} column_count must be greater than zero"
+            )));
+        }
+        if !self.feature_names.is_empty() && self.feature_names.len() != self.column_count {
+            return Err(DataError::Validation(format!(
+                "{label} feature_names length {} does not match column_count {}",
+                self.feature_names.len(),
+                self.column_count
+            )));
+        }
+        let mut seen = BTreeSet::new();
+        for feature_name in &self.feature_names {
+            if feature_name.trim().is_empty() {
+                return Err(DataError::Validation(format!(
+                    "{label} contains an empty feature name"
+                )));
+            }
+            if !seen.insert(feature_name) {
+                return Err(DataError::Validation(format!(
+                    "{label} contains duplicate feature `{feature_name}`"
+                )));
+            }
+        }
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DataError::Validation(format!(
+                    "{label} metadata contains an empty key"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SourceConcatLayout {
+    pub fn validate(&self) -> Result<()> {
+        if self.feature_set_id.trim().is_empty() {
+            return Err(DataError::Validation(
+                "source concat layout feature_set_id is empty".to_string(),
+            ));
+        }
+        if self.total_column_count == 0 {
+            return Err(DataError::Validation(
+                "source concat layout total_column_count must be greater than zero".to_string(),
+            ));
+        }
+        if !self.preserve_source_order {
+            return Err(DataError::Validation(
+                "source concat layout must preserve source order".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl FeatureFusionSourceLayout {
+    pub fn validate(&self) -> Result<()> {
+        if self.source_order.is_empty() {
+            return Err(DataError::Validation(
+                "feature fusion source layout contains no source_order".to_string(),
+            ));
+        }
+        if self.blocks.len() != self.source_order.len() {
+            return Err(DataError::Validation(format!(
+                "feature fusion source layout has {} blocks for {} ordered sources",
+                self.blocks.len(),
+                self.source_order.len()
+            )));
+        }
+        self.concat.validate()?;
+
+        let mut seen_sources = BTreeSet::new();
+        let mut expected_column_start = 0usize;
+        for (idx, source_id) in self.source_order.iter().enumerate() {
+            if !seen_sources.insert(source_id) {
+                return Err(DataError::Validation(format!(
+                    "feature fusion source layout contains duplicate source `{source_id}`"
+                )));
+            }
+            let block = &self.blocks[idx];
+            if &block.source_id != source_id {
+                return Err(DataError::Validation(format!(
+                    "feature fusion source layout block {idx} is for `{}` but source_order has `{source_id}`",
+                    block.source_id
+                )));
+            }
+            let label = format!("feature fusion source layout block `{}`", block.source_id);
+            block.validate(&label)?;
+            if block.column_start != expected_column_start {
+                return Err(DataError::Validation(format!(
+                    "{label} starts at column {} but expected contiguous start {expected_column_start}",
+                    block.column_start
+                )));
+            }
+            expected_column_start = expected_column_start
+                .checked_add(block.column_count)
+                .ok_or_else(|| {
+                    DataError::Validation(
+                        "feature fusion source layout column range overflows".to_string(),
+                    )
+                })?;
+        }
+        if expected_column_start != self.concat.total_column_count {
+            return Err(DataError::Validation(format!(
+                "feature fusion source layout total_column_count {} does not match block span {}",
+                self.concat.total_column_count, expected_column_start
+            )));
+        }
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DataError::Validation(
+                    "feature fusion source layout metadata contains an empty key".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_for_source_blocks(
+        &self,
+        feature_set_id: &str,
+        blocks: &[SourceFeatureBlock],
+    ) -> Result<()> {
+        self.validate()?;
+        if self.concat.feature_set_id != feature_set_id {
+            return Err(DataError::Validation(format!(
+                "source concat layout feature_set_id `{}` does not match requested fused feature_set_id `{feature_set_id}`",
+                self.concat.feature_set_id
+            )));
+        }
+        if blocks.len() != self.blocks.len() {
+            return Err(DataError::Validation(format!(
+                "source layout has {} blocks but feature fusion has {} source blocks",
+                self.blocks.len(),
+                blocks.len()
+            )));
+        }
+        for (idx, (layout_block, source_block)) in self.blocks.iter().zip(blocks.iter()).enumerate()
+        {
+            if layout_block.source_id != source_block.source_id {
+                return Err(DataError::Validation(format!(
+                    "source layout block {idx} is for `{}` but feature fusion block is `{}`",
+                    layout_block.source_id, source_block.source_id
+                )));
+            }
+            if layout_block.preprocessing_output.feature_set_id != source_block.block.feature_set_id
+            {
+                return Err(DataError::Validation(format!(
+                    "source layout block `{}` preprocessing_output feature_set_id `{}` does not match feature block `{}`",
+                    layout_block.source_id,
+                    layout_block.preprocessing_output.feature_set_id,
+                    source_block.block.feature_set_id
+                )));
+            }
+            if layout_block.preprocessing_output.representation_id
+                != source_block.block.representation_id
+            {
+                return Err(DataError::Validation(format!(
+                    "source layout block `{}` preprocessing_output representation `{}` does not match feature block `{}`",
+                    layout_block.source_id,
+                    layout_block.preprocessing_output.representation_id,
+                    source_block.block.representation_id
+                )));
+            }
+            if layout_block.column_count != source_block.block.feature_names.len() {
+                return Err(DataError::Validation(format!(
+                    "source layout block `{}` column_count {} does not match feature block width {}",
+                    layout_block.source_id,
+                    layout_block.column_count,
+                    source_block.block.feature_names.len()
+                )));
+            }
+            if !layout_block.feature_names.is_empty()
+                && layout_block.feature_names != source_block.block.feature_names
+            {
+                return Err(DataError::Validation(format!(
+                    "source layout block `{}` feature_names do not match feature block output",
+                    layout_block.source_id
+                )));
+            }
+            if self.concat.representation_id != source_block.block.representation_id {
+                return Err(DataError::Validation(format!(
+                    "source concat layout representation `{}` does not match source `{}` representation `{}`",
+                    self.concat.representation_id,
+                    source_block.source_id,
+                    source_block.block.representation_id
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn source_sample_set_from_feature_block(block: &SourceFeatureBlock) -> Result<SourceSampleSet> {
@@ -338,6 +613,119 @@ mod tests {
             .collect::<Result<Vec<_>>>()
             .unwrap();
         build_sample_alignment_plan(&source_sets, &AlignmentPolicy { mode }).unwrap()
+    }
+
+    fn source_layout(
+        feature_set_id: &str,
+        blocks: &[SourceFeatureBlock],
+    ) -> FeatureFusionSourceLayout {
+        let mut column_start = 0;
+        let mut layout_blocks = Vec::new();
+        for block in blocks {
+            let column_count = block.block.feature_names.len();
+            layout_blocks.push(SourceFeatureLayoutBlock {
+                source_id: block.source_id.clone(),
+                preprocessing_output: SourcePreprocessingOutput {
+                    feature_set_id: block.block.feature_set_id.clone(),
+                    representation_id: block.block.representation_id.clone(),
+                    adapter_id: Some(format!("preprocess_{}", block.source_id)),
+                    fit_scope: Some(FitScope::FoldTrain),
+                },
+                column_start,
+                column_count,
+                feature_names: block.block.feature_names.clone(),
+                metadata: BTreeMap::new(),
+            });
+            column_start += column_count;
+        }
+
+        FeatureFusionSourceLayout {
+            kind: SourceFeatureLayoutKind::BySourceConcat,
+            source_order: blocks.iter().map(|block| block.source_id.clone()).collect(),
+            blocks: layout_blocks,
+            concat: SourceConcatLayout {
+                feature_set_id: feature_set_id.to_string(),
+                representation_id: blocks[0].block.representation_id.clone(),
+                axis: SourceConcatAxis::Feature,
+                total_column_count: column_start,
+                preserve_source_order: true,
+                namespace_columns: true,
+            },
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn source_layout_validates_source_order_and_concat_spans() {
+        let blocks = vec![
+            block(
+                "nir",
+                &["n0", "n1"],
+                &[("obs.S001.r1", "S001", vec![json!(1.0), json!(2.0)])],
+            ),
+            block("chem", &["c0"], &[("chem.S001", "S001", vec![json!(10.0)])]),
+        ];
+        let layout = source_layout("fused", &blocks);
+
+        layout.validate_for_source_blocks("fused", &blocks).unwrap();
+        assert_eq!(
+            layout.source_order,
+            vec![
+                SourceId::new("nir").unwrap(),
+                SourceId::new("chem").unwrap()
+            ]
+        );
+        assert_eq!(layout.blocks[0].column_start, 0);
+        assert_eq!(layout.blocks[1].column_start, 2);
+        assert_eq!(layout.concat.total_column_count, 3);
+    }
+
+    #[test]
+    fn source_layout_refuses_block_order_mismatch() {
+        let blocks = vec![
+            block("nir", &["n0"], &[("nir.S001", "S001", vec![json!(1.0)])]),
+            block("chem", &["c0"], &[("chem.S001", "S001", vec![json!(10.0)])]),
+        ];
+        let layout = source_layout("fused", &blocks);
+        let reversed = vec![blocks[1].clone(), blocks[0].clone()];
+
+        let error = layout
+            .validate_for_source_blocks("fused", &reversed)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("feature fusion block"));
+    }
+
+    #[test]
+    fn source_layout_refuses_non_contiguous_concat_span() {
+        let blocks = vec![
+            block("nir", &["n0"], &[("nir.S001", "S001", vec![json!(1.0)])]),
+            block("chem", &["c0"], &[("chem.S001", "S001", vec![json!(10.0)])]),
+        ];
+        let mut layout = source_layout("fused", &blocks);
+        layout.blocks[1].column_start = 3;
+
+        let error = layout.validate().unwrap_err();
+
+        assert!(error.to_string().contains("expected contiguous start"));
+    }
+
+    #[test]
+    fn source_layout_refuses_preprocessing_output_mismatch() {
+        let blocks = vec![
+            block("nir", &["n0"], &[("nir.S001", "S001", vec![json!(1.0)])]),
+            block("chem", &["c0"], &[("chem.S001", "S001", vec![json!(10.0)])]),
+        ];
+        let mut layout = source_layout("fused", &blocks);
+        layout.blocks[0].preprocessing_output.feature_set_id = "other_nir_x".to_string();
+
+        let error = layout
+            .validate_for_source_blocks("fused", &blocks)
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("preprocessing_output feature_set_id"));
     }
 
     #[test]
