@@ -4,9 +4,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use dag_ml_data_core::{
     data_plan_fingerprint, plan_model_input, representation_registry, sample_relation_fingerprint,
-    schema_fingerprint, AdapterRegistry, AdapterRegistrySpec,
-    CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope, CoordinatorHandleArena,
-    DataPlan, DataPlanRequest, DatasetSchema, ModelInputSpec, SampleRelationTable, SourceId,
+    schema_fingerprint, validate_model_input_spec_against_registry, AdapterRegistry,
+    AdapterRegistrySpec, CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope,
+    CoordinatorHandleArena, DataPlan, DataPlanRequest, DatasetSchema, ModelInputSpec,
+    SampleRelationTable, SourceId,
 };
 
 #[derive(Debug, Parser)]
@@ -57,6 +58,12 @@ enum Command {
         id: String,
         #[arg(long = "source")]
         sources: Vec<String>,
+    },
+    /// Validate a `ModelInputSpec` / controller data-requirements fixture
+    /// against the frozen built-in representation registry.
+    ValidateModelInput {
+        #[arg(long)]
+        model_input: PathBuf,
     },
     /// Print the frozen, published built-in representation registry
     /// (`B-014`/`DMD-001`); the output is the
@@ -167,6 +174,27 @@ fn main() -> Result<()> {
             )
             .context("failed to plan model input")?;
             println!("{}", serde_json::to_string_pretty(&plan)?);
+        }
+        Command::ValidateModelInput { model_input } => {
+            let model_input_path = model_input;
+            let model_input: ModelInputSpec = read_json(&model_input_path, "model input")?;
+            validate_model_input_spec_against_registry(&model_input, &representation_registry())
+                .with_context(|| {
+                    format!(
+                        "invalid model input against representation registry at {}",
+                        model_input_path.display()
+                    )
+                })?;
+            let accepted_count = model_input
+                .ports
+                .iter()
+                .map(|port| port.accepted_representations.len())
+                .sum::<usize>();
+            println!(
+                "valid model input: {} port(s), {} accepted representation(s)",
+                model_input.ports.len(),
+                accepted_count
+            );
         }
         Command::RepresentationRegistry => {
             println!(
