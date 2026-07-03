@@ -79,10 +79,23 @@ jobs:
       DAG_ML_REPO: ${{ github.workspace }}/external/dag-ml
     steps:
       - uses: actions/checkout@v6
+      - name: Resolve dag-ml contract peer
+        id: peer
+        shell: bash
+        run: |
+          set -euo pipefail
+          peer_repo="GBeurier/dag-ml"
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          ref="main"
+          if git ls-remote --exit-code --heads "https://github.com/${peer_repo}.git" "$branch" >/dev/null 2>&1; then
+            ref="$branch"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - name: Checkout dag-ml contract peer
         uses: actions/checkout@v6
         with:
           repository: GBeurier/dag-ml
+          ref: ${{ steps.peer.outputs.ref }}
           path: external/dag-ml
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -102,10 +115,23 @@ jobs:
       DAG_ML_REPO: ${{ github.workspace }}/external/dag-ml
     steps:
       - uses: actions/checkout@v6
+      - name: Resolve dag-ml contract peer
+        id: peer
+        shell: bash
+        run: |
+          set -euo pipefail
+          peer_repo="GBeurier/dag-ml"
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          ref="main"
+          if git ls-remote --exit-code --heads "https://github.com/${peer_repo}.git" "$branch" >/dev/null 2>&1; then
+            ref="$branch"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - name: Checkout dag-ml contract peer
         uses: actions/checkout@v6
         with:
           repository: GBeurier/dag-ml
+          ref: ${{ steps.peer.outputs.ref }}
           path: external/dag-ml
       - uses: dtolnay/rust-toolchain@stable
         with:
