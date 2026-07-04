@@ -8,7 +8,7 @@ the host-provider C ABI. ML phases, OOF joins and model execution belong to the
 companion `dag-ml` repo.
 
 This site is the contributor and integration entry point for data contracts used
-by future nirs4all and nirs4all-lite integrations. The nirs4all connector is
+by future nirs4all and nirs4all-core integrations. The nirs4all connector is
 owned by `nirs4all-io`; this repo stays NIRS-agnostic.
 
 ## Start Here
@@ -68,9 +68,9 @@ Dataset-assembly bridge → SpectroDataset.
 :link: https://nirs4all-datasets.readthedocs.io/en/latest/
 Curated DOI-pinned NIRS dataset catalog (n4a-datasets).
 :::
-:::{grid-item-card} nirs4all-lite
-:link: https://nirs4all-lite.readthedocs.io/en/latest/
-Portable aggregate distribution (Rust + bindings).
+:::{grid-item-card} nirs4all-core
+:link: https://nirs4all-core.readthedocs.io/en/latest/
+Canonical portable aggregate distribution (Rust, Python, R, WASM, MATLAB/Octave).
 :::
 ::::
 
