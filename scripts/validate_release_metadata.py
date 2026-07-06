@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate release metadata across Cargo, Python and CI files."""
+"""Validate release metadata across Cargo, Python, R and CI files."""
 
 from __future__ import annotations
 
@@ -24,6 +24,24 @@ EXPECTED_PYPROJECT_LICENSE = "CeCILL-2.1 OR AGPL-3.0-or-later"
 def load_toml(path: Path) -> dict[str, Any]:
     with path.open("rb") as handle:
         return tomllib.load(handle)
+
+
+def load_description(path: Path) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    current_key: str | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            current_key = None
+            continue
+        if line[:1].isspace():
+            if current_key is not None:
+                fields[current_key] = f"{fields[current_key]}\n{line.strip()}"
+            continue
+        key, separator, value = line.partition(":")
+        require(bool(separator), f"{path}: invalid DESCRIPTION line: {line}")
+        current_key = key.strip()
+        fields[current_key] = value.strip()
+    return fields
 
 
 def fail(message: str) -> None:
@@ -221,6 +239,31 @@ def validate_python(repo: Path, repo_name: str, version: str) -> None:
     require((py_crate / "python" / module_prefix / "__init__.pyi").is_file(), "missing stub file")
 
 
+def validate_r(repo: Path, repo_name: str, version: str) -> None:
+    r_crate = repo / "crates" / f"{repo_name}-r"
+
+    description_path = r_crate / "DESCRIPTION"
+    require(description_path.is_file(), f"missing R DESCRIPTION: {description_path}")
+    description = load_description(description_path)
+    require(
+        description.get("Package") == repo_name.replace("-", ""),
+        f"{description_path}: Package mismatch",
+    )
+    require(
+        description.get("Version") == version,
+        f"{description_path}: Version must match workspace version {version}",
+    )
+
+    cargo_path = r_crate / "src" / "rust" / "Cargo.toml"
+    require(cargo_path.is_file(), f"missing R Rust manifest: {cargo_path}")
+    cargo = load_toml(cargo_path)
+    cargo_package = cargo["package"]
+    require(
+        cargo_package.get("version") == version,
+        f"{cargo_path}: package.version must match workspace version {version}",
+    )
+
+
 def validate_ci(repo: Path) -> None:
     workflow = (repo / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     require(
@@ -404,6 +447,7 @@ def main() -> None:
     repo = Path(__file__).resolve().parents[1]
     repo_name, version, _members = validate_workspace(repo)
     validate_python(repo, repo_name, version)
+    validate_r(repo, repo_name, version)
     validate_ci(repo)
     validate_governance(repo, repo_name)
     validate_docs_site(repo, repo_name)
