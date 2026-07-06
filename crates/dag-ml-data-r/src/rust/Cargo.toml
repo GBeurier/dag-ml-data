@@ -18,5 +18,5 @@ path = "src/bin/document.rs"
 [dependencies]
 extendr-api = "0.9"
 serde_json = "1.0"
-dag-ml-data-core = { path = "../../../dag-ml-data-core" }
-dag-ml-data-provider = { path = "../../../dag-ml-data-provider" }
+dag-ml-data-core = "=0.2.4"
+dag-ml-data-provider = "=0.2.4"
