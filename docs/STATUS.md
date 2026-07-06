@@ -42,7 +42,7 @@ Implemented:
 - optional nirs4all integration schema fields:
   `RepresentationSpec.signal_type`, source `ShapeContract`, `MetadataSchema`,
   `GroupSpec`, `FoldSpec` and `AugmentationMetadata`, all additive for v1
-  readers and covered by the `nirs4all-lite` Python/WASM smoke fixture;
+  readers and covered by the `nirs4all-core` Python/WASM smoke fixture;
 - sample relation fingerprints;
 - coordinator data-plan envelope export with schema, plan and relation
   fingerprints;
@@ -84,7 +84,7 @@ Implemented:
   docs-site / managed-debt / publish-plan CI gates;
 - public C ABI snapshot manifest for `dag_ml_data.h`, validated in CI so
   header changes cannot drift silently;
-- shared parity-oracle handoff manifest for the first nirs4all-lite parity
+- shared parity-oracle handoff manifest for the first nirs4all-core parity
   cases, with fixture/gate references validated against `dag-ml`;
 - shared conformance-pack manifest with canonical schema/fixture digests, C ABI
   requirements and required cross-repo checks, kept JSON-identical with
