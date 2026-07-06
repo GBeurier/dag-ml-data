@@ -1,6 +1,6 @@
 [package]
 name = "dag-ml-data-r"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 rust-version = "1.83"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
