@@ -355,14 +355,14 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-data"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "dag-ml-data-core",
 ]
 
 [[package]]
 name = "dag-ml-data-arrow"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-data-capi"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-data-cli"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-data-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-data-provider"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "dag-ml-data-core",
  "serde",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-data-wasm"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "dag-ml-data-core",
  "dag-ml-data-provider",

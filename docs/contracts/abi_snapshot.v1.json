@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "crate": "dag-ml-data",
-  "package_version": "0.2.4",
+  "package_version": "0.2.5",
   "headers": [
     {
       "path": "crates/dag-ml-data-capi/include/dag_ml_data.h",
