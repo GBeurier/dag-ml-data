@@ -1004,7 +1004,7 @@ mod tests {
             signal_type: Some(SignalKind::Reflectance),
         };
         let schema = DatasetSchema {
-            dataset_id: "nirs4all-lite-smoke".to_string(),
+            dataset_id: "nirs4all-core-smoke".to_string(),
             sample_ids: vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()],
             sources: vec![SourceDescriptor {
                 id: source_id.clone(),

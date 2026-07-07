@@ -23,8 +23,8 @@ def main() -> None:
     repo = Path(__file__).resolve().parents[1]
     fixture = repo / "examples" / "fixtures" / "oof_campaign"
     schema_json = _read(fixture, "schema_nir_6_samples.json")
-    nirs4all_lite_schema_json = _read(
-        fixture, "schema_nirs4all_lite_contract.json"
+    nirs4all_core_schema_json = _read(
+        fixture, "schema_nirs4all_core_contract.json"
     )
     model_input_json = _read(fixture, "model_input_tabular_numeric.json")
     registry_json = _read(fixture, "adapter_registry_signal_to_tabular.json")
@@ -56,7 +56,7 @@ def main() -> None:
     )
 
     dag_ml_data.validate_dataset_schema_json(schema_json)
-    dag_ml_data.validate_dataset_schema_json(nirs4all_lite_schema_json)
+    dag_ml_data.validate_dataset_schema_json(nirs4all_core_schema_json)
     manifest = json.loads(dag_ml_data.contract_manifest_json())
     if manifest["crate"] != "dag-ml-data":
         raise SystemExit("contract manifest has wrong crate name")
@@ -113,12 +113,12 @@ def main() -> None:
         != fold_fingerprint
     ):
         raise SystemExit("fold set fingerprint changed after irrelevant reordering")
-    invalid_lite_schema = json.loads(nirs4all_lite_schema_json)
-    invalid_lite_schema["sources"][0]["shape_contract"]["axis_sizes"]["wavelength"][
+    invalid_core_schema = json.loads(nirs4all_core_schema_json)
+    invalid_core_schema["sources"][0]["shape_contract"]["axis_sizes"]["wavelength"][
         "exact"
     ] = 999
     try:
-        dag_ml_data.validate_dataset_schema_json(json.dumps(invalid_lite_schema))
+        dag_ml_data.validate_dataset_schema_json(json.dumps(invalid_core_schema))
     except dag_ml_data.DagMlDataError as error:
         if error.category != "data" or error.code != "data_contract_validation":
             raise SystemExit("DagMlDataError taxonomy attributes drifted")
@@ -126,15 +126,15 @@ def main() -> None:
         if descriptor["context"] != error.context:
             raise SystemExit("DagMlDataError descriptor context does not match attribute")
     else:
-        raise SystemExit("invalid nirs4all-lite shape_contract was accepted")
-    invalid_fold_schema = json.loads(nirs4all_lite_schema_json)
+        raise SystemExit("invalid nirs4all-core shape_contract was accepted")
+    invalid_fold_schema = json.loads(nirs4all_core_schema_json)
     invalid_fold_schema["groups"] = []
     try:
         dag_ml_data.validate_dataset_schema_json(json.dumps(invalid_fold_schema))
     except dag_ml_data.DagMlDataError:
         pass
     else:
-        raise SystemExit("invalid nirs4all-lite fold group reference was accepted")
+        raise SystemExit("invalid nirs4all-core fold group reference was accepted")
     leaking_relations = json.loads(relations_json)
     for row in leaking_relations["rows"]:
         if row["sample_id"] == "S002":
@@ -152,10 +152,10 @@ def main() -> None:
     if len(fingerprint) != 64:
         raise SystemExit("schema fingerprint is not a sha256 hex digest")
     lite_fingerprint = dag_ml_data.dataset_schema_fingerprint_json(
-        nirs4all_lite_schema_json
+        nirs4all_core_schema_json
     )
     if len(lite_fingerprint) != 64:
-        raise SystemExit("nirs4all-lite schema fingerprint is not a sha256 hex digest")
+        raise SystemExit("nirs4all-core schema fingerprint is not a sha256 hex digest")
     plan_json = dag_ml_data.plan_model_input_json(
         schema_json,
         model_input_json,

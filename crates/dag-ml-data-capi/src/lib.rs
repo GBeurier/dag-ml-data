@@ -4820,9 +4820,9 @@ mod tests {
     }
 
     #[test]
-    fn schema_fingerprint_abi_validates_nirs4all_lite_contract_fields() {
+    fn schema_fingerprint_abi_validates_nirs4all_core_contract_fields() {
         let schema = include_bytes!(
-            "../../../examples/fixtures/oof_campaign/schema_nirs4all_lite_contract.json"
+            "../../../examples/fixtures/oof_campaign/schema_nirs4all_core_contract.json"
         );
         let mut fingerprint = DagMlDataString::default();
         let mut error = DagMlDataString::default();

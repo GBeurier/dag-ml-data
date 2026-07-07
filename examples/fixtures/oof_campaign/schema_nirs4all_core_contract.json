@@ -1,5 +1,5 @@
 {
-  "dataset_id": "nirs4all-lite-contract",
+  "dataset_id": "nirs4all-core-contract",
   "sample_ids": ["S001", "S002", "S003", "S004", "S005", "S006"],
   "sources": [
     {

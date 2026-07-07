@@ -17,7 +17,7 @@ deferred. With the feature on, `contract_manifest_json()` gains distinct
 `contract_manifest_json()` returns a stable JSON manifest with the package
 version, supported contract ids, exported Python/WASM function names and shared
 fixture digests. Browser integrations should check it before accepting cached
-pipelines or persisted `nirs4all-core` / legacy `nirs4all-lite` workspaces.
+pipelines or persisted `nirs4all-core` workspaces.
 
 ## Build
 

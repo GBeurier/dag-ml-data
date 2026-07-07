@@ -261,7 +261,7 @@ fn contract_manifest() -> serde_json::Value {
             "plan_model_input",
             "build_coordinator_data_plan_envelope",
             "validate_fold_set_against_sample_relations",
-            "nirs4all_lite_schema_fields",
+            "nirs4all_core_schema_fields",
             "builtin_data_models",
             "structured_error_descriptors"
         ],

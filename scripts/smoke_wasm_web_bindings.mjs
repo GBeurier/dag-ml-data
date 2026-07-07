@@ -64,7 +64,7 @@ function assertPackageMetadata(expectedVersion) {
 }
 
 const schemaJson = readFixture("schema_nir_6_samples.json");
-const nirs4allLiteSchemaJson = readFixture("schema_nirs4all_lite_contract.json");
+const nirs4allCoreSchemaJson = readFixture("schema_nirs4all_core_contract.json");
 const relationsJson = readFixture("sample_relations_grouped_augmented.json");
 const sharedFoldSetJson = fs.readFileSync(
   path.join(repo, "examples", "fixtures", "shared", "fold_set_cv_partition.json"),
@@ -90,7 +90,7 @@ const foldSet = {
 const foldSetJson = JSON.stringify(foldSet);
 
 dagMlData.validate_dataset_schema_json(schemaJson);
-dagMlData.validate_dataset_schema_json(nirs4allLiteSchemaJson);
+dagMlData.validate_dataset_schema_json(nirs4allCoreSchemaJson);
 const manifest = JSON.parse(dagMlData.contract_manifest_json());
 if (manifest.crate !== "dag-ml-data") {
   throw new Error("contract manifest has wrong crate name");
@@ -129,21 +129,21 @@ const reorderedFoldSet = {
 if (dagMlData.fold_set_fingerprint_json(JSON.stringify(reorderedFoldSet)) !== foldFingerprint) {
   throw new Error("fold set fingerprint changed after irrelevant reordering");
 }
-const invalidLiteSchema = JSON.parse(nirs4allLiteSchemaJson);
-invalidLiteSchema.sources[0].shape_contract.axis_sizes.wavelength.exact = 999;
+const invalidCoreSchema = JSON.parse(nirs4allCoreSchemaJson);
+invalidCoreSchema.sources[0].shape_contract.axis_sizes.wavelength.exact = 999;
 try {
-  dagMlData.validate_dataset_schema_json(JSON.stringify(invalidLiteSchema));
-  throw new Error("invalid nirs4all-lite shape_contract was accepted");
+  dagMlData.validate_dataset_schema_json(JSON.stringify(invalidCoreSchema));
+  throw new Error("invalid nirs4all-core shape_contract was accepted");
 } catch (error) {
   if (!String(error).includes("shape contract")) {
     throw error;
   }
 }
-const invalidFoldSchema = JSON.parse(nirs4allLiteSchemaJson);
+const invalidFoldSchema = JSON.parse(nirs4allCoreSchemaJson);
 invalidFoldSchema.groups = [];
 try {
   dagMlData.validate_dataset_schema_json(JSON.stringify(invalidFoldSchema));
-  throw new Error("invalid nirs4all-lite fold group reference was accepted");
+  throw new Error("invalid nirs4all-core fold group reference was accepted");
 } catch (error) {
   if (!String(error).includes("unknown group")) {
     throw error;
@@ -170,9 +170,9 @@ const fingerprint = dagMlData.dataset_schema_fingerprint_json(schemaJson);
 if (fingerprint.length !== 64) {
   throw new Error("schema fingerprint is not a sha256 hex digest");
 }
-const liteFingerprint = dagMlData.dataset_schema_fingerprint_json(nirs4allLiteSchemaJson);
-if (liteFingerprint.length !== 64) {
-  throw new Error("nirs4all-lite schema fingerprint is not a sha256 hex digest");
+const coreFingerprint = dagMlData.dataset_schema_fingerprint_json(nirs4allCoreSchemaJson);
+if (coreFingerprint.length !== 64) {
+  throw new Error("nirs4all-core schema fingerprint is not a sha256 hex digest");
 }
 const planJson = dagMlData.plan_model_input_json(
   schemaJson,
