@@ -1,11 +1,11 @@
 # Roadmap
 
-## 0.2.0 Release Closure
+## 0.2.x RC Release Closure
 
-The 0.2.0 release surface is closed around data contracts, provider
+The 0.2.x RC release surface is closed around data contracts, provider
 conformance, C ABI/Python/WASM JSON-contract bindings, cross-repo `dag-ml`
 fixtures and release gates documented in `docs/SUPPORTED.md`. Remaining items
-in this roadmap are post-0.2.0 hardening/backlog unless a later section
+in this roadmap are post-0.2.x hardening/backlog unless a later section
 explicitly says otherwise.
 
 ## Phase 0: Contracts Frozen

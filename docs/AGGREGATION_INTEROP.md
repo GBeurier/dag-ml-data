@@ -2,7 +2,7 @@
 
 `dag-ml-data` owns data-side reducer vocabulary. `dag-ml` owns coordinator
 aggregation policy, ML-phase legality, OOF/refit safety and host-controller
-routing. This page records the 0.2.0 mapping from the data side; it
+routing. This page records the 0.2.x RC mapping from the data side; it
 does not change any public schema or ABI signature.
 
 ## Mapping
@@ -20,7 +20,7 @@ does not change any public schema or ABI signature.
 
 ## Release Rule
 
-No implicit mapping may be added during the 0.2.0 release window. If `robust_mean` or
+No implicit mapping may be added during the 0.2.x RC release window. If `robust_mean` or
 `exclude_outliers` becomes a first-class `dag-ml` coordinator method, the
 change must include:
 
@@ -34,5 +34,5 @@ change must include:
 
 `dag-ml-data` exposes signal-type validation helpers. `dag-ml` does not yet
 carry an expected signal type through bundle replay. Until that paired contract
-exists, 0.2.0 documents signal-type replay enforcement as a
+exists, 0.2.x documents signal-type replay enforcement as a
 provider/backlog item rather than a coordinator-enforced invariant.

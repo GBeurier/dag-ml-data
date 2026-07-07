@@ -1,8 +1,9 @@
 # Supported Surface
 
-This page is the 0.2.1 support contract for `dag-ml-data`. It separates
+This page is the 0.2.x RC support contract for `dag-ml-data` (current package
+version: 0.2.5). It separates
 production-facing data contracts from conformance providers and backlog work.
-The 0.2.1 surface adds the built-in scientific data-model catalogue helpers
+The 0.2.x surface includes the built-in scientific data-model catalogue helpers
 (`builtin_data_models`, `builtin_representations`, `builtin_adapter_registry`,
 `tabular_numeric_model_input_spec`) as new additive Rust, Python and WASM
 exports; no existing public ABI, JSON schema, or function signature changed.
@@ -38,7 +39,7 @@ exports; no existing public ABI, JSON schema, or function signature changed.
 
 ## Cross-Repo Contract With dag-ml
 
-The 0.2.0 release must keep these artifacts JSON-identical with `dag-ml`:
+The 0.2.x RC release train must keep these artifacts JSON-identical with `dag-ml`:
 
 - `coordinator_data_plan_envelope.schema.json`;
 - `feature_fusion_selector.schema.json`;
@@ -53,7 +54,7 @@ The public vtable ABI version shared with `dag-ml` must remain guarded so
 
 ## Public-Signature Policy
 
-For the 0.2.0 release window:
+For the 0.2.x RC release window:
 
 - no C ABI symbol, struct layout, JSON schema id/version, Rust public function,
   Python facade function, R package native surface or WASM export changes
@@ -63,7 +64,7 @@ For the 0.2.0 release window:
 - documentation, CI jobs, tests and private benchmark helpers are allowed when
   they do not alter exported signatures.
 
-## Post-0.2.0 Backlog
+## Post-0.2.x Backlog
 
 1. Keep the documented mapping between `dag-ml` coordinator aggregation
    policies and data-side reducer vocabulary current (`robust_mean` /
