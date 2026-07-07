@@ -1,7 +1,7 @@
 # Status
 
-Current state: 0.2.0 release surface for the data-contract and provider
-conformance layer.
+Current state: 0.2.x RC release surface for the data-contract and provider
+conformance layer (current package version: 0.2.5).
 
 The release scope is intentionally bounded: schema/planning contracts,
 coordinator envelopes, relations/FoldSet validation, deterministic fingerprints,
@@ -9,7 +9,7 @@ numeric buffers, N-D tensor transport, fitted adapter refs, in-memory provider
 conformance, C ABI helpers, Python/WASM JSON-contract bindings and cross-repo
 `dag-ml` fixtures are shipped and gated. Production host providers beyond the
 in-memory conformance backend, host-filtered branch views and the nirs4all
-connector remain explicit post-0.2.0 backlog.
+connector remain explicit post-0.2.x backlog.
 
 Implemented:
 
@@ -366,7 +366,7 @@ Implemented:
   Cross-repo `conformance_pack.v1.json` / `validate_contracts.py` lockstep
   wiring with `dag-ml` is the next `DMD-001` slice.
 
-Post-0.2.0 backlog:
+Post-0.2.x backlog:
 
 - production provider arenas for fused feature exports (the borrowed N-D tensor
   transport is now implemented; fused-feature exports remain in-memory-only);
@@ -378,7 +378,7 @@ Post-0.2.0 backlog:
   speculative `expected_signal_type` request field added);
 - nirs4all connector (descoped — owned by `nirs4all-io`, see ADR-0001).
 
-Next recommended post-0.2.0 task:
+Next recommended post-0.2.x task:
 
 Write the honest host-adapter backlog in `dag-ml/docs/HOST_ADAPTER_BACKLOG.md`:
 process-adapter JSONL pattern is the only stable wire protocol for

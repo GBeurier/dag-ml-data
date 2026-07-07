@@ -15,7 +15,7 @@ sample relations, representation adapters, data plans, alignment/collation
 contracts and schema fingerprints. It does not own ML phases, CV orchestration,
 OOF joins or model execution; those belong to `dag-ml`.
 
-> Status: 0.2.0 release hardening complete. The schema/planning contracts, coordinator envelope,
+> Status: 0.2.5 V1 RC release train. The schema/planning contracts, coordinator envelope,
 > handle/view lifecycle, in-memory provider vtable, Arrow/tensor exports,
 > Python `ctypes` conformance package and cross-repo `dag-ml` fixtures are
 > executable and gated. Production support is intentionally scoped; see
@@ -83,9 +83,9 @@ node scripts/smoke_wasm_web_bindings.mjs "$web_out_dir"
 node scripts/smoke_wasm_tarball_metadata.mjs "$web_out_dir"
 ```
 
-## 0.2.0 Release Scope
+## 0.2.x RC Release Scope
 
-The supported 0.2.0 scope is a schema and planning core that can:
+The supported 0.2.x RC scope is a schema and planning core that can:
 
 1. parse and validate canonical dataset schemas;
 2. describe semantic axes and representations;

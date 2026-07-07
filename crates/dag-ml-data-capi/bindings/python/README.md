@@ -6,8 +6,8 @@ JSON payloads and host buffers to Rust and decodes the Arrow / owned-struct
 results. It contains no NIRS, ML, or scheduling logic — those live in
 `dag-ml-data` / `dag-ml`.
 
-This is the **provider** binding. The sibling `dag-ml-data` PyPI package
-(`crates/dag-ml-data-py`, PyO3) binds the JSON *contracts* and is unrelated.
+This is the **provider** binding. The sibling `dag-ml-data` PyO3 package target
+(`crates/dag-ml-data-py`) binds the JSON *contracts* and is unrelated.
 
 ## Locating the cdylib
 

@@ -1,7 +1,7 @@
 # Performance Probes
 
 `dag-ml-data` does not treat microbenchmarks as public API. The current
-0.2.0 baseline is a pair of ignored Rust tests that can be run on
+0.2.x RC baseline is a pair of ignored Rust tests that can be run on
 demand in release mode to catch large regressions in fingerprinting.
 
 ## Current Probes
@@ -23,7 +23,7 @@ demand in release mode to catch large regressions in fingerprinting.
 
 ## Next Baselines
 
-Post-0.2.0, add probes for:
+Post-0.2.x, add probes for:
 
 - provider `materialize` / `make_view` / Arrow export;
 - fused feature export over provider-owned buffers;
