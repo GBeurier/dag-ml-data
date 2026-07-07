@@ -76,7 +76,7 @@ IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 CONFORMANCE_PACK_ID = "dag-ml.shared.conformance.v1"
 PARITY_ORACLE_ID = "dag-ml.nirs4all.parity_oracle.v1"
 REQUIRED_PARITY_CASE_IDS = {
-    "nirs4all_lite_browser_compile_plan",
+    "nirs4all_core_browser_compile_plan",
     "repetition_group_leakage_refusal",
     "controller_registry_selector_parity",
     "branch_merge_oof_refit_replay",
