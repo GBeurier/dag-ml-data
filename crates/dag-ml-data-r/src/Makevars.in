@@ -38,9 +38,13 @@ $(STATLIB):
 	export PATH="$(PATH):$(HOME)/.cargo/bin" && \
 	@PANIC_EXPORTS@RUSTFLAGS="$(RUSTFLAGS) --print=native-static-libs" cargo build @CRAN_FLAGS@ --lib @PROFILE@ --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR) @TARGET@
 
-	export CARGO_HOME=$(CARGOTMP) && \
-	export PATH="$(PATH):$(HOME)/.cargo/bin" && \
-	LD_LIBRARY_PATH="$(R_HOME)/lib:$${LD_LIBRARY_PATH:-}" cargo run @CRAN_FLAGS@ --bin document --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR) @TARGET@
+	if [ "@TARGET@" = "--target=wasm32-unknown-emscripten" ]; then \
+		echo "Skipping extendr wrapper regeneration for WebR; using committed R/extendr-wrappers.R"; \
+	else \
+		export CARGO_HOME=$(CARGOTMP) && \
+		export PATH="$(PATH):$(HOME)/.cargo/bin" && \
+		LD_LIBRARY_PATH="$(R_HOME)/lib:$${LD_LIBRARY_PATH:-}" cargo run @CRAN_FLAGS@ --bin document --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR) @TARGET@; \
+	fi
 
 	# Always clean up CARGOTMP
 	rm -Rf $(CARGOTMP);
