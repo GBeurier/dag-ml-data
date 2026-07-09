@@ -1,7 +1,7 @@
 # Status
 
 Current state: 0.2.x RC release surface for the data-contract and provider
-conformance layer (current package version: 0.2.8).
+conformance layer (current package version: 0.2.9).
 
 The release scope is intentionally bounded: schema/planning contracts,
 coordinator envelopes, relations/FoldSet validation, deterministic fingerprints,

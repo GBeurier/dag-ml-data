@@ -12,4 +12,4 @@ from ._provider import InMemoryProvider
 
 __all__ = ["InMemoryProvider", "find_capi_library", "load_library", "__version__"]
 
-__version__ = "0.2.8"
+__version__ = "0.2.9"
