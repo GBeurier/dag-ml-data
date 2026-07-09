@@ -19,7 +19,7 @@ jobs:
     env:
       DAG_ML_REPO: ${{ github.workspace }}/external/dag-ml
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v6
@@ -64,7 +64,7 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "contract_changed=$contract_changed" >> "$GITHUB_OUTPUT"
       - name: Checkout dag-ml contract peer
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml
           ref: ${{ steps.peer.outputs.ref }}
@@ -78,7 +78,7 @@ jobs:
     env:
       DAG_ML_REPO: ${{ github.workspace }}/external/dag-ml
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Resolve dag-ml contract peer
         id: peer
         shell: bash
@@ -92,7 +92,7 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - name: Checkout dag-ml contract peer
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml
           ref: ${{ steps.peer.outputs.ref }}
@@ -114,7 +114,7 @@ jobs:
     env:
       DAG_ML_REPO: ${{ github.workspace }}/external/dag-ml
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Resolve dag-ml contract peer
         id: peer
         shell: bash
@@ -128,7 +128,7 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - name: Checkout dag-ml contract peer
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: GBeurier/dag-ml
           ref: ${{ steps.peer.outputs.ref }}
@@ -178,7 +178,7 @@ jobs:
     name: AddressSanitizer (capi)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
@@ -198,7 +198,7 @@ jobs:
     name: Documentation site
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -217,7 +217,7 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v6
         with:
@@ -257,7 +257,7 @@ jobs:
       matrix:
         node-version: ["20", "22"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
