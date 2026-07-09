@@ -15,7 +15,7 @@ sample relations, representation adapters, data plans, alignment/collation
 contracts and schema fingerprints. It does not own ML phases, CV orchestration,
 OOF joins or model execution; those belong to `dag-ml`.
 
-> Status: 0.2.8 V1 RC release train. The schema/planning contracts, coordinator envelope,
+> Status: 0.2.9 V1 RC release train. The schema/planning contracts, coordinator envelope,
 > handle/view lifecycle, in-memory provider vtable, Arrow/tensor exports,
 > Python `ctypes` conformance package and cross-repo `dag-ml` fixtures are
 > executable and gated. Production support is intentionally scoped; see
