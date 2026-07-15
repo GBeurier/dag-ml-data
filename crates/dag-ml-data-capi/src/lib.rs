@@ -9410,6 +9410,8 @@ mod tests {
             schema_fingerprint: schema_fingerprint.clone(),
             plan_fingerprint: plan_fingerprint.clone(),
             relation_fingerprint: None,
+            data_content_fingerprint: None,
+            target_content_fingerprint: None,
             plan,
             coordinator_relations: Some(CoordinatorRelationSet {
                 records: vec![

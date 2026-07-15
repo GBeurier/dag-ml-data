@@ -46,6 +46,8 @@ Implemented:
 - sample relation fingerprints;
 - coordinator data-plan envelope export with schema, plan and relation
   fingerprints;
+- optional additive data and target content fingerprints on coordinator
+  envelopes, validated by Rust and the shared JSON contract;
 - explicit coordinator data-plan envelope schema version with unsupported
   version refusal;
 - published JSON Schema artifact for coordinator data-plan envelopes, with a
