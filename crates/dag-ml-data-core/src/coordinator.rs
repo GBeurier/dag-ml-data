@@ -205,6 +205,12 @@ pub struct CoordinatorDataPlanEnvelope {
     pub plan_fingerprint: String,
     #[serde(default)]
     pub relation_fingerprint: Option<String>,
+    /// Optional additive identity of the concrete feature/input content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_content_fingerprint: Option<String>,
+    /// Optional additive identity of the concrete target content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_content_fingerprint: Option<String>,
     pub plan: DataPlan,
     #[serde(default)]
     pub coordinator_relations: Option<CoordinatorRelationSet>,
@@ -229,6 +235,8 @@ impl CoordinatorDataPlanEnvelope {
             schema_fingerprint,
             plan_fingerprint,
             relation_fingerprint,
+            data_content_fingerprint: None,
+            target_content_fingerprint: None,
             plan,
             coordinator_relations,
             metadata: BTreeMap::new(),
@@ -275,6 +283,12 @@ impl CoordinatorDataPlanEnvelope {
                     "relation_fingerprint requires coordinator_relations".to_string(),
                 ));
             }
+        }
+        if let Some(data_content_fingerprint) = &self.data_content_fingerprint {
+            validate_fingerprint("data content", data_content_fingerprint)?;
+        }
+        if let Some(target_content_fingerprint) = &self.target_content_fingerprint {
+            validate_fingerprint("target content", target_content_fingerprint)?;
         }
         Ok(())
     }
@@ -467,6 +481,25 @@ mod tests {
         .unwrap();
 
         envelope.validate().unwrap();
+    }
+
+    #[test]
+    fn envelope_content_fingerprints_are_additive_and_validated() {
+        let mut envelope: CoordinatorDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        assert!(envelope.data_content_fingerprint.is_none());
+        assert!(envelope.target_content_fingerprint.is_none());
+        let legacy = serde_json::to_value(&envelope).unwrap();
+        assert!(legacy.get("data_content_fingerprint").is_none());
+        assert!(legacy.get("target_content_fingerprint").is_none());
+
+        envelope.data_content_fingerprint = Some("a".repeat(64));
+        envelope.target_content_fingerprint = Some("b".repeat(64));
+        envelope.validate().unwrap();
+        envelope.data_content_fingerprint = Some("invalid".to_string());
+        assert!(envelope.validate().is_err());
     }
 
     #[test]

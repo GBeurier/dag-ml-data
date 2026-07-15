@@ -269,6 +269,10 @@ def validate_envelope(envelope: Any, label: str) -> None:
     relation_fingerprint = envelope.get("relation_fingerprint")
     if relation_fingerprint is not None:
         require_sha256(relation_fingerprint, f"{label} relation_fingerprint")
+    for field in ("data_content_fingerprint", "target_content_fingerprint"):
+        fingerprint = envelope.get(field)
+        if fingerprint is not None:
+            require_sha256(fingerprint, f"{label} {field}")
 
     plan = envelope.get("plan")
     require(isinstance(plan, dict), f"{label} plan must be an object")

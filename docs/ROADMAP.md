@@ -46,8 +46,11 @@ Definition of done:
 Status: first in-memory coordinator handle arena implemented. It validates a
 coordinator envelope plus materialization request, returns an opaque handle
 record, and records run/node/phase/variant/fold/fingerprint traceability for
-`dag-ml` controller tasks. It also creates identity-filtered view handles and
-aligns sample-level target values while de-duplicating repeated observations.
+`dag-ml` controller tasks. Coordinator envelopes also carry optional additive
+data and target content fingerprints for concrete training-input identity,
+while legacy envelopes remain valid. The arena creates identity-filtered view
+handles and aligns sample-level target values while de-duplicating repeated
+observations.
 The C ABI now exposes a Rust-owned in-memory provider vtable that materializes
 data handles, creates view handles, exports view identity, exports numeric
 targets, exports numeric observation-level features, and supports
