@@ -80,7 +80,7 @@ examples/python/      # reusable provider smoke (imports the dag_ml_data_provide
 scripts/validate_contracts.py  # stdlib-only shared-contract drift checker against ../dag-ml
 ```
 
-`Cargo.toml` is a workspace; crates share `version`, `edition = 2021`, `rust-version = 1.83`, and a small dependency set (`anyhow`, `clap`, `serde`, `serde_json`, `sha2`, `thiserror`, `pyo3`, `wasm-bindgen`). Add new deps to `[workspace.dependencies]` and reference them with `<dep>.workspace = true`.
+`Cargo.toml` is a workspace; crates share `version`, `edition = 2021`, `rust-version = 1.85`, and a small dependency set (`anyhow`, `clap`, `serde`, `serde_json`, `sha2`, `thiserror`, `pyo3`, `wasm-bindgen`). Add new deps to `[workspace.dependencies]` and reference them with `<dep>.workspace = true`.
 
 ## Core Crate Module Map
 
