@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust stable plus the MSRV toolchain `1.83.0`.
+- Rust stable plus the MSRV toolchain `1.85.0`.
 - Python 3.11 or newer for validation scripts, Sphinx, Python binding smokes and
   the stdlib-only provider smoke.
 - Node.js 20 or 22 plus `wasm-pack` for WASM package smokes.
@@ -12,7 +12,7 @@
 
 ```bash
 cargo fmt --all --check
-cargo +1.83.0 check --workspace --all-targets
+cargo +1.85.0 check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 DAG_ML_REPO=../dag-ml python3 scripts/validate_contracts.py
