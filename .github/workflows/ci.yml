@@ -9,7 +9,7 @@ on:
 env:
   CARGO_AUDIT_VERSION: "0.22.1"
   MATURIN_VERSION: "1.13.3"
-  RUST_MSRV: "1.83.0"
+  RUST_MSRV: "1.85.0"
   WASM_PACK_VERSION: "0.15.0"
 
 jobs:

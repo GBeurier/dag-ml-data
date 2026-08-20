@@ -16,9 +16,8 @@ updates:
       - dependency-name: "clap"
       - dependency-name: "pyo3"
       - dependency-name: "indexmap"
-      # MSRV is held at 1.83. Minor/major bumps routinely pull edition2024
-      # (Rust 1.85) crates — e.g. sha2 0.11, cpufeatures 0.3 — and break the
-      # MSRV gate. Take patch-level (security) updates only for everything else.
+      # MSRV is held at 1.85. Minor/major bumps can raise the supported Rust
+      # floor, so take patch-level (security) updates only for everything else.
       - dependency-name: "*"
         update-types:
           - "version-update:semver-major"
@@ -43,9 +42,8 @@ updates:
       - dependency-name: "clap"
       - dependency-name: "pyo3"
       - dependency-name: "indexmap"
-      # MSRV is held at 1.83. Minor/major bumps routinely pull edition2024
-      # (Rust 1.85) crates — e.g. sha2 0.11, cpufeatures 0.3 — and break the
-      # MSRV gate. Take patch-level (security) updates only for everything else.
+      # MSRV is held at 1.85. Minor/major bumps can raise the supported Rust
+      # floor, so take patch-level (security) updates only for everything else.
       - dependency-name: "*"
         update-types:
           - "version-update:semver-major"
