@@ -71,8 +71,13 @@ field on `DataView`), mirroring `dag-ml`'s `BranchViewPlan` wire shape. The
 schema covers `view_id`, `branch_id`, `mode`
 (`separation`/`by_source`/`by_metadata`/`by_tag`/`by_filter`), `selector`
 (union over `source_ids`/`metadata`/`tags`/`filter`), `allow_overlap` and
-`metadata`. The in-memory arena executes `by_source` natively; the other modes
-validate at the contract layer but require host-side filtering for execution.
+`metadata`. The in-memory arena executes `by_source`, `by_metadata` and
+`by_tag` natively. `by_filter` remains schema-opaque for wire compatibility,
+but native execution accepts only the closed object
+`{"metadata_equals": {…}, "tags_all": […]}` (at least one constraint);
+unknown, empty or null predicates are refused as typed validation errors before
+row projection. Matched relations preserve supplied scientific identity and
+metadata verbatim.
 The conformance pack pins the normalized SHA-256 of this schema and
 `scripts/validate_contracts.py` enforces it in both repos.
 
