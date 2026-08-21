@@ -6215,15 +6215,12 @@ mod tests {
     }
 
     #[test]
-    fn inmemory_provider_make_view_refuses_branch_view_with_host_filtered_mode() {
-        // Modes other than `by_source`/`separation` require host-side
-        // filtering; the arena rejects them with a clear validation
-        // error rather than silently returning the unfiltered view.
-        // We first deserialize the *exact same* JSON through
-        // `dag_ml_data_core::DataView` to prove the JSON is
-        // syntactically well-formed; the C ABI's ValidationError must
-        // therefore come from the arena's host-filtered refusal, not
-        // from JSON parse failure.
+    fn inmemory_provider_make_view_refuses_unconstrained_branch_view_selector() {
+        // A syntactically valid branch view with an empty by_metadata selector
+        // must fail as a contract validation error rather than returning an
+        // unfiltered view. Native by_metadata/by_tag/by_filter execution is
+        // covered by the core/provider tests; this ABI test locks the typed
+        // refusal path independently of JSON parsing.
         use dag_ml_data_core::DataView;
         let (envelope, materialization_request) = multisource_provider_fixture();
         let target_tables = b"[]";
@@ -6268,14 +6265,13 @@ mod tests {
                 "branch_id": "branch:metadata",
                 "mode": "by_metadata",
                 "selector": {
-                    "metadata_keys": ["batch"]
+                    "metadata": {}
                 }
             }
         }))
         .unwrap();
-        // Sanity guard: the JSON parses as a valid DataView at the
-        // core level, so the C ABI's refusal below cannot be a parse
-        // error masquerading as a host-filtered rejection.
+        // Sanity guard: the JSON parses as a DataView at the core level, so
+        // the C ABI's refusal below is validation rather than parse failure.
         let parsed: DataView = serde_json::from_slice(&by_metadata_view_json)
             .expect("by_metadata DataView JSON must parse via dag-ml-data-core");
         assert!(parsed.branch_view.is_some());
@@ -6295,7 +6291,7 @@ mod tests {
         assert_eq!(
             status,
             DagMlDataStatusCode::ValidationError,
-            "make_view must refuse host-filtered branch_view modes the arena cannot execute"
+            "make_view must refuse an unconstrained branch_view selector"
         );
         assert_eq!(view_handle, 0);
 

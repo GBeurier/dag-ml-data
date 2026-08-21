@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::coordinator::{
-    validate_fingerprint, CoordinatorDataPlanEnvelope, CoordinatorRelation, CoordinatorRelationSet,
+    parse_native_branch_view_filter, validate_fingerprint, CoordinatorDataPlanEnvelope,
+    CoordinatorRelation, CoordinatorRelationSet,
 };
 use crate::error::{DataError, Result};
 use crate::ids::{ObservationId, RepresentationId, SampleId, SourceId, TargetId};
@@ -808,6 +809,7 @@ fn filter_relations(
     let mut branch_source_filter: Option<BTreeSet<&SourceId>> = None;
     let mut branch_metadata_filter: Option<&BTreeMap<String, serde_json::Value>> = None;
     let mut branch_tag_filter: Option<BTreeSet<&String>> = None;
+    let mut branch_native_filter = None;
     if let Some(branch_view) = view.branch_view.as_ref() {
         match branch_view.mode {
             crate::coordinator::CoordinatorBranchViewMode::BySource => {
@@ -829,14 +831,17 @@ fn filter_relations(
                 branch_tag_filter = Some(branch_view.selector.tags.iter().collect::<BTreeSet<_>>());
             }
             crate::coordinator::CoordinatorBranchViewMode::Separation => {}
-            // `by_filter` needs a deterministic predicate DSL that the in-memory
-            // arena does not yet evaluate; it stays host-side for now.
-            other_mode @ crate::coordinator::CoordinatorBranchViewMode::ByFilter => {
-                return Err(DataError::Validation(format!(
-                    "coordinator branch view `{}` mode={:?} requires host-side filtering; \
-                     in-memory arena natively executes by_source, by_metadata and by_tag",
-                    branch_view.view_id, other_mode,
-                )));
+            crate::coordinator::CoordinatorBranchViewMode::ByFilter => {
+                let filter = branch_view.selector.filter.as_ref().ok_or_else(|| {
+                    DataError::Validation(format!(
+                        "coordinator branch view `{}` mode=by_filter requires filter",
+                        branch_view.view_id
+                    ))
+                })?;
+                branch_native_filter = Some(parse_native_branch_view_filter(
+                    filter,
+                    &format!("coordinator branch view `{}`", branch_view.view_id),
+                )?);
             }
         }
     }
@@ -891,6 +896,22 @@ fn filter_relations(
             branch_tag_filter
                 .as_ref()
                 .map(|tags| tags.iter().all(|tag| relation.tags.contains(tag)))
+                .unwrap_or(true)
+        })
+        .filter(|relation| {
+            let relation = relation.1;
+            branch_native_filter
+                .as_ref()
+                .map(|filter| {
+                    filter
+                        .metadata_equals
+                        .iter()
+                        .all(|(key, value)| relation.metadata.get(key) == Some(value))
+                        && filter
+                            .tags_all
+                            .iter()
+                            .all(|tag| relation.tags.contains(tag))
+                })
                 .unwrap_or(true)
         })
         .filter(|relation| view.include_augmented || !relation.1.is_augmented)
@@ -1392,6 +1413,43 @@ mod tests {
     }
 
     #[test]
+    fn branch_view_by_filter_filters_closed_metadata_and_tag_predicates() {
+        use crate::coordinator::{
+            CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
+        };
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&tagged_envelope(), &request()).unwrap();
+        let view = DataView {
+            branch_view: Some(CoordinatorBranchView {
+                view_id: "branch_view:filter_A_clean".to_string(),
+                branch_id: "branch:filter_A_clean".to_string(),
+                mode: CoordinatorBranchViewMode::ByFilter,
+                selector: CoordinatorBranchViewSelector {
+                    filter: Some(serde_json::json!({
+                        "metadata_equals": {"group": "A"},
+                        "tags_all": ["clean"]
+                    })),
+                    ..Default::default()
+                },
+                allow_overlap: false,
+                metadata: BTreeMap::new(),
+            }),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let record = arena.make_view(data.handle.handle, &view).unwrap();
+        let identity = arena.view_identity(record.handle.handle).unwrap();
+        assert!(
+            identity
+                .records
+                .iter()
+                .all(|relation| relation.sample_id.as_str() == "S001"),
+            "closed by_filter must retain exactly the matching relations"
+        );
+    }
+
+    #[test]
     fn branch_view_empty_partition_intersection_raises_a_clear_error() {
         // A branch_view scoped to group=B, intersected with a fold restriction
         // (sample_ids) that contains ONLY S001 samples, selects no relations —
@@ -1447,7 +1505,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_view_by_filter_mode_still_requires_host_filtering() {
+    fn branch_view_by_filter_refuses_unknown_predicates_before_selection() {
         use crate::coordinator::{
             CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
         };
@@ -1471,11 +1529,11 @@ mod tests {
         };
         let error = arena
             .make_view(data.handle.handle, &view)
-            .expect_err("by_filter has no native predicate DSL yet and must stay host-side");
+            .expect_err("unknown by_filter predicates must fail closed");
         let message = format!("{error}");
         assert!(
-            message.contains("requires host-side filtering"),
-            "expected host-filtering error for by_filter, got: {message}"
+            message.contains("native predicate"),
+            "expected native-predicate validation error, got: {message}"
         );
     }
 

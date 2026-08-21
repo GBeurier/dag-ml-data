@@ -54,6 +54,7 @@ pub enum CoordinatorBranchViewMode {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoordinatorBranchViewSelector {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_ids: Vec<SourceId>,
@@ -65,7 +66,65 @@ pub struct CoordinatorBranchViewSelector {
     pub filter: Option<serde_json::Value>,
 }
 
+/// Closed native predicate accepted by a `by_filter` coordinator branch view.
+///
+/// This deliberately describes only relation properties that are already
+/// present in a coordinator envelope. It is not a general JSON query language:
+/// accepting an unrecognised predicate would let a host believe a scientific
+/// partition was applied when the provider cannot prove that it was.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NativeBranchViewFilter {
+    #[serde(default)]
+    pub metadata_equals: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub tags_all: Vec<String>,
+}
+
+pub(crate) fn parse_native_branch_view_filter(
+    value: &serde_json::Value,
+    label: &str,
+) -> Result<NativeBranchViewFilter> {
+    let filter = serde_json::from_value::<NativeBranchViewFilter>(value.clone()).map_err(|error| {
+        DataError::Validation(format!(
+            "{label} mode=by_filter requires the native predicate {{metadata_equals, tags_all}}: {error}"
+        ))
+    })?;
+    if filter.metadata_equals.is_empty() && filter.tags_all.is_empty() {
+        return Err(DataError::Validation(format!(
+            "{label} mode=by_filter predicate must constrain metadata_equals or tags_all"
+        )));
+    }
+    for (key, value) in &filter.metadata_equals {
+        if key.trim().is_empty() {
+            return Err(DataError::Validation(format!(
+                "{label} mode=by_filter metadata_equals contains an empty key"
+            )));
+        }
+        if value.is_null() {
+            return Err(DataError::Validation(format!(
+                "{label} mode=by_filter metadata_equals `{key}` must not be null"
+            )));
+        }
+    }
+    let mut seen_tags = std::collections::BTreeSet::new();
+    for tag in &filter.tags_all {
+        if tag.trim().is_empty() {
+            return Err(DataError::Validation(format!(
+                "{label} mode=by_filter tags_all contains an empty entry"
+            )));
+        }
+        if !seen_tags.insert(tag) {
+            return Err(DataError::Validation(format!(
+                "{label} mode=by_filter tags_all contains duplicate `{tag}`"
+            )));
+        }
+    }
+    Ok(filter)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoordinatorBranchView {
     pub view_id: String,
     pub branch_id: String,
@@ -144,6 +203,13 @@ impl CoordinatorBranchView {
         }
         let label = format!("coordinator branch view `{}`", self.view_id);
         self.selector.validate(&label)?;
+        for key in self.metadata.keys() {
+            if key.trim().is_empty() {
+                return Err(DataError::Validation(format!(
+                    "{label} metadata contains an empty key"
+                )));
+            }
+        }
         match self.mode {
             CoordinatorBranchViewMode::BySource if self.selector.source_ids.is_empty() => Err(
                 DataError::Validation(format!("{label} mode=by_source requires source_ids")),
@@ -154,19 +220,22 @@ impl CoordinatorBranchView {
             CoordinatorBranchViewMode::ByTag if self.selector.tags.is_empty() => Err(
                 DataError::Validation(format!("{label} mode=by_tag requires tags")),
             ),
-            CoordinatorBranchViewMode::ByFilter if self.selector.filter.is_none() => Err(
-                DataError::Validation(format!("{label} mode=by_filter requires filter")),
-            ),
-            _ => {
-                for key in self.metadata.keys() {
-                    if key.trim().is_empty() {
-                        return Err(DataError::Validation(format!(
-                            "{label} metadata contains an empty key"
-                        )));
-                    }
+            CoordinatorBranchViewMode::ByFilter => {
+                if !self.selector.source_ids.is_empty()
+                    || !self.selector.metadata.is_empty()
+                    || !self.selector.tags.is_empty()
+                {
+                    return Err(DataError::Validation(format!(
+                        "{label} mode=by_filter accepts constraints only inside filter"
+                    )));
                 }
+                let filter = self.selector.filter.as_ref().ok_or_else(|| {
+                    DataError::Validation(format!("{label} mode=by_filter requires filter"))
+                })?;
+                parse_native_branch_view_filter(filter, &label)?;
                 Ok(())
             }
+            _ => Ok(()),
         }
     }
 }

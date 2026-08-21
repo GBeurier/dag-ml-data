@@ -8,8 +8,8 @@ coordinator envelopes, relations/FoldSet validation, deterministic fingerprints,
 numeric buffers, N-D tensor transport, fitted adapter refs, in-memory provider
 conformance, C ABI helpers, Python/WASM JSON-contract bindings and cross-repo
 `dag-ml` fixtures are shipped and gated. Production host providers beyond the
-in-memory conformance backend, host-filtered branch views and the nirs4all
-connector remain explicit post-0.2.x backlog.
+externally-fed in-memory integration route and the nirs4all connector remain
+explicit post-0.2.x backlog.
 
 Implemented:
 

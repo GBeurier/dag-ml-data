@@ -80,9 +80,13 @@ usually branch on `DagMlDataStatusCode` before parsing a payload.
 - `DataView.branch_view` (a `CoordinatorBranchView` carrying `view_id`,
   `branch_id`, `mode`, `selector`, `allow_overlap` and `metadata`), letting
   hosts pass `dag-ml` `BranchViewPlan` records straight through the existing
-  `make_view` selector JSON. The in-memory provider executes `by_source`
-  branch views natively and lets `separation` pass through; `by_metadata`,
-  `by_tag` and `by_filter` are validated but require host-side filtering;
+  `make_view` selector JSON. The in-memory provider executes `by_source`,
+  `by_metadata` and `by_tag` branch views natively and lets `separation` pass
+  through. `by_filter` is deliberately a closed native predicate,
+  `{"metadata_equals": {…}, "tags_all": […]}`: at least one constraint is
+  required and unknown fields at every selector/predicate level are rejected
+  as `ValidationError` before any row projection. Typed and JSON
+  `view_identity` preserve the matched coordinator relations verbatim;
 - `FittedAdapterRef` and `FittedAdapterManifest`, a JSON-serializable
   fitted-adapter persistence contract with `validate()` for inline refs and
   `validate_portable()` for refs carrying a backend + safe relative URI +
