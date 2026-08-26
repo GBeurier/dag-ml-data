@@ -36,6 +36,17 @@ checkout, validates the shared conformance-pack digests, and CI checks out that
 peer explicitly. When development moves into a monorepo, this file should
 become a single generated or shared contract artifact used by both crates.
 
+## Coordinator Data Plan Envelope v2
+
+Schema: `coordinator_data_plan_envelope.v2.schema.json`
+
+V2 is additive and closed at the envelope root. It preserves the V1 CV relation
+authority and requires a separately fingerprinted `predict_cohort` for the
+top-level `PREDICT` phase. `external_test` requires target-content identity and
+is disjoint from the CV physical/origin closure; `inference` has no target
+content. V1 writers remain V1 and a V1 document containing the V2 member is
+refused by the runtime contract.
+
 ## Parity Oracle v1
 
 Manifest: `parity_oracle.v1.json`
