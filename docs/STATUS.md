@@ -185,12 +185,11 @@ Implemented:
   `allow_overlap`, `metadata`), mirroring `dag-ml`'s `BranchViewPlan` wire
   contract. `make_view` validates the mode↔selector field agreement and
   natively executes `by_source` branch views as an additional intersection
-  over the existing source filter. `separation` mode passes through (the
-  selector annotates branch identity and the host scheduler owns
-  non-overlap), while `by_metadata`, `by_tag` and `by_filter` modes pass
-  validation but are rejected for in-memory execution with a clear
-  `requires host-side filtering` error so production providers can route
-  them to native filter backends without breaking ABI compatibility;
+  over the existing source filter. `by_metadata` and `by_tag` match the
+  relation metadata/tags carried in the envelope, and `by_filter` executes the
+  closed `metadata_equals`/`tags_all` predicate. Empty, unknown or mixed
+  predicates fail before row projection. `separation` mode passes through (the
+  selector annotates branch identity and the host scheduler owns non-overlap);
 - published `coordinator_branch_view.schema.json` for that contract, with
   matching `COORDINATOR_BRANCH_VIEW_SCHEMA_ID` Rust constant, the same digest
   pinned in both repos' `conformance_pack.v1.json` and

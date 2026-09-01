@@ -293,6 +293,14 @@ def validate_ci(repo: Path) -> None:
         "CI must validate npm tarball metadata",
     )
     require(
+        "scripts/smoke_wasm_provider_bindings.cjs" in workflow,
+        "CI must execute the opt-in WASM provider bindings",
+    )
+    require(
+        "--features provider" in workflow,
+        "CI must build the WASM provider feature",
+    )
+    require(
         "scripts/validate_abi_snapshot.py" in workflow,
         "CI must validate the public ABI snapshot",
     )

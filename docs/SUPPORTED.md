@@ -31,6 +31,7 @@ exports; no existing public ABI, JSON schema, or function signature changed.
 | Fitted adapter refs/manifests/store | Supported | Portable URI/fingerprint validation and in-memory store ABI are covered. |
 | In-memory provider vtable | Conformance | Full materialize/view/identity/target/feature lifecycle is tested; it is not a production storage backend. |
 | Python `ctypes` provider package | Conformance | Useful binding template and smoke target; not a domain-specific provider backend. |
+| WASM provider feature | Conformance | The opt-in `provider` feature is built and executed in Node CI over materialize/view/typed feature/collation/release. The published default npm artifact remains JSON-contract-only. |
 | Arrow IPC feature-buffer reader | Conformance | Optional crate/feature path for IPC-backed numeric buffers. |
 | `branch_view` modes `by_source`, `by_metadata`, `by_tag` | Supported | Executed natively by the in-memory provider. |
 | `branch_view` mode `by_filter` | Supported, closed predicate | The provider executes only `{"metadata_equals": {…}, "tags_all": […]}` (at least one non-empty constraint); unknown, null, empty or mixed selector predicates fail as typed `data_contract_validation` before row projection. |
