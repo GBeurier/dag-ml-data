@@ -264,13 +264,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
-      # The default WASM package exposes only the JSON contract surface; the
-      # opt-in `provider` feature compiles the in-WASM provider over
-      # dag-ml-data-provider. Build it so that surface is covered by CI.
-      - name: Build WASM provider feature
-        run: cargo build -p dag-ml-data-wasm --features provider --target wasm32-unknown-unknown
       - name: Install wasm-pack
         run: cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
+      # The published default package remains JSON-contract-only. Build a
+      # separate opt-in provider artifact and execute its view/data/handle
+      # lifecycle so the provider feature is a runtime gate, not compile-only.
+      - name: Smoke WASM provider feature
+        run: |
+          out_dir="$PWD/target/wasm/dag-ml-data-wasm-provider"
+          wasm-pack build crates/dag-ml-data-wasm --target nodejs --out-dir "$out_dir" --release -- --features provider
+          node scripts/smoke_wasm_provider_bindings.cjs "$out_dir"
       - name: Build WASM nodejs package
         run: |
           out_dir="$PWD/target/wasm/dag-ml-data-wasm"
