@@ -25,6 +25,10 @@ No unreleased changes.
 ### Changed
 
 - Raised the Rust MSRV to 1.85 and updated the locked hashing/runtime toolchain.
+- Upgraded the Python binding to PyO3 0.29.2, track its standalone Cargo lock,
+  audit that lock in CI, and require locked wheel builds. This closes
+  `RUSTSEC-2026-0176` and `RUSTSEC-2026-0177`, which the workspace-only audit
+  could not see while the wheel crate was excluded.
 - Published package identity now advances past the immutable `v0.2.9` source;
   post-0.2.9 contracts are no longer represented as the already-published
   0.2.9 artifact.
