@@ -105,6 +105,8 @@ jobs:
           python-version: "3.11"
       - name: Check MSRV
         run: cargo check --workspace --all-targets
+      - name: Check MSRV (Python binding)
+        run: cargo check --locked --manifest-path crates/dag-ml-data-py/Cargo.toml --all-targets
       - name: Check MSRV (capi arrow-ipc feature)
         run: cargo check -p dag-ml-data-capi --all-targets --features arrow-ipc
 
@@ -155,14 +157,20 @@ jobs:
         run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
       - name: Supply-chain audit
         run: cargo audit --deny warnings
+      - name: Supply-chain audit (Python binding)
+        run: cargo audit --file crates/dag-ml-data-py/Cargo.lock --deny warnings
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (Python binding)
+        run: cargo clippy --locked --manifest-path crates/dag-ml-data-py/Cargo.toml --all-targets -- -D warnings
       - name: Clippy (capi arrow-ipc feature)
         run: cargo clippy -p dag-ml-data-capi --all-targets --features arrow-ipc -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Test (Python binding)
+        run: cargo test --locked --manifest-path crates/dag-ml-data-py/Cargo.toml
       - name: Test (capi arrow-ipc feature)
         run: cargo test -p dag-ml-data-capi --features arrow-ipc
       - name: Docs
@@ -230,7 +238,7 @@ jobs:
         run: |
           mkdir -p target/wheels
           cd crates/dag-ml-data-py
-          python -m maturin build --release --features extension-module --out ../../target/wheels
+          python -m maturin build --locked --release --features extension-module --out ../../target/wheels
       - name: Smoke Python wheel metadata
         run: python scripts/smoke_python_wheel_metadata.py target/wheels/dag_ml_data-*.whl
       - name: Smoke installed Python wheel

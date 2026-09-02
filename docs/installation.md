@@ -30,7 +30,7 @@ sphinx-build -W --keep-going -b html docs docs/_build/html
 ## Python And WASM Packages
 
 ```bash
-(cd crates/dag-ml-data-py && maturin build --release --features extension-module --out ../../target/wheels)
+(cd crates/dag-ml-data-py && maturin build --locked --release --features extension-module --out ../../target/wheels)
 python3 scripts/smoke_python_wheel_metadata.py target/wheels/dag_ml_data-*.whl
 
 wasm-pack build crates/dag-ml-data-wasm --target web --out-dir crates/dag-ml-data-wasm/pkg-web --release

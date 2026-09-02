@@ -14,7 +14,7 @@ EXPECTED_CARGO_AUDIT_VERSION = "0.22.1"
 EXPECTED_INDEXMAP_VERSION = "=2.13.1"
 EXPECTED_RUST_VERSION = "1.85"
 EXPECTED_RUST_TOOLCHAIN = f"{EXPECTED_RUST_VERSION}.0"
-EXPECTED_PYO3_VERSION = "0.28.3"
+EXPECTED_PYO3_VERSION = "=0.29.2"
 # Cargo manifests carry the canonical SPDX expression; pyproject/PEP 639 metadata
 # uses the CeCILL project's own casing of the identifier.
 EXPECTED_CARGO_LICENSE = "CECILL-2.1 OR AGPL-3.0-or-later"
@@ -203,6 +203,23 @@ def validate_python(repo: Path, repo_name: str, version: str) -> None:
         f"{cargo_path}: {repo_name}-core dependency must use path ../{repo_name}-core",
     )
 
+    lock_path = py_crate / "Cargo.lock"
+    require(lock_path.is_file(), f"missing tracked Python Cargo lock: {lock_path}")
+    lock = load_toml(lock_path)
+    locked = {(package["name"], package["version"]): package for package in lock["package"]}
+    require(
+        (f"{repo_name}-py", version) in locked,
+        f"{lock_path}: Python crate version must match {version}",
+    )
+    require(
+        (f"{repo_name}-core", version) in locked,
+        f"{lock_path}: core crate version must match {version}",
+    )
+    require(
+        ("pyo3", EXPECTED_PYO3_VERSION.removeprefix("=")) in locked,
+        f"{lock_path}: pyo3 must be locked to {EXPECTED_PYO3_VERSION}",
+    )
+
     pyproject_path = py_crate / "pyproject.toml"
     require(pyproject_path.is_file(), f"missing Python pyproject: {pyproject_path}")
     pyproject = load_toml(pyproject_path)
@@ -323,6 +340,28 @@ def validate_ci(repo: Path) -> None:
     require(
         "cargo audit --deny warnings" in workflow,
         "CI must run cargo audit with warnings denied",
+    )
+    require(
+        "cargo audit --file crates/dag-ml-data-py/Cargo.lock --deny warnings" in workflow,
+        "CI must audit the standalone Python binding lock",
+    )
+    require(
+        "python -m maturin build --locked" in workflow,
+        "CI must build the Python wheel from its tracked Cargo lock",
+    )
+    require(
+        "cargo check --locked --manifest-path crates/dag-ml-data-py/Cargo.toml --all-targets"
+        in workflow,
+        "CI must check the Python binding on the declared MSRV",
+    )
+    require(
+        "cargo clippy --locked --manifest-path crates/dag-ml-data-py/Cargo.toml --all-targets -- -D warnings"
+        in workflow,
+        "CI must lint the standalone Python binding",
+    )
+    require(
+        "cargo test --locked --manifest-path crates/dag-ml-data-py/Cargo.toml" in workflow,
+        "CI must test the standalone Python binding",
     )
     require("cargo package --workspace --no-verify" in workflow, "CI must package Cargo crates")
     require(

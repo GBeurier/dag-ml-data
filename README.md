@@ -69,7 +69,7 @@ cargo run -p dag-ml-data-cli -- fingerprint-schema examples/minimal_schema.json
 cargo run -p dag-ml-data-cli -- materialize-envelope --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
 cargo build -p dag-ml-data-capi --lib
 PYTHONPATH=crates/dag-ml-data-capi/bindings/python python3 examples/python/provider_smoke.py --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
-(cd crates/dag-ml-data-py && maturin build --release --features extension-module --out ../../target/wheels)
+(cd crates/dag-ml-data-py && maturin build --locked --release --features extension-module --out ../../target/wheels)
 python3 scripts/smoke_python_wheel_metadata.py target/wheels/dag_ml_data-*.whl
 python3 scripts/smoke_python_bindings.py       # after installing the built wheel
 node_out_dir="$PWD/target/wasm/dag-ml-data-wasm"
