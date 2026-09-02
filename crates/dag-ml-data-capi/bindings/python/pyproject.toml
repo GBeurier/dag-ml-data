@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dag-ml-data-provider"
-version = "0.2.9"
+version = "0.2.10"
 description = "Stdlib-only ctypes shim for the dag-ml-data C ABI provider vtable."
 requires-python = ">=3.11"
 license = "CeCILL-2.1 OR AGPL-3.0-or-later"

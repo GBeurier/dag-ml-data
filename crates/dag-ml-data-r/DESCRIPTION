@@ -1,6 +1,6 @@
 Package: dagmldata
 Title: R Provider Bindings for dag-ml-data
-Version: 0.2.9
+Version: 0.2.10
 Authors@R: person("G.", "Beurier", email = "beurier@cirad.fr", role = c("aut", "cre"))
 Description: Thin extendr bindings exposing the dag-ml-data in-memory provider
     (materialize, view, identity, target, feature, collation) to R as JSON in,

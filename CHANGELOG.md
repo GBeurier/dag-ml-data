@@ -12,6 +12,23 @@ Coordinator-envelope and other wire-shape changes follow
 
 No unreleased changes.
 
+## [0.2.10] - 2026-09-02
+
+### Added
+
+- Additive `CoordinatorDataPlanEnvelope` v2 contract for identity-attested,
+  terminal PREDICT cohorts, mirrored and validated against `dag-ml` 0.3.23.
+- Native execution of the closed `by_filter` branch predicate in the in-memory
+  provider, including metadata and tag selectors.
+- Binding-level WASM provider lifecycle smoke coverage.
+
+### Changed
+
+- Raised the Rust MSRV to 1.85 and updated the locked hashing/runtime toolchain.
+- Published package identity now advances past the immutable `v0.2.9` source;
+  post-0.2.9 contracts are no longer represented as the already-published
+  0.2.9 artifact.
+
 ## [0.2.0] - 2026-06-15
 
 ### Added
@@ -135,6 +152,7 @@ Foundation scaffold. Executable Rust crates with:
 - Object-level Python APIs above the JSON-contract PyO3 bindings and ctypes
   provider smoke (roadmap workstream D).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.9...v0.2.10
 [0.2.0]: https://github.com/GBeurier/dag-ml-data/releases/tag/v0.2.0
 [0.1.0-alpha.0]: https://github.com/GBeurier/dag-ml-data/releases/tag/v0.1.0-alpha.0
