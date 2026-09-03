@@ -21,6 +21,16 @@ ALREADY_UPLOADED = re.compile(
     re.IGNORECASE,
 )
 
+EXPECTED_PUBLISH_ORDER = (
+    "dag-ml-data-core",
+    "dag-ml-data",
+    "dag-ml-data-arrow",
+    "dag-ml-data-cli",
+    "dag-ml-data-provider",
+    "dag-ml-data-capi",
+    "dag-ml-data-wasm",
+)
+
 
 @dataclass(frozen=True)
 class Crate:
@@ -145,7 +155,14 @@ def workspace_crates(repo: Path) -> tuple[str, list[Crate]]:
         )
 
     require(crates, "publish plan has no publishable workspace crates")
-    return workspace_version, topo_sort(crates)
+    ordered = topo_sort(crates)
+    actual_order = tuple(crate.name for crate in ordered)
+    require(
+        actual_order == EXPECTED_PUBLISH_ORDER,
+        "publish plan must contain the seven release crates in canonical order; got: "
+        + " -> ".join(actual_order),
+    )
+    return workspace_version, ordered
 
 
 def validate_tag(tag: str, version: str) -> None:
