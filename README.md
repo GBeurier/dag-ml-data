@@ -33,15 +33,12 @@ crates/
   dag-ml-data-wasm/   # wasm-bindgen JSON-contract bindings for browser hosts
   dag-ml-data-cli/    # local schema validation/fingerprint utility
 docs/
-  TOC.md              # validation-oriented table of contents
+  DEVELOPMENT.md      # contributor map and local-private record policy
   ARCHITECTURE.md     # data-layer boundaries and flow
   ABI.md              # C ABI ownership model for host data providers
   RATIONALE.md        # why this is separate from dag-ml
-  ROADMAP.md          # delivery phases and gates
-  STATUS.md           # current state and next tasks
   SUPPORTED.md        # release support matrix and public-signature policy
-  TEST_PLAN.md        # contract/conformance test strategy
-  design/source/      # moved ML_DATA source specification
+  _private/           # ignored local design, plans, archives and audits
 examples/
   minimal_schema.json
   python/             # stdlib-only ctypes wrapper and provider smoke

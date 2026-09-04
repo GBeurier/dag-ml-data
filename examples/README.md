@@ -1,7 +1,7 @@
 # Examples
 
 These fixtures are part of the public integration surface. Keep them small,
-deterministic, and runnable from the commands documented in `docs/TEST_PLAN.md`.
+deterministic, and runnable from the commands documented in `docs/DEVELOPMENT.md`.
 
 | Audience | Start here | Purpose |
 |---|---|---|
