@@ -74,7 +74,7 @@ crates/
   dag-ml-data-capi/bindings/python/  # installable stdlib-only ctypes provider shim (`dag_ml_data_provider`)
 docs/                 # Architecture / ABI / Roadmap / Status / Test Plan / Capability Matrix / source spec
 docs/contracts/       # JSON Schemas + conformance_pack.v1.json (shared with dag-ml, must stay JSON-identical)
-docs/design/source/   # ML_DATA specification — implementation source of truth
+docs/_private/        # ignored local design sources, plans, archives and audits
 examples/fixtures/oof_campaign/   # Shared dag-ml conformance fixtures (envelope, requests, fusion selectors)
 examples/python/      # reusable provider smoke (imports the dag_ml_data_provider package)
 scripts/validate_contracts.py  # stdlib-only shared-contract drift checker against ../dag-ml
@@ -164,15 +164,17 @@ These are cross-repo contracts. After any change:
 
 1. Update the version macro / schema version if the wire shape changes.
 2. Re-run `python3 scripts/validate_contracts.py` against the sibling `dag-ml` checkout — both repos must update together.
-3. Update `docs/STATUS.md` ("Implemented" / "Not implemented yet" / "Next recommended task") and `docs/ROADMAP.md` phase status.
+3. Update public `docs/SUPPORTED.md` and `CHANGELOG.md`; keep optional private status and plans under `docs/_private/current/`.
 4. The C header (`crates/dag-ml-data-capi/include/dag_ml_data.h`) and `dag_ml.h` in the sibling repo must be includable in either order — the cross-header syntax smoke checks this.
 
 ## Documents To Read First (per AGENTS.md)
 
-1. `docs/TOC.md` — validation map
+1. `docs/DEVELOPMENT.md` — validation map and private-record policy
 2. `docs/RATIONALE.md` — why this is split from `dag-ml`
 3. `docs/ARCHITECTURE.md` — layer responsibilities and the dag-ml frontier
 4. `docs/ABI.md` — ownership model and vtable contract
-5. `docs/design/source/ml_data_specification_v1.md` — full ML_DATA contract (implementation source of truth)
+5. `docs/contracts/README.md` — published shared contracts
 
-`docs/STATUS.md` is the live state-of-the-world; check it before claiming what is or isn't implemented.
+`docs/SUPPORTED.md` describes release support. Private historical records, when
+present, are indexed by `docs/_private/README.md`; verify their claims against
+the source and tests before using them as implementation guidance.

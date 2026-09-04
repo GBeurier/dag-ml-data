@@ -31,8 +31,11 @@ cargo run -p dag-ml-data-cli -- fingerprint-schema examples/minimal_schema.json
 
 ## First Files To Read
 
-1. `docs/TOC.md`
+1. `docs/DEVELOPMENT.md`
 2. `docs/RATIONALE.md`
 3. `docs/ARCHITECTURE.md`
 4. `docs/ABI.md`
-5. `docs/design/source/ml_data_specification_v1.md`
+5. `docs/contracts/README.md`
+
+Private design and delivery records, when present locally, are indexed by
+`docs/_private/README.md`. They are historical context, not required build inputs.

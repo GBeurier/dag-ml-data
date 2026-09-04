@@ -18,9 +18,7 @@ owned by `nirs4all-io`; this repo stays NIRS-agnostic.
 | Build and validate locally | [Installation](installation.md) |
 | Understand data/runtime boundaries | [Architecture](ARCHITECTURE.md) |
 | Integrate a data provider over C ABI | [C ABI](ABI.md) |
-| Check shipped vs pending scope | [Status](STATUS.md) |
-| Run the documented gates | [Test plan](TEST_PLAN.md) |
-| Review roadmap and release gates | [Roadmap](ROADMAP.md) |
+| Run contributor gates and organize local records | [Developer documentation](DEVELOPMENT.md) |
 | Check the supported release surface | [Supported surface](SUPPORTED.md) |
 | Map aggregation with `dag-ml` | [Aggregation interop](AGGREGATION_INTEROP.md) |
 | Run release performance probes | [Performance probes](PERFORMANCE.md) |
@@ -99,13 +97,9 @@ ADR-0001-nirs4all-connector-ownership
 ```{toctree}
 :maxdepth: 2
 :hidden:
-:caption: Roadmap & status
+:caption: Support & validation
 
-ROADMAP
-MVP_ACCEPTANCE
 OOF_FIXTURES
-STATUS
-TEST_PLAN
 SUPPORTED
 AGGREGATION_INTEROP
 PERFORMANCE
@@ -116,5 +110,5 @@ PERFORMANCE
 :hidden:
 :caption: Reference
 
-TOC
+DEVELOPMENT
 ```

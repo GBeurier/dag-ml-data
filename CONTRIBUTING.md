@@ -2,7 +2,7 @@
 
 `dag-ml-data` is the Rust-first data-contract and planning layer for typed, sample-aligned, multi-source ML data. It owns schemas, semantic axes, representations, immutable data views, sample relations, representation adapters, data plans, alignment/collation contracts, schema fingerprints, and the host-provider C ABI. It does **not** own ML phases, CV/fold construction, OOF logic, model selection, model execution, or leakage enforcement — those belong to the sibling [`dag-ml`](https://github.com/GBeurier/dag-ml) repository.
 
-Read [`docs/TOC.md`](docs/TOC.md), [`docs/RATIONALE.md`](docs/RATIONALE.md), and [`docs/design/source/ml_data_specification_v1.md`](docs/design/source/ml_data_specification_v1.md) (the implementation source of truth) before changing a contract.
+Read [developer documentation](docs/DEVELOPMENT.md), [rationale](docs/RATIONALE.md), and [shared contracts](docs/contracts/README.md) before changing a contract. Private design history, when available locally, is indexed by `docs/_private/README.md`.
 
 ## Development environment
 
@@ -45,10 +45,10 @@ crates/
   dag-ml-data-capi/   C ABI helpers, header (include/dag_ml_data.h), DataVTable, FFI smokes
   dag-ml-data-cli/    fingerprint-schema / validate-envelope / materialize-envelope / plan-model-input
 docs/
-  TOC.md / RATIONALE.md / ARCHITECTURE.md / ABI.md / STATUS.md / TEST_PLAN.md / ROADMAP.md
+  DEVELOPMENT.md / RATIONALE.md / ARCHITECTURE.md / ABI.md / SUPPORTED.md
   adr/                shared ADRs (01/02/05/06/07 — byte-identical with dag-ml; see adr/README.md)
   contracts/          JSON Schemas + conformance_pack.v1.json (shared with dag-ml — JSON-identical)
-  design/source/      ML_DATA specification (source of truth)
+  _private/           ignored local design sources, plans, archives and audits
 examples/
   minimal_schema.json
   fixtures/oof_campaign/   shared conformance fixtures (envelope, requests, fusion selectors)
@@ -73,7 +73,7 @@ These are **cross-repo contracts** shared with `dag-ml` and must stay **JSON-ide
 2. Update the schema in `docs/contracts/`, the Rust type, the C header (`crates/dag-ml-data-capi/include/dag_ml_data.h`), and the conformance pack together.
 3. Run `DAG_ML_REPO=../dag-ml python3 scripts/validate_contracts.py` — it fails on schema / fixture / header drift.
 4. The C headers (`dag_ml_data.h` and the sibling `dag_ml.h`) must be includable in either order — the cross-header smoke checks this.
-5. Update `docs/STATUS.md` and `docs/ROADMAP.md`; open the paired `dag-ml` PR.
+5. Update `docs/SUPPORTED.md` and `CHANGELOG.md`; open the paired `dag-ml` PR. Keep optional private status and plans under `docs/_private/current/`.
 
 ## Adding a new error variant
 

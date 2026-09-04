@@ -25,6 +25,7 @@ exclude_patterns = [
     # The full ML_DATA implementation source spec (and its index) is internal
     # design material kept close to the code, not part of the published nav.
     "design",
+    "_private",
 ]
 
 myst_enable_extensions = [
