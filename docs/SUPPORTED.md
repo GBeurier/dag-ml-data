@@ -32,8 +32,9 @@ exports; no existing public ABI, JSON schema, or function signature changed.
 | In-memory provider vtable | Conformance | Full materialize/view/identity/target/feature lifecycle is tested; it is not a production storage backend. |
 | Python `ctypes` provider package | Conformance | Useful binding template and smoke target; not a domain-specific provider backend. |
 | Arrow IPC feature-buffer reader | Conformance | Optional crate/feature path for IPC-backed numeric buffers. |
-| `branch_view` mode `by_source` | Supported | Executed natively by the in-memory provider. |
-| `branch_view` modes `by_metadata`, `by_tag`, `by_filter` | Backlog | Validated and explicitly refused by the in-memory provider with `requires host-side filtering`. |
+| `branch_view` modes `by_source`, `by_metadata`, `by_tag` | Supported | Executed natively by the in-memory provider. |
+| `branch_view` mode `by_filter` | Supported, closed predicate | The provider executes only `{"metadata_equals": {…}, "tags_all": […]}` (at least one non-empty constraint); unknown, null, empty or mixed selector predicates fail as typed `data_contract_validation` before row projection. |
+| IO bridge branch-view route | Supported integration route | `JsonInMemoryProvider → materialize → make_view(by_filter) → view_identity` consumes an externally assembled envelope and feature buffers. It filters supplied relation records verbatim: observation/sample/target/group/origin/source identity, labels, metadata (including supplied sample weights and partition/source provenance) and tags are not generated or rewritten. Fold declarations remain supplied envelope/schema data; this route does not create an effective fold assignment. |
 | Production provider arenas beyond in-memory | Backlog | Host providers must implement native storage/filtering semantics. |
 | nirs4all `SpectroDataset` connector | Backlog | Descoped to `nirs4all-io`; `dag-ml-data` remains NIRS-agnostic. |
 
@@ -71,6 +72,6 @@ For the 0.2.x RC release window:
    `exclude_outliers` remain data-side only unless a shared schema is added).
 2. Wire signal-type expectations through paired `dag-ml` replay contracts before
    claiming coordinator-enforced signal-type predict checks.
-3. Add production host provider backends for host-filtered branch views.
+3. Add persistent production host provider backends beyond the externally-fed in-memory integration route.
 4. Keep the existing AddressSanitizer C ABI lane green through release.
 5. Extend the current fingerprint performance probes to provider export paths.

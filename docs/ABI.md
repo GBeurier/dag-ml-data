@@ -80,9 +80,21 @@ usually branch on `DagMlDataStatusCode` before parsing a payload.
 - `DataView.branch_view` (a `CoordinatorBranchView` carrying `view_id`,
   `branch_id`, `mode`, `selector`, `allow_overlap` and `metadata`), letting
   hosts pass `dag-ml` `BranchViewPlan` records straight through the existing
-  `make_view` selector JSON. The in-memory provider executes `by_source`
-  branch views natively and lets `separation` pass through; `by_metadata`,
-  `by_tag` and `by_filter` are validated but require host-side filtering;
+  `make_view` selector JSON. The in-memory provider executes `by_source`,
+  `by_metadata` and `by_tag` branch views natively and lets `separation` pass
+  through. `by_filter` is deliberately a closed native predicate,
+  `{"metadata_equals": {…}, "tags_all": […]}`: at least one constraint is
+  required, every metadata value is non-null, and unknown fields at every
+  branch-view/selector/predicate level are rejected as `ValidationError`
+  before any row projection. In typed Rust and the JSON facade,
+  `view_identity` returns the matched coordinator relations verbatim, including
+  host-supplied identities, target/group/origin links, tags, sample weights and
+  partition/source provenance. The Arrow C ABI `view_identity` export is
+  intentionally narrower: it exposes only observation/sample/target/group/
+  origin/source ids plus `is_augmented`; it does not export relation metadata,
+  tags or `excluded`. Hosts needing those fields retain the envelope or use the
+  typed/JSON route. Fold declarations remain supplied envelope/schema data;
+  this selector never creates an effective fold assignment;
 - `FittedAdapterRef` and `FittedAdapterManifest`, a JSON-serializable
   fitted-adapter persistence contract with `validate()` for inline refs and
   `validate_portable()` for refs carrying a backend + safe relative URI +

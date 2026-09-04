@@ -8,8 +8,8 @@ coordinator envelopes, relations/FoldSet validation, deterministic fingerprints,
 numeric buffers, N-D tensor transport, fitted adapter refs, in-memory provider
 conformance, C ABI helpers, Python/WASM JSON-contract bindings and cross-repo
 `dag-ml` fixtures are shipped and gated. Production host providers beyond the
-in-memory conformance backend, host-filtered branch views and the nirs4all
-connector remain explicit post-0.2.x backlog.
+externally-fed in-memory integration route and the nirs4all connector remain
+explicit post-0.2.x backlog.
 
 Implemented:
 
@@ -184,13 +184,14 @@ Implemented:
   `CoordinatorBranchView` (`view_id`, `branch_id`, `mode`, `selector`,
   `allow_overlap`, `metadata`), mirroring `dag-ml`'s `BranchViewPlan` wire
   contract. `make_view` validates the mode↔selector field agreement and
-  natively executes `by_source` branch views as an additional intersection
-  over the existing source filter. `separation` mode passes through (the
+  natively executes `by_source` (as an intersection over the existing source
+  filter), `by_metadata`, and `by_tag`. `separation` mode passes through (the
   selector annotates branch identity and the host scheduler owns
-  non-overlap), while `by_metadata`, `by_tag` and `by_filter` modes pass
-  validation but are rejected for in-memory execution with a clear
-  `requires host-side filtering` error so production providers can route
-  them to native filter backends without breaking ABI compatibility;
+  non-overlap). `by_filter` executes the deliberately closed native predicate
+  `{"metadata_equals": {…}, "tags_all": […]}` over supplied relation
+  metadata/tags; unknown, empty, null or mixed selector forms fail as typed
+  contract validation before row projection. It preserves supplied partition
+  provenance but never creates an effective fold assignment;
 - published `coordinator_branch_view.schema.json` for that contract, with
   matching `COORDINATOR_BRANCH_VIEW_SCHEMA_ID` Rust constant, the same digest
   pinned in both repos' `conformance_pack.v1.json` and

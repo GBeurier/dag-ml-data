@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::coordinator::{
-    validate_fingerprint, CoordinatorDataPlanEnvelope, CoordinatorRelation, CoordinatorRelationSet,
+    parse_native_branch_view_filter, validate_fingerprint, CoordinatorDataPlanEnvelope,
+    CoordinatorRelation, CoordinatorRelationSet,
 };
 use crate::error::{DataError, Result};
 use crate::ids::{ObservationId, RepresentationId, SampleId, SourceId, TargetId};
@@ -808,6 +809,7 @@ fn filter_relations(
     let mut branch_source_filter: Option<BTreeSet<&SourceId>> = None;
     let mut branch_metadata_filter: Option<&BTreeMap<String, serde_json::Value>> = None;
     let mut branch_tag_filter: Option<BTreeSet<&String>> = None;
+    let mut branch_native_filter = None;
     if let Some(branch_view) = view.branch_view.as_ref() {
         match branch_view.mode {
             crate::coordinator::CoordinatorBranchViewMode::BySource => {
@@ -829,14 +831,20 @@ fn filter_relations(
                 branch_tag_filter = Some(branch_view.selector.tags.iter().collect::<BTreeSet<_>>());
             }
             crate::coordinator::CoordinatorBranchViewMode::Separation => {}
-            // `by_filter` needs a deterministic predicate DSL that the in-memory
-            // arena does not yet evaluate; it stays host-side for now.
-            other_mode @ crate::coordinator::CoordinatorBranchViewMode::ByFilter => {
-                return Err(DataError::Validation(format!(
-                    "coordinator branch view `{}` mode={:?} requires host-side filtering; \
-                     in-memory arena natively executes by_source, by_metadata and by_tag",
-                    branch_view.view_id, other_mode,
-                )));
+            crate::coordinator::CoordinatorBranchViewMode::ByFilter => {
+                // `validate_view` parses this first. Parse again locally so a
+                // direct caller of this private helper cannot bypass the same
+                // typed preflight contract.
+                let filter = branch_view.selector.filter.as_ref().ok_or_else(|| {
+                    DataError::Validation(format!(
+                        "coordinator branch view `{}` mode=by_filter requires filter",
+                        branch_view.view_id
+                    ))
+                })?;
+                branch_native_filter = Some(parse_native_branch_view_filter(
+                    filter,
+                    &format!("coordinator branch view `{}`", branch_view.view_id),
+                )?);
             }
         }
     }
@@ -891,6 +899,22 @@ fn filter_relations(
             branch_tag_filter
                 .as_ref()
                 .map(|tags| tags.iter().all(|tag| relation.tags.contains(tag)))
+                .unwrap_or(true)
+        })
+        .filter(|relation| {
+            let relation = relation.1;
+            branch_native_filter
+                .as_ref()
+                .map(|filter| {
+                    filter
+                        .metadata_equals
+                        .iter()
+                        .all(|(key, value)| relation.metadata.get(key) == Some(value))
+                        && filter
+                            .tags_all
+                            .iter()
+                            .all(|tag| relation.tags.contains(tag))
+                })
                 .unwrap_or(true)
         })
         .filter(|relation| view.include_augmented || !relation.1.is_augmented)
@@ -1255,8 +1279,10 @@ mod tests {
     /// Build the shared envelope, tagging S001 observations with
     /// `metadata={"group":"A"}` + `tags=["clean"]` and the S002 observation
     /// with `metadata={"group":"B"}` + `tags=["dirty"]`, so `by_metadata` /
-    /// `by_tag` branch views have something to discriminate on. Editing the
-    /// derived `coordinator_relations` does not invalidate the source
+    /// `by_tag` and `by_filter` branch views have something to discriminate
+    /// on.  The `io.*` keys mirror the additive metadata carried by the IO
+    /// bridge; they are supplied values, not provider-generated values.
+    /// Editing the derived `coordinator_relations` does not invalidate the source
     /// `relation_fingerprint` (it is a replay key for the source table, not the
     /// derived view).
     fn tagged_envelope() -> CoordinatorDataPlanEnvelope {
@@ -1270,6 +1296,25 @@ mod tests {
             record
                 .metadata
                 .insert("group".to_string(), serde_json::json!(group));
+            record.metadata.insert(
+                "io.partition".to_string(),
+                serde_json::json!(if record.sample_id.as_str() == "S002" {
+                    "validation"
+                } else {
+                    "train"
+                }),
+            );
+            record.metadata.insert(
+                "io.sample_weight".to_string(),
+                serde_json::json!(if record.sample_id.as_str() == "S002" {
+                    0.5
+                } else {
+                    1.0
+                }),
+            );
+            record
+                .metadata
+                .insert("io.source_ids".to_string(), serde_json::json!(["nir"]));
             record.tags = vec![tag.to_string()];
         }
         envelope.validate().unwrap();
@@ -1447,16 +1492,67 @@ mod tests {
     }
 
     #[test]
-    fn branch_view_by_filter_mode_still_requires_host_filtering() {
+    fn branch_view_by_filter_natively_filters_io_partition_without_changing_identity() {
         use crate::coordinator::{
             CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
         };
 
         let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
-        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let envelope = tagged_envelope();
+        let expected = envelope
+            .coordinator_relations
+            .as_ref()
+            .unwrap()
+            .records
+            .iter()
+            .filter(|record| {
+                record.metadata.get("io.partition") == Some(&serde_json::json!("train"))
+                    && record.tags.contains(&"clean".to_string())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            !expected.is_empty(),
+            "fixture must include a train partition"
+        );
+        let data = arena.materialize(&envelope, &request()).unwrap();
         let view = DataView {
             branch_view: Some(CoordinatorBranchView {
                 view_id: "branch_view:by_filter".to_string(),
+                branch_id: "branch:0".to_string(),
+                mode: CoordinatorBranchViewMode::ByFilter,
+                selector: CoordinatorBranchViewSelector {
+                    filter: Some(serde_json::json!({
+                        "metadata_equals": {"io.partition": "train"},
+                        "tags_all": ["clean"]
+                    })),
+                    ..Default::default()
+                },
+                allow_overlap: false,
+                metadata: BTreeMap::new(),
+            }),
+            include_augmented: true,
+            ..Default::default()
+        };
+        let record = arena.make_view(data.handle.handle, &view).unwrap();
+        let identity = arena.view_identity(record.handle.handle).unwrap();
+        // Equality proves that observation/sample/target/group/origin/source
+        // identities and every supplied metadata value (weight + source provenance
+        // included) survive the provider branch view verbatim.
+        assert_eq!(identity.records, expected);
+    }
+
+    #[test]
+    fn branch_view_by_filter_refuses_unknown_predicates_before_selection() {
+        use crate::coordinator::{
+            CoordinatorBranchView, CoordinatorBranchViewMode, CoordinatorBranchViewSelector,
+        };
+
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&tagged_envelope(), &request()).unwrap();
+        let view = DataView {
+            branch_view: Some(CoordinatorBranchView {
+                view_id: "branch_view:unsupported_filter".to_string(),
                 branch_id: "branch:0".to_string(),
                 mode: CoordinatorBranchViewMode::ByFilter,
                 selector: CoordinatorBranchViewSelector {
@@ -1471,12 +1567,9 @@ mod tests {
         };
         let error = arena
             .make_view(data.handle.handle, &view)
-            .expect_err("by_filter has no native predicate DSL yet and must stay host-side");
-        let message = format!("{error}");
-        assert!(
-            message.contains("requires host-side filtering"),
-            "expected host-filtering error for by_filter, got: {message}"
-        );
+            .expect_err("unknown by_filter predicates must fail closed");
+        assert_eq!(error.code(), "data_contract_validation");
+        assert!(format!("{error}").contains("native predicate"));
     }
 
     #[test]

@@ -267,9 +267,44 @@ mod tests {
             "values": [1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0]
         }
     ]"#;
+    const TARGET_TABLES: &str = r#"[
+        {
+            "target_id": "y",
+            "values": [
+                {"sample_id": "S001", "value": 42.0},
+                {"sample_id": "S002", "value": 7.0}
+            ]
+        }
+    ]"#;
 
     fn provider() -> JsonInMemoryProvider {
         JsonInMemoryProvider::from_json(ENVELOPE, None, None, Some(F64_MATRICES)).unwrap()
+    }
+
+    fn io_bridge_envelope() -> String {
+        let mut envelope: CoordinatorDataPlanEnvelope = serde_json::from_str(ENVELOPE).unwrap();
+        for relation in &mut envelope.coordinator_relations.as_mut().unwrap().records {
+            relation.metadata.insert(
+                "io.partition".to_string(),
+                serde_json::json!(if relation.sample_id.as_str() == "S002" {
+                    "validation"
+                } else {
+                    "train"
+                }),
+            );
+            relation.metadata.insert(
+                "io.sample_weight".to_string(),
+                serde_json::json!(if relation.sample_id.as_str() == "S002" {
+                    0.5
+                } else {
+                    1.0
+                }),
+            );
+            relation
+                .metadata
+                .insert("io.source_ids".to_string(), serde_json::json!(["nir"]));
+        }
+        serde_json::to_string(&envelope).unwrap()
     }
 
     #[test]
@@ -287,6 +322,75 @@ mod tests {
             serde_json::json!(["obs.S002.base", "obs.S001.base", "obs.S001.rep1"])
         );
         assert_eq!(features["feature_names"], serde_json::json!(["f0", "f1"]));
+    }
+
+    #[test]
+    fn by_filter_consumes_io_partition_and_preserves_scientific_identity_end_to_end() {
+        // This is the production binding route: a bridge-produced envelope
+        // enters the JSON facade, is materialized, then becomes a native branch
+        // view. The provider only filters supplied relations; it cannot invent
+        // sample ids, targets, groups, weights or source provenance.
+        let envelope_json = io_bridge_envelope();
+        let expected: CoordinatorDataPlanEnvelope = serde_json::from_str(&envelope_json).unwrap();
+        let expected_records = expected
+            .coordinator_relations
+            .unwrap()
+            .records
+            .into_iter()
+            .filter(|relation| {
+                relation.metadata.get("io.partition") == Some(&serde_json::json!("train"))
+            })
+            .collect::<Vec<_>>();
+        let provider = JsonInMemoryProvider::from_json(
+            &envelope_json,
+            Some(TARGET_TABLES),
+            None,
+            Some(F64_MATRICES),
+        )
+        .unwrap();
+        let data_handle = provider.materialize(REQUEST).unwrap();
+        let view = serde_json::json!({
+            "branch_view": {
+                "view_id": "io:partition:train",
+                "branch_id": "io:branch:train",
+                "mode": "by_filter",
+                "selector": {"filter": {"metadata_equals": {"io.partition": "train"}}}
+            },
+            "include_augmented": true
+        })
+        .to_string();
+        let view_handle = provider.make_view(&data_handle, &view).unwrap();
+        let identity: dag_ml_data_core::CoordinatorRelationSet =
+            serde_json::from_str(&provider.view_identity(&view_handle).unwrap()).unwrap();
+        assert_eq!(identity.records, expected_records);
+        let features: serde_json::Value =
+            serde_json::from_str(&provider.feature_block(&view_handle, "x").unwrap()).unwrap();
+        assert_eq!(
+            features["observation_ids"],
+            serde_json::json!(["obs.S001.aug0", "obs.S001.base", "obs.S001.rep1"])
+        );
+        let target: serde_json::Value =
+            serde_json::from_str(&provider.target_block(&view_handle, "y").unwrap()).unwrap();
+        assert_eq!(target["sample_ids"], serde_json::json!(["S001"]));
+        assert_eq!(target["values"], serde_json::json!([42.0]));
+    }
+
+    #[test]
+    fn by_filter_json_facade_refuses_unknown_predicate_before_projecting_rows() {
+        let provider = provider();
+        let data_handle = provider.materialize(REQUEST).unwrap();
+        let view = serde_json::json!({
+            "branch_view": {
+                "view_id": "unsupported",
+                "branch_id": "unsupported",
+                "mode": "by_filter",
+                "selector": {"filter": {"op": "always"}}
+            }
+        })
+        .to_string();
+        let error = provider.make_view(&data_handle, &view).unwrap_err();
+        assert_eq!(error.code(), "data_contract_validation");
+        assert!(format!("{error}").contains("native predicate"));
     }
 
     #[test]

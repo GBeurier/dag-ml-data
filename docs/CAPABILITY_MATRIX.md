@@ -22,7 +22,7 @@ data identities it owns.
 | Splits | identity/group/origin inputs, JSON `FoldSet` validators and canonical fold fingerprints in Rust/Python/WASM/C ABI for exhaustive partition-style folds | `dag-ml` builds folds; `dag-ml-data` validates and fingerprints supplied folds |
 | Models | `ModelInputSpec`, accepted representations/types, aux inputs | controller and `dag-ml` execute model phases |
 | Refit | serialized `DataPlan`, schema fingerprints, fitted refs | `dag-ml` controls replay/refit phase |
-| Branching | immutable views and source filters | `dag-ml` owns branch graph semantics |
+| Branching | immutable views plus native `by_source`/`by_metadata`/`by_tag` and the closed `by_filter` predicate (`metadata_equals`, `tags_all`) over supplied relation metadata/tags | `dag-ml` owns branch graph semantics; provider refuses unknown or empty predicates before selecting rows |
 | Merging | alignment, feature join, source join, repetition-preserving broadcast, null-filled missing sources, executable numeric collation contracts | `dag-ml` validates prediction joins and downstream use |
 | Concatenation | namespace columns by default, duplicate-column refusal when unnamespaced, presence indicators, output representation | `dag-ml` decides whether the merge is legal in phase |
 | Finetuning | stateful/supervised adapter declarations | `dag-ml` enforces fold-train fit boundaries |
@@ -41,3 +41,7 @@ data identities it owns.
 7. No fold, OOF or prediction partition decision is made in this repo; supplied
    partition-style fold sets can be validated against relation group/origin
    boundaries.
+8. A native `by_filter` view only exposes supplied partition/fold provenance as
+   relation metadata. It neither converts provenance into an effective fold nor
+   synthesizes a missing assignment; consumers that require a concrete fold
+   must preflight and validate their supplied `FoldSet` separately.
