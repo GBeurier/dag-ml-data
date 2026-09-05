@@ -1,7 +1,7 @@
 # Supported Surface
 
 This page is the 0.2.x RC support contract for `dag-ml-data` (current package
-version: 0.2.10). It separates
+version: 0.2.11). It separates
 production-facing data contracts from conformance providers and backlog work.
 The 0.2.x surface includes the built-in scientific data-model catalogue helpers
 (`builtin_data_models`, `builtin_representations`, `builtin_adapter_registry`,
