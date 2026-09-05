@@ -10,6 +10,8 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-09-05
+
 ### Fixed
 
 - Bound `.n4d` count-derived allocations by the actual checksummed payload and
@@ -169,7 +171,8 @@ Foundation scaffold. Executable Rust crates with:
 - Object-level Python APIs above the JSON-contract PyO3 bindings and ctypes
   provider smoke (roadmap workstream D).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.10...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.11...HEAD
+[0.2.11]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.9...v0.2.10
 [0.2.0]: https://github.com/GBeurier/dag-ml-data/releases/tag/v0.2.0
 [0.1.0-alpha.0]: https://github.com/GBeurier/dag-ml-data/releases/tag/v0.1.0-alpha.0
