@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from importlib.metadata import PackageNotFoundError, version as _distribution_version
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -53,10 +52,9 @@ except ImportError as _builtin_import_error:  # pragma: no cover - stale local e
     builtin_representations_json = _missing_builtin_json
     tabular_numeric_model_input_spec_json = _missing_builtin_json
 
-try:
-    __version__ = _distribution_version("dag-ml-data")
-except PackageNotFoundError:
-    __version__ = _native_version()
+# Report the implementation actually loaded, not another distribution installed
+# elsewhere on sys.path (notably when importing a source checkout).
+__version__ = _native_version()
 
 
 _FACADE_EXPORTS = [

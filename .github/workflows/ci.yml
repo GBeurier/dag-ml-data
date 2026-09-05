@@ -169,6 +169,8 @@ jobs:
         run: cargo clippy -p dag-ml-data-capi --all-targets --features arrow-ipc -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Fingerprint compatibility with downstream JSON ordering
+        run: cargo test -p dag-ml-data-core --features serde_json/preserve_order
       - name: Test (Python binding)
         run: cargo test --locked --manifest-path crates/dag-ml-data-py/Cargo.toml
       - name: Test (capi arrow-ipc feature)

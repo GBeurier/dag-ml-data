@@ -77,7 +77,7 @@ These are **cross-repo contracts** shared with `dag-ml` and must stay **JSON-ide
 
 ## Adding a new error variant
 
-Errors follow the [ADR-11](docs/adr/ADR-11-error-taxonomy.md) taxonomy shared with
+Errors follow the [ADR-11](https://github.com/GBeurier/dag-ml/blob/main/docs/adr/ADR-11-error-taxonomy.md) taxonomy shared with
 `dag-ml`. A new `DataError` variant in `crates/dag-ml-data-core/src/error.rs` must
 update (the `scripts/check_error_taxonomy.py` gate enforces these): `taxonomy_parts()`
 `(category, code, severity)`; `remediation_hint()`; `context()` (identifiers/counts
@@ -106,4 +106,4 @@ If you changed `Cargo.toml`, also run `python3 scripts/release/check_publish_pla
 
 ## ADRs and releases
 
-Shared decisions are mirrored in [`docs/adr/`](docs/adr/README.md) byte-identical with `dag-ml`. Releases follow the [ADR-10](docs/adr/ADR-10-release-train.md) train: this repo publishes **first**, then `dag-ml` bumps its pin and publishes.
+Shared decisions are mirrored in [`docs/adr/`](docs/adr/README.md) byte-identical with `dag-ml`. Releases follow the [ADR-10](https://github.com/GBeurier/dag-ml/blob/main/docs/adr/ADR-10-release-train.md) train: this repo publishes **first**, then `dag-ml` bumps its pin and publishes.

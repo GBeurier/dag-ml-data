@@ -73,7 +73,9 @@ pub fn deserialize_columnar_store(bytes: &[u8]) -> Result<NumericFeatureBufferSt
     }
     let buffer_count = read_u32(bytes, 8)? as usize;
     let mut cursor = 12usize;
-    let mut matrices = Vec::with_capacity(buffer_count);
+    // Even an empty buffer needs two string lengths, two dimensions and a flag.
+    ensure_count_fits(payload_end, cursor, buffer_count, 17, "buffer count")?;
+    let mut matrices = reserved_vec(buffer_count)?;
     for _ in 0..buffer_count {
         let (matrix, next_cursor) = read_buffer(bytes, cursor, payload_end)?;
         matrices.push(matrix);
@@ -162,16 +164,30 @@ fn read_buffer(
             "feature buffer file `{feature_set_id}` has invalid has_validity byte {has_validity}"
         )));
     }
-    let mut feature_names = Vec::with_capacity(feature_count);
+    // Check all length-derived storage against the actual payload before any
+    // reservation. A valid checksum authenticates bytes, not their dimensions.
+    ensure_count_fits(payload_end, cursor, feature_count, 4, "feature count")?;
+    ensure_count_fits(payload_end, cursor, row_count, 4, "row count")?;
+    let cells = row_count.checked_mul(feature_count).ok_or_else(|| {
+        DataError::Validation("feature buffer file matrix dimensions overflow usize".into())
+    })?;
+    ensure_count_fits(
+        payload_end,
+        cursor,
+        cells,
+        8 + usize::from(has_validity),
+        "matrix cells",
+    )?;
+    let mut feature_names = reserved_vec(feature_count)?;
     for _ in 0..feature_count {
         feature_names.push(read_string(bytes, &mut cursor, payload_end)?);
     }
-    let mut observation_ids = Vec::with_capacity(row_count);
+    let mut observation_ids = reserved_vec(row_count)?;
     for _ in 0..row_count {
         let raw = read_string(bytes, &mut cursor, payload_end)?;
         observation_ids.push(ObservationId::new(&raw)?);
     }
-    let mut columns = Vec::with_capacity(feature_count);
+    let mut columns = reserved_vec(feature_count)?;
     for _ in 0..feature_count {
         let needed = row_count.checked_mul(8).ok_or_else(|| {
             DataError::Validation(format!(
@@ -179,7 +195,7 @@ fn read_buffer(
             ))
         })?;
         ensure_remaining(payload_end, cursor, needed, &feature_set_id)?;
-        let mut column = Vec::with_capacity(row_count);
+        let mut column = reserved_vec(row_count)?;
         for row in 0..row_count {
             let offset = cursor + row * 8;
             let value = f64::from_le_bytes(
@@ -193,10 +209,10 @@ fn read_buffer(
         columns.push(column);
     }
     let validity_masks = if has_validity == 1 {
-        let mut masks = Vec::with_capacity(feature_count);
+        let mut masks = reserved_vec(feature_count)?;
         for _ in 0..feature_count {
             ensure_remaining(payload_end, cursor, row_count, &feature_set_id)?;
-            let mut mask = Vec::with_capacity(row_count);
+            let mut mask = reserved_vec(row_count)?;
             for offset in 0..row_count {
                 let byte = bytes[cursor + offset];
                 if byte > 1 {
@@ -276,12 +292,33 @@ fn read_u8_advance(bytes: &[u8], cursor: &mut usize, payload_end: usize) -> Resu
 }
 
 fn ensure_remaining(payload_end: usize, cursor: usize, needed: usize, label: &str) -> Result<()> {
-    if cursor + needed > payload_end {
+    if cursor > payload_end || needed > payload_end - cursor {
         return Err(DataError::Validation(format!(
             "{label} truncated at cursor {cursor}: needed {needed} bytes, payload ends at {payload_end}"
         )));
     }
     Ok(())
+}
+
+fn ensure_count_fits(
+    payload_end: usize,
+    cursor: usize,
+    count: usize,
+    minimum_bytes: usize,
+    label: &str,
+) -> Result<()> {
+    let needed = count.checked_mul(minimum_bytes).ok_or_else(|| {
+        DataError::Validation(format!("feature buffer file {label} size overflows usize"))
+    })?;
+    ensure_remaining(payload_end, cursor, needed, label)
+}
+
+fn reserved_vec<T>(count: usize) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(count).map_err(|error| {
+        DataError::Validation(format!("feature buffer file allocation failed: {error}"))
+    })?;
+    Ok(values)
 }
 
 #[cfg(test)]
@@ -393,6 +430,31 @@ mod tests {
         assert_eq!(bytes.len(), 12 + TRAILER_LEN);
         let restored = deserialize_columnar_store(&bytes).unwrap();
         assert!(restored.is_empty());
+    }
+
+    #[test]
+    fn rejects_counts_larger_than_payload_before_reserving() {
+        fn seal(mut payload: Vec<u8>) -> Vec<u8> {
+            let digest = Sha256::digest(&payload);
+            payload.extend_from_slice(&digest);
+            payload
+        }
+        let mut header = b"N4DF".to_vec();
+        header.extend_from_slice(&1u32.to_le_bytes());
+        header.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(deserialize_columnar_store(&seal(header.clone())).is_err());
+        header[8..12].copy_from_slice(&1u32.to_le_bytes());
+        for (rows, features) in [(u32::MAX, 1u32), (1, u32::MAX), (u32::MAX, u32::MAX)] {
+            let mut payload = header.clone();
+            write_string(&mut payload, "x");
+            write_string(&mut payload, "tabular_numeric");
+            payload.extend_from_slice(&rows.to_le_bytes());
+            payload.extend_from_slice(&features.to_le_bytes());
+            payload.push(0);
+            assert!(deserialize_columnar_store(&seal(payload)).is_err());
+        }
+        assert!(ensure_remaining(12, usize::MAX, 1, "test").is_err());
+        assert!(ensure_remaining(12, 1, usize::MAX, "test").is_err());
     }
 
     #[test]
