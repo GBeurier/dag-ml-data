@@ -10,7 +10,20 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
-No unreleased changes.
+### Fixed
+
+- Bound `.n4d` count-derived allocations by the actual checksummed payload and
+  return validation errors on overflow/allocation failure.
+- Resolve named view membership without silently ignoring partition/fold
+  selectors or unknown fields; preserve host-resolved sample IDs and whole
+  materialized training/prediction views.
+- Validate explicit plan references, representation continuity and target rank;
+  preserve adapter ambiguity diagnostics for user resolution.
+- Keep published fingerprints stable when downstream crates enable
+  `serde_json/preserve_order`.
+- Release synchronous Python provider input buffers after each call and report
+  the loaded native extension's real version. Generated extension binaries are
+  no longer tracked as source files.
 
 ## [0.2.10] - 2026-09-02
 

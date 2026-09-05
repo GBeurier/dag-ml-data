@@ -23,8 +23,8 @@ exports; no existing public ABI, JSON schema, or function signature changed.
 |---|---|---|
 | Dataset schema, ids, axes and representation contracts | Supported | Rust validation, JSON-compatible structs and deterministic fingerprints are gated. |
 | Built-in scientific data-model catalogue | Supported | Canonical `RepresentationSpec` constructors cover `signal_1d`, `signal_with_processings`, `raman_signal`, `ftir_signal`, `tabular_numeric`, `tabular_mixed`, `feature_block_set`, `series_mv`, genotype markers, images, `cube_hwb`, masks, `sample_metadata`, rank-1/rank-2 targets, `mass_spectrum` and text tokens; adapter declarations are planner contracts only. |
-| Model-input planning and adapter path solving | Supported | Fixture planning and deterministic path selection are tested. |
-| Coordinator data-plan envelope v1 | Supported | Shared schema/fixture drift is checked against `dag-ml`. |
+| Model-input planning and adapter path solving | Supported | Explicit references and known target ranks are validated; unresolved rank/adapter choices remain visible plan issues. |
+| Coordinator data-plan envelopes v1 and v2 | Supported | V1 remains readable; additive V2 binds the terminal PREDICT cohort. Shared schema/fixture drift is checked against `dag-ml`. |
 | Sample relations and FoldSet boundary validation | Supported | Group/origin/repetition leakage checks are exposed through Rust, C ABI, Python and WASM helpers. |
 | Numeric feature buffers and `.n4d` persistence | Supported | Manifest, fingerprint, bind/project/release and file tamper checks are tested. |
 | N-D tensor transport | Supported | Borrowed tensor views are copied to provider-owned buffers and exported through view-filtered handles. |
@@ -36,6 +36,7 @@ exports; no existing public ABI, JSON schema, or function signature changed.
 | `branch_view` modes `by_source`, `by_metadata`, `by_tag` | Supported | Executed natively by the in-memory provider. |
 | `branch_view` mode `by_filter` | Supported, closed predicate | The provider executes only `{"metadata_equals": {…}, "tags_all": […]}` (at least one non-empty constraint); unknown, null, empty or mixed selector predicates fail as typed `data_contract_validation` before row projection. |
 | IO bridge branch-view route | Supported integration route | `JsonInMemoryProvider → materialize → make_view(by_filter) → view_identity` filters supplied relation records verbatim; it never creates an effective fold assignment. |
+| DataView partition/fold labels | Supported | Explicit sample IDs carry host-resolved membership. Without IDs, labels filter supplied relation metadata; full_train and already-bound predict select the whole handle. Unknown JSON fields are rejected. See [Architecture](ARCHITECTURE.md). |
 | Production provider arenas beyond in-memory | Backlog | Host providers must implement native storage/filtering semantics. |
 | nirs4all `SpectroDataset` connector | Backlog | Descoped to `nirs4all-io`; `dag-ml-data` remains NIRS-agnostic. |
 

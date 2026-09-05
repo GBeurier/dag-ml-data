@@ -20,7 +20,14 @@ DAG_ML_REPO=../dag-ml python3 scripts/validate_contracts.py --require-sibling
 
 Use a sibling `dag-ml` checkout from the same release train for the shared
 contract check. Additional binding, packaging and documentation gates are in
-`CONTRIBUTING.md` and `.github/workflows/ci.yml`.
+[CONTRIBUTING.md](https://github.com/GBeurier/dag-ml-data/blob/main/CONTRIBUTING.md)
+and `.github/workflows/ci.yml`.
+
+Fingerprint compatibility must also pass with an additive consumer feature:
+
+```bash
+cargo test -p dag-ml-data-core --features serde_json/preserve_order
+```
 
 ## Local development records
 

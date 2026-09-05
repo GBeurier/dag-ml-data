@@ -845,6 +845,7 @@ impl DatasetSchema {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DataView {
     pub sample_ids: Option<Vec<SampleId>>,
     pub partition: Option<String>,

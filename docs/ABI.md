@@ -254,6 +254,9 @@ once into column-major `NumericFeatureBuffer` values grouped by
 computes data-handle-scoped buffer bindings from the scoped coordinator
 relations and materialized output representation. `feature_arrow` exports are
 then view projections over bound buffers, not per-call JSON numeric parsing.
+Borrowed JSON arguments are also consumed synchronously: bindings retain the
+input only until the call returns, not for the lifetime of a handle. Provider
+`release` disposes the requested handle; `destroy` disposes all provider state.
 Fusion selectors reuse those typed buffers, filter each source by source
 identity in the view, validate that each source buffer is bound to the parent
 data handle through the arena, and then call the same pure Rust fusion kernel

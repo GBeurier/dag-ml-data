@@ -352,7 +352,21 @@ impl CoordinatorHandleArena {
                     "data handle `{data_handle}` has no coordinator relations"
                 ))
             })?;
-        let filtered = filter_relations(&relations.records, view)?;
+        let selectors = resolved_view_labels(view, &parent)?;
+        let scoped = relations
+            .records
+            .into_iter()
+            .filter(|relation| {
+                selectors.iter().all(|(key, label)| {
+                    relation
+                        .metadata
+                        .get(*key)
+                        .and_then(serde_json::Value::as_str)
+                        == Some(*label)
+                })
+            })
+            .collect::<Vec<_>>();
+        let filtered = filter_relations(&scoped, view)?;
         let sample_count = unique_sample_count(&filtered);
         let relation_record_count = filtered.len();
         let handle = CoordinatorHandleRef {
@@ -753,6 +767,11 @@ fn validate_non_empty(label: &str, value: &str) -> Result<()> {
 }
 
 fn validate_view(view: &DataView) -> Result<()> {
+    for (key, value) in [("partition", &view.partition), ("fold_id", &view.fold_id)] {
+        if let Some(value) = value {
+            validate_non_empty(key, value)?;
+        }
+    }
     if let Some(samples) = &view.sample_ids {
         let unique = samples.iter().collect::<BTreeSet<_>>();
         if unique.len() != samples.len() {
@@ -786,6 +805,41 @@ fn validate_view(view: &DataView) -> Result<()> {
         branch_view.validate()?;
     }
     Ok(())
+}
+
+/// DAG owns fold membership. Explicit sample IDs are its authoritative
+/// selection and labels are provenance. Without IDs, named labels must match
+/// supplied relation metadata; only whole-handle full_train/predict views need
+/// no row predicate (PREDICT must already be bound to a predict handle).
+fn resolved_view_labels<'a>(
+    view: &'a DataView,
+    parent: &CoordinatorDataHandleRecord,
+) -> Result<Vec<(&'static str, &'a str)>> {
+    if view.sample_ids.is_some() {
+        return Ok(Vec::new());
+    }
+    let whole_handle = match view.partition.as_deref() {
+        Some("full_train") => true,
+        Some("predict") => {
+            if !parent.phase.eq_ignore_ascii_case("predict") {
+                return Err(DataError::Validation("partition=predict requires a PREDICT materialized handle or explicit sample_ids".into()));
+            }
+            true
+        }
+        _ => false,
+    };
+    let mut selectors = Vec::new();
+    if !whole_handle {
+        if let Some(partition) = &view.partition {
+            selectors.push(("partition", partition.as_str()));
+        }
+    }
+    if let Some(fold) = &view.fold_id {
+        if !whole_handle || parent.fold_id.as_ref() != Some(fold) {
+            selectors.push(("fold_id", fold.as_str()));
+        }
+    }
+    Ok(selectors)
 }
 
 fn filter_relations(
@@ -1016,6 +1070,80 @@ mod tests {
         assert_eq!(record.relation_record_count, Some(4));
         assert_eq!(arena.handle_record(1), Some(record));
         assert_eq!(arena.handle_records().len(), 1);
+    }
+
+    #[test]
+    fn view_labels_require_membership_but_preserve_host_resolved_views() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let record = arena.materialize(&envelope(), &request()).unwrap();
+        for value in [
+            json!({"partition":"does-not-exist"}),
+            json!({"fold_id":"does-not-exist"}),
+            json!({"partition":"fold_train"}),
+            json!({"partition":"predict"}),
+        ] {
+            let view: DataView = serde_json::from_value(value).unwrap();
+            assert!(arena.make_view(record.handle.handle, &view).is_err());
+        }
+        assert!(serde_json::from_value::<DataView>(json!({"sampl_ids":["S001"]})).is_err());
+        let explicit: DataView = serde_json::from_value(
+            json!({"sample_ids":["S001"],"partition":"fold_train","fold_id":"fold0"}),
+        )
+        .unwrap();
+        assert_eq!(
+            arena
+                .make_view(record.handle.handle, &explicit)
+                .unwrap()
+                .sample_count,
+            1
+        );
+        let all: DataView = serde_json::from_value(json!({"partition":"full_train"})).unwrap();
+        assert_eq!(
+            arena
+                .make_view(record.handle.handle, &all)
+                .unwrap()
+                .sample_count,
+            2
+        );
+        let mut predict_request = request();
+        predict_request.phase = "PREDICT".into();
+        let predict = arena.materialize(&envelope(), &predict_request).unwrap();
+        let view: DataView = serde_json::from_value(json!({"partition":"predict"})).unwrap();
+        assert_eq!(
+            arena
+                .make_view(predict.handle.handle, &view)
+                .unwrap()
+                .sample_count,
+            2
+        );
+    }
+
+    #[test]
+    fn view_resolves_partition_and_fold_from_supplied_relation_metadata() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let mut envelope = envelope();
+        for relation in &mut envelope.coordinator_relations.as_mut().unwrap().records {
+            relation.metadata.insert(
+                "partition".into(),
+                json!(if relation.sample_id.as_str() == "S001" {
+                    "train"
+                } else {
+                    "validation"
+                }),
+            );
+            relation.metadata.insert("fold_id".into(), json!("fold0"));
+        }
+        let record = arena.materialize(&envelope, &request()).unwrap();
+        let view: DataView =
+            serde_json::from_value(json!({"partition":"validation","fold_id":"fold0"})).unwrap();
+        let selected = arena.make_view(record.handle.handle, &view).unwrap();
+        assert_eq!(selected.sample_count, 1);
+        assert!(arena
+            .view_identity(selected.handle.handle)
+            .unwrap()
+            .records
+            .iter()
+            .all(|row| row.sample_id.as_str() == "S002"));
     }
 
     #[test]

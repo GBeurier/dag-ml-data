@@ -19,14 +19,14 @@ pub fn schema_fingerprint(schema: &DatasetSchema) -> Result<String> {
         .folds
         .sort_by(|left, right| left.id.cmp(&right.id));
 
-    let json = serde_json::to_vec(&canonical)?;
+    let json = canonical_typed_json(&canonical)?;
     let digest = Sha256::digest(json);
     Ok(to_hex(&digest))
 }
 
 pub fn data_plan_fingerprint(plan: &DataPlan) -> Result<String> {
     plan.validate()?;
-    let json = serde_json::to_vec(plan)?;
+    let json = canonical_typed_json(plan)?;
     let digest = Sha256::digest(json);
     Ok(to_hex(&digest))
 }
@@ -41,7 +41,7 @@ pub fn sample_relation_fingerprint(relations: &SampleRelationTable) -> Result<St
             .then_with(|| left.source_id.cmp(&right.source_id))
     });
 
-    let json = serde_json::to_vec(&canonical)?;
+    let json = canonical_typed_json(&canonical)?;
     let digest = Sha256::digest(json);
     Ok(to_hex(&digest))
 }
@@ -60,9 +60,24 @@ pub fn fold_set_fingerprint(fold_set: &FoldSet) -> Result<String> {
 
     let mut value = serde_json::to_value(&canonical)?;
     remove_empty_fold_set_maps(&mut value);
+    // Fold fingerprints historically serialize a Value (sorted object keys),
+    // unlike schema/plan/relation fingerprints which preserve struct order.
+    value.sort_all_objects();
     let json = serde_json::to_vec(&value)?;
     let digest = Sha256::digest(json);
     Ok(to_hex(&digest))
+}
+
+/// Normalize nested JSON maps without changing the published order of typed
+/// struct fields. This is invariant under serde_json's additive preserve_order
+/// feature, including when enabled only by a downstream dependency.
+fn canonical_typed_json<T: serde::Serialize + serde::de::DeserializeOwned>(
+    value: &T,
+) -> Result<Vec<u8>> {
+    let mut json = serde_json::to_value(value)?;
+    json.sort_all_objects();
+    let canonical: T = serde_json::from_value(json)?;
+    Ok(serde_json::to_vec(&canonical)?)
 }
 
 fn remove_empty_fold_set_maps(value: &mut serde_json::Value) {
@@ -124,6 +139,62 @@ mod tests {
 
     const SHARED_FOLD_SET_FINGERPRINT: &str =
         "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c";
+
+    #[test]
+    fn nested_json_order_does_not_change_published_typed_fingerprints() {
+        let ascending: serde_json::Value =
+            serde_json::from_str(r#"{"a":{"a":1,"z":2},"z":[{"a":3,"z":4}]}"#).unwrap();
+        let descending: serde_json::Value =
+            serde_json::from_str(r#"{"z":[{"z":4,"a":3}],"a":{"z":2,"a":1}}"#).unwrap();
+        let mut schema: DatasetSchema =
+            serde_json::from_str(include_str!("../../../examples/minimal_schema.json")).unwrap();
+        assert_eq!(
+            schema_fingerprint(&schema).unwrap(),
+            "e1b5174cbd2b6282d9d4017ba3b1f8dc2ad829b020e4e3df3bc9689496164ba0"
+        );
+        schema.sources[0]
+            .schema
+            .insert("nested".into(), ascending.clone());
+        let left = schema_fingerprint(&schema).unwrap();
+        schema.sources[0]
+            .schema
+            .insert("nested".into(), descending.clone());
+        assert_eq!(left, schema_fingerprint(&schema).unwrap());
+
+        let mut plan: DataPlan = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/oof_campaign/expected_data_plan_nir_to_tabular.json"
+        ))
+        .unwrap();
+        let mut expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            data_plan_fingerprint(&plan).unwrap(),
+            expected["plan_fingerprint"].take().as_str().unwrap()
+        );
+        plan.steps[0]
+            .metadata
+            .insert("nested".into(), ascending.clone());
+        let left = data_plan_fingerprint(&plan).unwrap();
+        plan.steps[0]
+            .metadata
+            .insert("nested".into(), descending.clone());
+        assert_eq!(left, data_plan_fingerprint(&plan).unwrap());
+
+        let mut relations: crate::SampleRelationTable = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/oof_campaign/sample_relations_grouped_augmented.json"
+        ))
+        .unwrap();
+        relations.rows[0]
+            .metadata
+            .insert("nested".into(), ascending);
+        let left = sample_relation_fingerprint(&relations).unwrap();
+        relations.rows[0]
+            .metadata
+            .insert("nested".into(), descending);
+        assert_eq!(left, sample_relation_fingerprint(&relations).unwrap());
+    }
 
     fn representation(id: &str) -> RepresentationSpec {
         RepresentationSpec {

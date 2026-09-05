@@ -7,7 +7,7 @@ use crate::alignment::{alignment_metadata, alignment_mode_from_fusion};
 use crate::error::{DataError, Result};
 use crate::ids::{RepresentationId, SourceId};
 use crate::model::{DatasetSchema, SourceDescriptor};
-use crate::plan::{DataPlan, DataPlanStep, DataPlanStepKind, FitScope};
+use crate::plan::{DataPlan, DataPlanStep, DataPlanStepKind, FitScope, PlanIssue};
 use crate::ModelInputSpec;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -33,6 +33,7 @@ struct ResolvedSource<'a> {
     source: &'a SourceDescriptor,
     target_representation: RepresentationId,
     path: AdapterPath,
+    issues: Vec<PlanIssue>,
 }
 
 pub fn plan_model_input(
@@ -47,6 +48,7 @@ pub fn plan_model_input(
 
     let candidate_sources = candidate_sources(schema, request)?;
     let mut steps = Vec::new();
+    let mut issues = Vec::new();
     let mut output_representation = None;
     let mut adapt_idx = 0usize;
     let mut align_idx = 0usize;
@@ -77,6 +79,7 @@ pub fn plan_model_input(
         let port_output_representation = resolved[0].target_representation.clone();
         let mut join_inputs = Vec::new();
         for source_plan in resolved {
+            issues.extend(source_plan.issues);
             let source_output = source_output_id(&source_plan.source.id);
             steps.push(DataPlanStep {
                 kind: DataPlanStepKind::Materialize,
@@ -124,9 +127,7 @@ pub fn plan_model_input(
 
         let join_inputs = if join_inputs.len() > 1 {
             let align_output = format!("step:align:{align_idx}");
-            let align_input_representation = output_representation
-                .clone()
-                .unwrap_or_else(|| resolved_target_representation(&steps));
+            let align_input_representation = port_output_representation.clone();
             let alignment_mode = alignment_mode_from_fusion(model_input.default_fusion.as_ref())?;
             steps.push(DataPlanStep {
                 kind: DataPlanStepKind::Align,
@@ -148,11 +149,7 @@ pub fn plan_model_input(
             kind: DataPlanStepKind::Join,
             source_id: None,
             adapter_id: None,
-            input_representation: Some(
-                output_representation
-                    .clone()
-                    .unwrap_or_else(|| resolved_target_representation(&steps)),
-            ),
+            input_representation: Some(port_output_representation.clone()),
             output_representation: Some(port_output_representation.clone()),
             fit_scope: FitScope::Stateless,
             requires_user_choice: false,
@@ -181,7 +178,7 @@ pub fn plan_model_input(
         id: request.id.clone(),
         steps,
         output_representation,
-        issues: Vec::new(),
+        issues,
     };
     plan.validate()?;
     Ok(plan)
@@ -240,18 +237,57 @@ fn resolve_source<'a>(
 ) -> Option<ResolvedSource<'a>> {
     for target_type in &port.accepted_types {
         for target_representation in &port.accepted_representations {
-            let resolution = adapters.find_path(
+            let known_rank = if target_representation == &source.native_representation.id {
+                source.native_representation.rank
+            } else {
+                crate::builtin_representations()
+                    .into_iter()
+                    .find(|spec| &spec.id == target_representation)
+                    .and_then(|spec| spec.rank)
+            };
+            if port
+                .rank
+                .zip(known_rank)
+                .is_some_and(|(required, actual)| required != actual)
+            {
+                continue;
+            }
+            let mut resolution = adapters.find_path(
                 &source.type_id,
                 &source.native_representation.id,
                 target_type,
                 target_representation,
                 policy,
             );
+            if resolution.requires_user_choice {
+                // Keep an inspectable candidate and all choices; materialization
+                // already refuses unresolved plans. Never silently drop an
+                // ambiguous optional source or hide the solver diagnostics.
+                let mut candidate_policy = policy.clone();
+                candidate_policy.require_user_choice_on_ambiguity = false;
+                resolution.path = adapters
+                    .find_path(
+                        &source.type_id,
+                        &source.native_representation.id,
+                        target_type,
+                        target_representation,
+                        &candidate_policy,
+                    )
+                    .path;
+            }
             if let Some(path) = resolution.path {
+                if port.rank.is_some() && known_rank.is_none() {
+                    resolution.issues.push(PlanIssue {
+                        code: "unverified_rank".into(),
+                        message: format!("input port `{}` requires rank {:?}, but representation `{target_representation}` has no declared rank", port.name, port.rank),
+                        choices: vec![],
+                    });
+                }
                 return Some(ResolvedSource {
                     source,
                     target_representation: target_representation.clone(),
                     path,
+                    issues: resolution.issues,
                 });
             }
         }
@@ -261,14 +297,6 @@ fn resolve_source<'a>(
 
 fn source_output_id(source_id: &SourceId) -> String {
     format!("src:{source_id}")
-}
-
-fn resolved_target_representation(steps: &[DataPlanStep]) -> RepresentationId {
-    steps
-        .iter()
-        .rev()
-        .find_map(|step| step.output_representation.clone())
-        .expect("at least one source step was emitted")
 }
 
 #[cfg(test)]
@@ -336,6 +364,93 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("unknown source"));
+    }
+
+    #[test]
+    fn planner_checks_target_rank_after_adaptation() {
+        let mut model = load_model_input();
+        model.ports[0].rank = Some(999);
+        assert!(plan_model_input(
+            &load_schema(),
+            &model,
+            &load_registry(),
+            &DataPlanRequest::new("rank")
+        )
+        .is_err());
+        model.ports[0].rank = Some(2);
+        assert!(plan_model_input(
+            &load_schema(),
+            &model,
+            &load_registry(),
+            &DataPlanRequest::new("rank")
+        )
+        .unwrap()
+        .issues
+        .is_empty());
+    }
+
+    #[test]
+    fn planner_keeps_each_ports_representation_independent() {
+        let schema = load_schema();
+        let mut model = load_model_input();
+        let source = &schema.sources[0];
+        model.ports.insert(
+            0,
+            crate::InputPortSpec {
+                name: "raw".into(),
+                accepted_representations: vec![source.native_representation.id.clone()],
+                accepted_types: vec![source.type_id.clone()],
+                rank: source.native_representation.rank,
+                multi_source: false,
+                optional: false,
+            },
+        );
+        let plan = plan_model_input(
+            &schema,
+            &model,
+            &load_registry(),
+            &DataPlanRequest::new("multi-port"),
+        )
+        .unwrap();
+        plan.validate().unwrap();
+        let ports: Vec<_> = plan
+            .steps
+            .iter()
+            .filter(|step| step.kind == DataPlanStepKind::Join)
+            .collect();
+        assert_ne!(
+            ports[0].output_representation,
+            ports[1].output_representation
+        );
+        for port in ports {
+            assert_eq!(port.input_representation, port.output_representation);
+        }
+    }
+
+    #[test]
+    fn planner_preserves_ambiguous_adapter_choices() {
+        let mut spec: AdapterRegistrySpec = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/oof_campaign/adapter_registry_signal_to_tabular.json"
+        ))
+        .unwrap();
+        let mut duplicate = spec.adapters[0].clone();
+        duplicate.id.push_str("_alternative");
+        spec.adapters.push(duplicate);
+        let registry = AdapterRegistry::from_spec(spec).unwrap();
+        let plan = plan_model_input(
+            &load_schema(),
+            &load_model_input(),
+            &registry,
+            &DataPlanRequest::new("ambiguous"),
+        )
+        .unwrap();
+        assert!(plan.requires_user_choice());
+        let issue = plan
+            .issues
+            .iter()
+            .find(|issue| issue.code == "ambiguous_path")
+            .unwrap();
+        assert_eq!(issue.choices.len(), 2);
     }
 
     #[test]

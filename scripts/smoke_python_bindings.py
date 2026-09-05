@@ -9,6 +9,7 @@ from importlib import resources
 from pathlib import Path
 
 import dag_ml_data
+from dag_ml_data import _dag_ml_data
 
 SHARED_FOLD_SET_FINGERPRINT = (
     "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c"
@@ -58,6 +59,10 @@ def main() -> None:
     dag_ml_data.validate_dataset_schema_json(schema_json)
     dag_ml_data.validate_dataset_schema_json(nirs4all_core_schema_json)
     manifest = json.loads(dag_ml_data.contract_manifest_json())
+    if dag_ml_data.__version__ != _dag_ml_data.version():
+        raise SystemExit("Python facade hides the version of the loaded native extension")
+    if metadata.version("dag-ml-data") != _dag_ml_data.version():
+        raise SystemExit("installed distribution and loaded native extension versions differ")
     if manifest["crate"] != "dag-ml-data":
         raise SystemExit("contract manifest has wrong crate name")
     if manifest["python_package_version"] != dag_ml_data.version():

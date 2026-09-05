@@ -159,7 +159,8 @@ class InMemoryProvider:
         envelope_buffer, envelope_ptr = _u8_buffer(envelope_json)
         target_buffer, target_ptr = _u8_buffer(target_json)
         feature_buffer, feature_ptr = _u8_buffer(feature_json)
-        self._buffers = [envelope_buffer, target_buffer, feature_buffer]
+        # Constructors copy borrowed input synchronously. Local references keep
+        # buffers alive through the call; the provider must not retain them.
         self._vtable = DagMlDataVTable()
         error = DagMlDataString()
         status = constructor(
@@ -197,9 +198,9 @@ class InMemoryProvider:
         )
 
     def materialize(self, request: dict[str, Any] | bytes) -> int:
+        self._ensure_open()
         payload = request if isinstance(request, bytes) else json.dumps(request).encode("utf-8")
         buffer, view = _bytes_view(payload)
-        self._buffers.append(buffer)
         handle = ctypes.c_uint64()
         status = self._vtable.materialize(self._vtable.user_data, 0, view, ctypes.byref(handle))
         if status != 0:
@@ -210,8 +211,8 @@ class InMemoryProvider:
         return self.materialize(Path(request_path).read_bytes())
 
     def make_view(self, data_handle: int, view_spec: dict[str, Any]) -> int:
+        self._ensure_open()
         buffer, view = _bytes_view(json.dumps(view_spec).encode("utf-8"))
-        self._buffers.append(buffer)
         handle = ctypes.c_uint64()
         status = self._vtable.make_view(
             self._vtable.user_data,
@@ -253,8 +254,8 @@ class InMemoryProvider:
             self._lib.dagmldata_arrow_schema_free(schema)
 
     def target_values(self, view_handle: int, target_id: str) -> list[dict[str, Any]]:
+        self._ensure_open()
         target_buffer, target_view = _bytes_view(target_id.encode("utf-8"))
-        self._buffers.append(target_buffer)
         array = ctypes.POINTER(ArrowArray)()
         schema = ctypes.POINTER(ArrowSchema)()
         status = self._vtable.target_arrow(
@@ -280,8 +281,8 @@ class InMemoryProvider:
             self._lib.dagmldata_arrow_schema_free(schema)
 
     def feature_values(self, view_handle: int, feature_set_id: str) -> list[dict[str, Any]]:
+        self._ensure_open()
         feature_buffer, feature_view = _bytes_view(feature_set_id.encode("utf-8"))
-        self._buffers.append(feature_buffer)
         array = ctypes.POINTER(ArrowArray)()
         schema = ctypes.POINTER(ArrowSchema)()
         status = self._vtable.feature_arrow(
@@ -328,6 +329,7 @@ class InMemoryProvider:
         return self.feature_values(view_handle, json.dumps(selector))
 
     def feature_buffer_manifests(self) -> list[dict[str, Any]]:
+        self._ensure_open()
         out = DagMlDataString()
         error = DagMlDataString()
         status = self._lib.dagmldata_inmemory_provider_feature_buffer_manifest_json(
@@ -342,6 +344,7 @@ class InMemoryProvider:
         return json.loads(payload)
 
     def data_feature_buffer_manifests(self, data_handle: int) -> list[dict[str, Any]]:
+        self._ensure_open()
         out = DagMlDataString()
         error = DagMlDataString()
         status = self._lib.dagmldata_inmemory_provider_data_feature_buffer_manifest_json(
@@ -357,9 +360,9 @@ class InMemoryProvider:
         return json.loads(payload)
 
     def feature_tensor(self, view_handle: int, selector: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_open()
         payload = json.dumps(selector).encode("utf-8")
         buffer, view = _bytes_view(payload)
-        self._buffers.append(buffer)
         tensor = DagMlDataTensorF64()
         error = DagMlDataString()
         status = self._lib.dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
@@ -378,6 +381,7 @@ class InMemoryProvider:
             self._lib.dagmldata_tensor_f64_free(tensor)
 
     def release(self, handle: int) -> None:
+        self._ensure_open()
         self._vtable.release(self._vtable.user_data, handle)
 
     def close(self) -> None:
@@ -389,6 +393,10 @@ class InMemoryProvider:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.close()
+
+    def _ensure_open(self) -> None:
+        if not self._vtable.user_data:
+            raise RuntimeError("provider is closed")
 
     def _consume_error(self, error: DagMlDataString) -> str | None:
         return self._consume_string(error)
@@ -405,6 +413,7 @@ class InMemoryProvider:
         callback: ViewIdentityFn,
         view_handle: int,
     ) -> tuple[ctypes.POINTER(ArrowArray), ctypes.POINTER(ArrowSchema)]:
+        self._ensure_open()
         array = ctypes.POINTER(ArrowArray)()
         schema = ctypes.POINTER(ArrowSchema)()
         status = callback(self._vtable.user_data, view_handle, ctypes.byref(array), ctypes.byref(schema))
