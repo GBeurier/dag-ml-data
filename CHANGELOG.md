@@ -10,6 +10,13 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-09-24
+
+### Changed
+
+- Requalify the unchanged V1 data contracts and provider bindings with the
+  DAG-ML 0.3.27 release train. No wire or ABI shape changed.
+
 ## [0.2.11] - 2026-09-05
 
 ### Fixed
@@ -171,7 +178,8 @@ Foundation scaffold. Executable Rust crates with:
 - Object-level Python APIs above the JSON-contract PyO3 bindings and ctypes
   provider smoke (roadmap workstream D).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.12...HEAD
+[0.2.12]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.9...v0.2.10
 [0.2.0]: https://github.com/GBeurier/dag-ml-data/releases/tag/v0.2.0
