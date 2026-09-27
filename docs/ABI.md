@@ -283,6 +283,16 @@ materialize, view creation, identity export, target export, feature export,
 release and destroy; it locates the cdylib via `library_path=` /
 `DAG_ML_DATA_CAPI_LIB` / the Cargo target dir.
 
+The platform-specific Python provider wheel also embeds the C ABI library
+with a package-local size/SHA-256 manifest. Its automatic discovery checks the
+manifest before `ctypes` loads the library; explicit `library_path=` and source
+checkout discovery remain compatible. `PackageProvider.from_package_resources`
+consumes explicitly named coordinator-envelope, optional target-table and
+deterministic `.n4d` resources from an installed Python package. Rust validates
+the `.n4d` trailer and owns the decoded buffers before the resource closes.
+Resource paths are confined to a single non-namespace package root. This is a
+bounded numeric provider; N-D package payload transport is still open.
+
 ## ABI Roadmap
 
 1. Freeze byte/string/status conventions.

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import ctypes
 import json
-from pathlib import Path
+from importlib import import_module, resources
+from pathlib import Path, PurePosixPath
+from types import ModuleType
 from typing import Any
 
 from ._abi import (
@@ -156,9 +158,9 @@ class InMemoryProvider:
             feature_rows = feature_tables or []
         target_json = json.dumps(target_tables or []).encode("utf-8")
         feature_json = json.dumps(feature_rows).encode("utf-8")
-        envelope_buffer, envelope_ptr = _u8_buffer(envelope_json)
-        target_buffer, target_ptr = _u8_buffer(target_json)
-        feature_buffer, feature_ptr = _u8_buffer(feature_json)
+        _envelope_buffer, envelope_ptr = _u8_buffer(envelope_json)
+        _target_buffer, target_ptr = _u8_buffer(target_json)
+        _feature_buffer, feature_ptr = _u8_buffer(feature_json)
         # Constructors copy borrowed input synchronously. Local references keep
         # buffers alive through the call; the provider must not retain them.
         self._vtable = DagMlDataVTable()
@@ -188,7 +190,7 @@ class InMemoryProvider:
         target_tables: list[dict[str, Any]] | None = None,
         feature_tables: list[dict[str, Any]] | None = None,
         f64_feature_matrices: list[dict[str, Any]] | None = None,
-    ) -> "InMemoryProvider":
+    ) -> InMemoryProvider:
         return cls(
             Path(envelope_path).read_bytes(),
             library_path=library_path,
@@ -200,7 +202,7 @@ class InMemoryProvider:
     def materialize(self, request: dict[str, Any] | bytes) -> int:
         self._ensure_open()
         payload = request if isinstance(request, bytes) else json.dumps(request).encode("utf-8")
-        buffer, view = _bytes_view(payload)
+        _buffer, view = _bytes_view(payload)
         handle = ctypes.c_uint64()
         status = self._vtable.materialize(self._vtable.user_data, 0, view, ctypes.byref(handle))
         if status != 0:
@@ -212,7 +214,7 @@ class InMemoryProvider:
 
     def make_view(self, data_handle: int, view_spec: dict[str, Any]) -> int:
         self._ensure_open()
-        buffer, view = _bytes_view(json.dumps(view_spec).encode("utf-8"))
+        _buffer, view = _bytes_view(json.dumps(view_spec).encode("utf-8"))
         handle = ctypes.c_uint64()
         status = self._vtable.make_view(
             self._vtable.user_data,
@@ -255,7 +257,7 @@ class InMemoryProvider:
 
     def target_values(self, view_handle: int, target_id: str) -> list[dict[str, Any]]:
         self._ensure_open()
-        target_buffer, target_view = _bytes_view(target_id.encode("utf-8"))
+        _target_buffer, target_view = _bytes_view(target_id.encode("utf-8"))
         array = ctypes.POINTER(ArrowArray)()
         schema = ctypes.POINTER(ArrowSchema)()
         status = self._vtable.target_arrow(
@@ -282,7 +284,7 @@ class InMemoryProvider:
 
     def feature_values(self, view_handle: int, feature_set_id: str) -> list[dict[str, Any]]:
         self._ensure_open()
-        feature_buffer, feature_view = _bytes_view(feature_set_id.encode("utf-8"))
+        _feature_buffer, feature_view = _bytes_view(feature_set_id.encode("utf-8"))
         array = ctypes.POINTER(ArrowArray)()
         schema = ctypes.POINTER(ArrowSchema)()
         status = self._vtable.feature_arrow(
@@ -362,7 +364,7 @@ class InMemoryProvider:
     def feature_tensor(self, view_handle: int, selector: dict[str, Any]) -> dict[str, Any]:
         self._ensure_open()
         payload = json.dumps(selector).encode("utf-8")
-        buffer, view = _bytes_view(payload)
+        _buffer, view = _bytes_view(payload)
         tensor = DagMlDataTensorF64()
         error = DagMlDataString()
         status = self._lib.dagmldata_inmemory_provider_feature_collation_tensor_f64_json(
@@ -388,7 +390,7 @@ class InMemoryProvider:
         if self._vtable.user_data:
             self._lib.dagmldata_inmemory_provider_destroy(ctypes.byref(self._vtable))
 
-    def __enter__(self) -> "InMemoryProvider":
+    def __enter__(self) -> InMemoryProvider:  # noqa: PYI034
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -420,3 +422,140 @@ class InMemoryProvider:
         if status != 0:
             raise RuntimeError(f"Arrow callback failed: status {status}")
         return array, schema
+
+
+def _package_resource(
+    package: str | ModuleType,
+    resource: str,
+) -> Any:
+    """Resolve one closed relative resource name below ``package``."""
+    if not isinstance(resource, str) or not resource:
+        raise ValueError("package resource name must be a non-empty string")
+    if resource != resource.strip() or "\\" in resource:
+        raise ValueError("package resource name must be a normalized POSIX path")
+    parts = resource.split("/")
+    path = PurePosixPath(resource)
+    if (
+        path.is_absolute()
+        or any(part in {"", ".", ".."} for part in parts)
+        or ":" in parts[0]
+    ):
+        raise ValueError("package resource name must stay below the package root")
+    package_module = import_module(package) if isinstance(package, str) else package
+    package_spec = getattr(package_module, "__spec__", None)
+    if package_spec is None or package_spec.origin is None:
+        raise ValueError(
+            "namespace packages are not supported for confined package resources"
+        )
+    package_root = resources.files(package_module)
+    candidate = package_root.joinpath(*parts)
+    if not candidate.is_file():
+        raise FileNotFoundError(
+            f"package resource `{resource}` is missing or is not a file"
+        )
+    if isinstance(package_root, Path) and isinstance(candidate, Path):
+        root_path = package_root.resolve()
+        candidate_path = candidate.resolve()
+        if not candidate_path.is_relative_to(root_path):
+            raise ValueError("package resource symlink escapes the package root")
+    return candidate
+
+
+class PackageProvider(InMemoryProvider):
+    """Provider backed by a persisted deterministic ``.n4d`` buffer store.
+
+    The Rust constructor validates the store magic, version and SHA-256 trailer,
+    then owns the decoded buffers behind the unchanged provider vtable. Package
+    resources may therefore be temporary extracted files: all bytes are read
+    before construction returns. The low-level constructor and
+    :meth:`from_files` accept an explicit host filesystem path; only
+    :meth:`from_package_resources` applies the closed relative-resource and
+    symlink-containment checks. ``library_path`` retains the existing explicit
+    C ABI override; the default uses the integrity-checked wheel library.
+    """
+
+    def __init__(
+        self,
+        envelope_json: bytes,
+        feature_store_path: str | Path,
+        *,
+        library_path: str | Path | None = None,
+        target_tables: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self._lib = load_library(library_path)
+        target_json = json.dumps(target_tables or []).encode("utf-8")
+        path_json = str(Path(feature_store_path)).encode("utf-8")
+        _envelope_buffer, envelope_ptr = _u8_buffer(envelope_json)
+        _target_buffer, target_ptr = _u8_buffer(target_json)
+        _path_buffer, path_ptr = _u8_buffer(path_json)
+        # The native constructor copies borrowed inputs before it returns.
+        # Keep these local buffers alive for that call without retaining them.
+        self._vtable = DagMlDataVTable()
+        error = DagMlDataString()
+        status = self._lib.dagmldata_inmemory_provider_new_from_file(
+            envelope_ptr,
+            len(envelope_json),
+            target_ptr,
+            len(target_json),
+            path_ptr,
+            len(path_json),
+            ctypes.byref(self._vtable),
+            ctypes.byref(error),
+        )
+        if status != 0:
+            message = self._consume_error(error) or f"status {status}"
+            raise RuntimeError(f"package provider creation failed: {message}")
+        if not self._vtable.user_data:
+            raise RuntimeError("package provider creation returned null user_data")
+
+    @classmethod
+    def from_files(
+        cls,
+        envelope_path: str | Path,
+        feature_store_path: str | Path,
+        *,
+        library_path: str | Path | None = None,
+        target_tables: list[dict[str, Any]] | None = None,
+    ) -> PackageProvider:
+        """Create a provider from an envelope and persisted `.n4d` file."""
+        return cls(
+            Path(envelope_path).read_bytes(),
+            feature_store_path,
+            library_path=library_path,
+            target_tables=target_tables,
+        )
+
+    @classmethod
+    def from_package_resources(
+        cls,
+        package: str | ModuleType,
+        *,
+        envelope_resource: str,
+        feature_store_resource: str,
+        target_tables_resource: str | None = None,
+        library_path: str | Path | None = None,
+    ) -> PackageProvider:
+        """Create a provider from explicit resources in an installed package.
+
+        No directory layout or new manifest is inferred: callers name the
+        existing coordinator-envelope v1, optional target-table JSON and
+        deterministic ``.n4d`` v1 resources explicitly.
+        """
+        envelope = _package_resource(package, envelope_resource).read_bytes()
+        targets: list[dict[str, Any]] | None = None
+        if target_tables_resource is not None:
+            target_payload = json.loads(
+                _package_resource(package, target_tables_resource).read_text(
+                    encoding="utf-8"
+                )
+            )
+            if not isinstance(target_payload, list) or not all(
+                isinstance(row, dict) for row in target_payload
+            ):
+                raise ValueError(
+                    "target tables package resource must contain a JSON array of objects"
+                )
+            targets = target_payload
+        store = _package_resource(package, feature_store_resource)
+        with resources.as_file(store) as store_path:
+            return cls(envelope, store_path, library_path=library_path, target_tables=targets)

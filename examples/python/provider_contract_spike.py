@@ -30,7 +30,6 @@ from typing import Any
 
 from dag_ml_data_provider import InMemoryProvider
 
-
 # --------------------------------------------------------------------------- #
 # Fixtures                                                                     #
 # --------------------------------------------------------------------------- #
@@ -134,6 +133,8 @@ def _multi_source_envelope() -> dict[str, Any]:
                     "origin_sample_id": None,
                     "source_id": "nir",
                     "is_augmented": False,
+                    "metadata": {"site": "A"},
+                    "tags": ["clean", "calibration"],
                 },
                 {
                     "observation_id": "nir.S002",
@@ -143,6 +144,8 @@ def _multi_source_envelope() -> dict[str, Any]:
                     "origin_sample_id": None,
                     "source_id": "nir",
                     "is_augmented": False,
+                    "metadata": {"site": "B"},
+                    "tags": ["holdout"],
                 },
                 {
                     "observation_id": "chem.S001",
@@ -152,6 +155,8 @@ def _multi_source_envelope() -> dict[str, Any]:
                     "origin_sample_id": None,
                     "source_id": "chem",
                     "is_augmented": False,
+                    "metadata": {"site": "A"},
+                    "tags": ["clean", "calibration"],
                 },
                 {
                     "observation_id": "chem.S002",
@@ -161,6 +166,8 @@ def _multi_source_envelope() -> dict[str, Any]:
                     "origin_sample_id": None,
                     "source_id": "chem",
                     "is_augmented": False,
+                    "metadata": {"site": "B"},
+                    "tags": ["holdout"],
                 },
             ]
         },
@@ -404,6 +411,54 @@ def check_multi_source_fusion(library_path: str | None = None) -> dict[str, Any]
     }
 
 
+def check_native_branch_modes(library_path: str | None = None) -> dict[str, list[str]]:
+    """Executes every closed native branch selector through the installed ABI."""
+    provider, env = _build_multi_source_provider(library_path)
+    with provider:
+        data_handle = provider.materialize(_multi_source_request(env))
+        cases = {
+            "by_source": (
+                {"source_ids": ["nir"]},
+                ["nir.S001", "nir.S002"],
+            ),
+            "by_metadata": (
+                {"metadata": {"site": "A"}},
+                ["nir.S001", "chem.S001"],
+            ),
+            "by_tag": (
+                {"tags": ["clean"]},
+                ["nir.S001", "chem.S001"],
+            ),
+            "by_filter": (
+                {"filter": {"metadata_equals": {"site": "A"}, "tags_all": ["clean"]}},
+                ["nir.S001", "chem.S001"],
+            ),
+        }
+        observed: dict[str, list[str]] = {}
+        for mode, (selector, expected) in cases.items():
+            view_handle = provider.make_view(
+                data_handle,
+                {
+                    "include_augmented": False,
+                    "branch_view": {
+                        "view_id": f"branch_view:wheel:{mode}",
+                        "branch_id": f"branch:wheel:{mode}",
+                        "mode": mode,
+                        "selector": selector,
+                    },
+                },
+            )
+            identity = provider.view_identity(view_handle)
+            values = provider.feature_values(view_handle, "x")
+            observation_ids = [row["observation_id"] for row in identity]
+            assert observation_ids == expected, (mode, observation_ids)
+            assert [row["observation_id"] for row in values] == expected
+            observed[mode] = observation_ids
+            provider.release(view_handle)
+        provider.release(data_handle)
+    return observed
+
+
 def check_lifecycle(provider: InMemoryProvider, request_path: str) -> dict[str, Any]:
     """release() invalidates a view: identity over a released view fails. The
     data handle and the provider itself are released/destroyed by the caller's
@@ -453,6 +508,8 @@ def main() -> None:
     ) as provider:
         group_fold = check_group_fold_identity(provider, args.request)
         lifecycle = check_lifecycle(provider, args.request)
+    lifecycle["destroyed"] = not bool(provider._vtable.user_data)
+    assert lifecycle["destroyed"], "context-manager exit must destroy provider user_data"
 
     # Branch-view uses the smoke target values (y: S001=42, S002=7) so re-build
     # a provider with those so the branch-view target assertions hold.
@@ -474,6 +531,7 @@ def main() -> None:
         branch_view = check_branch_view(provider, args.request)
 
     fusion = check_multi_source_fusion(args.lib)
+    native_branch_modes = check_native_branch_modes(args.lib)
 
     print(
         json.dumps(
@@ -481,6 +539,7 @@ def main() -> None:
                 "branch_view": branch_view,
                 "group_fold": group_fold,
                 "fusion": fusion,
+                "native_branch_modes": native_branch_modes,
                 "lifecycle": lifecycle,
             },
             sort_keys=True,
