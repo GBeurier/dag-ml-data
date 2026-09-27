@@ -7,14 +7,26 @@ so it never fails in an environment that has not built the cdylib. Build it with
 
 from __future__ import annotations
 
-from pathlib import Path
 import gc
+import hashlib
+import importlib
+import json
+import struct
 import weakref
+import zipfile
+from pathlib import Path
 
 import pytest
-
-from dag_ml_data_provider import InMemoryProvider, find_capi_library
+from dag_ml_data_provider import (
+    InMemoryProvider,
+    NativeLibraryIntegrityError,
+    NativeLibraryNotFoundError,
+    PackageProvider,
+    find_capi_library,
+)
+from dag_ml_data_provider import _library as library_module
 from dag_ml_data_provider import _provider as implementation
+from dag_ml_data_provider import _provider as provider_module
 
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[5]
 _ENVELOPE = _WORKSPACE_ROOT / "examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
@@ -34,6 +46,26 @@ _F64_FEATURE_MATRICES = [
         "values": [1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0],
     }
 ]
+
+
+def _write_n4d_fixture(path: Path) -> None:
+    """Create the small deterministic v1 buffer store used by this test."""
+    payload = bytearray(b"N4DF")
+    payload.extend(struct.pack("<II", 1, 1))
+
+    def write_string(value: str) -> None:
+        encoded = value.encode("utf-8")
+        payload.extend(struct.pack("<I", len(encoded)))
+        payload.extend(encoded)
+
+    write_string("x")
+    write_string("tabular_numeric")
+    payload.extend(struct.pack("<IIB", 4, 2, 0))
+    for value in ("f0", "f1", "obs.S001.base", "obs.S001.rep1", "obs.S001.aug0", "obs.S002.base"):
+        write_string(value)
+    payload.extend(struct.pack("<8d", 1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0))
+    payload.extend(hashlib.sha256(payload).digest())
+    path.write_bytes(payload)
 
 
 def _provider() -> InMemoryProvider:
@@ -126,3 +158,161 @@ def test_unknown_or_unresolved_view_does_not_select_all_samples() -> None:
                 provider.make_view(data, view)
         selected = provider.make_view(data, {"sample_ids": ["S002"], "partition": "fold_validation", "fold_id": "fold0"})
         assert {row["sample_id"] for row in provider.view_identity(selected)} == {"S002"}
+
+
+@pytest.mark.parametrize(
+    "resource",
+    ["", " ../features.n4d", "../features.n4d", "/features.n4d", "a//b", "a\\b"],
+)
+def test_package_provider_refuses_unsafe_resource_names(resource: str) -> None:
+    # Resource validation happens before native-library discovery.
+    with pytest.raises(ValueError):
+        PackageProvider.from_package_resources(
+            "dag_ml_data_provider",
+            envelope_resource=resource,
+            feature_store_resource="features.n4d",
+        )
+
+
+def test_package_provider_refuses_resource_symlink_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside.n4d"
+    outside.write_bytes(b"outside")
+    package = tmp_path / "fixture_escape"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "escape.n4d").symlink_to(outside)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    with pytest.raises(ValueError, match="symlink escapes"):
+        provider_module._package_resource("fixture_escape", "escape.n4d")
+
+
+def test_package_provider_refuses_namespace_package_symlink_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside-namespace.n4d"
+    outside.write_bytes(b"outside")
+    namespace_package = tmp_path / "fixture_namespace_escape"
+    namespace_package.mkdir()
+    (namespace_package / "escape.n4d").symlink_to(outside)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    with pytest.raises(ValueError, match="namespace packages are not supported"):
+        provider_module._package_resource(
+            "fixture_namespace_escape", "escape.n4d"
+        )
+
+
+def test_package_resource_accepts_single_root_zip_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "fixture-resource.zip"
+    with zipfile.ZipFile(archive, "w") as fixture_zip:
+        fixture_zip.writestr("fixture_zip_resource/__init__.py", "")
+        fixture_zip.writestr("fixture_zip_resource/features.n4d", b"fixture")
+    monkeypatch.syspath_prepend(str(archive))
+    importlib.invalidate_caches()
+    resource = provider_module._package_resource(
+        "fixture_zip_resource", "features.n4d"
+    )
+    assert resource.read_bytes() == b"fixture"
+
+
+def _write_bundle(root: Path, payload: bytes = b"native-test-library") -> Path:
+    library = root / ".libs" / library_module._library_filename()
+    library.parent.mkdir(parents=True)
+    library.write_bytes(payload)
+    manifest = {
+        "schema_version": 1,
+        "package": "dag-ml-data-provider",
+        "package_version": "0.2.12",
+        "cargo_package": "dag-ml-data-capi",
+        "library": library.name,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+        "rust_target": "test-target",
+        "rustc": "rustc test",
+        "source_commit": "0" * 40,
+        "source_dirty": False,
+    }
+    (root / "native-library.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return library
+
+
+def test_discovery_verifies_package_local_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    library = _write_bundle(tmp_path)
+    monkeypatch.setattr(library_module, "_package_root", lambda: tmp_path)
+    monkeypatch.setenv("DAG_ML_DATA_CAPI_LIB", str(tmp_path / "outside.so"))
+    assert find_capi_library() == library
+
+
+def test_discovery_refuses_missing_bundled_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    library = _write_bundle(tmp_path)
+    library.unlink()
+    monkeypatch.setattr(library_module, "_package_root", lambda: tmp_path)
+    with pytest.raises(NativeLibraryNotFoundError):
+        find_capi_library()
+
+
+def test_discovery_refuses_altered_bundled_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    library = _write_bundle(tmp_path)
+    library.write_bytes(b"altered")
+    monkeypatch.setattr(library_module, "_package_root", lambda: tmp_path)
+    with pytest.raises(NativeLibraryIntegrityError):
+        find_capi_library()
+
+
+def test_discovery_refuses_altered_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_bundle(tmp_path)
+    manifest_path = tmp_path / "native-library.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["unexpected"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(library_module, "_package_root", lambda: tmp_path)
+    with pytest.raises(NativeLibraryIntegrityError):
+        find_capi_library()
+
+
+def test_package_provider_releases_buffers_and_rejects_use_after_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    try:
+        find_capi_library()
+    except FileNotFoundError:
+        pytest.skip("dag-ml-data C ABI cdylib not found")
+    store = tmp_path / "features.n4d"
+    _write_n4d_fixture(store)
+    refs = []
+    original = provider_module._u8_buffer
+
+    def observed(payload):
+        buffer, pointer = original(payload)
+        refs.append(weakref.ref(buffer))
+        return buffer, pointer
+
+    monkeypatch.setattr(provider_module, "_u8_buffer", observed)
+    provider = PackageProvider.from_files(_ENVELOPE, store)
+    for _ in range(30):
+        data = provider.materialize_file(_REQUEST)
+        view = provider.make_view(data, {"sample_ids": ["S001"]})
+        assert provider.feature_values(view, "x")
+        provider.release(view)
+        provider.release(data)
+    gc.collect()
+    assert len(refs) >= 93
+    assert all(ref() is None for ref in refs)
+    provider.close()
+    with pytest.raises(RuntimeError, match="provider is closed"):
+        provider.materialize_file(_REQUEST)
+    with pytest.raises(RuntimeError, match="provider is closed"):
+        provider.release(1)

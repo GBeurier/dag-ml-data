@@ -173,6 +173,17 @@ def configure_library(lib: ctypes.CDLL) -> ctypes.CDLL:
         ctypes.POINTER(DagMlDataString),
     ]
     lib.dagmldata_inmemory_provider_new_with_f64_features_json.restype = ctypes.c_int
+    lib.dagmldata_inmemory_provider_new_from_file.argtypes = [
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_size_t,
+        ctypes.POINTER(DagMlDataVTable),
+        ctypes.POINTER(DagMlDataString),
+    ]
+    lib.dagmldata_inmemory_provider_new_from_file.restype = ctypes.c_int
     lib.dagmldata_inmemory_provider_feature_buffer_manifest_json.argtypes = [
         ctypes.POINTER(DagMlDataVTable),
         ctypes.POINTER(DagMlDataString),

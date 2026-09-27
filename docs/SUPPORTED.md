@@ -30,7 +30,7 @@ exports; no existing public ABI, JSON schema, or function signature changed.
 | N-D tensor transport | Supported | Borrowed tensor views are copied to provider-owned buffers and exported through view-filtered handles. |
 | Fitted adapter refs/manifests/store | Supported | Portable URI/fingerprint validation and in-memory store ABI are covered. |
 | In-memory provider vtable | Conformance | Full materialize/view/identity/target/feature lifecycle is tested; it is not a production storage backend. |
-| Python `ctypes` provider package | Conformance | Useful binding template and smoke target; not a domain-specific provider backend. |
+| Python `ctypes` provider package | Supported bounded slice | The platform wheel bundles an integrity-checked C ABI library. `PackageProvider` loads explicit envelope/target/`.n4d` package resources through the existing vtable; `InMemoryProvider` remains the conformance constructor. Source checkouts retain explicit-path and Cargo-target discovery. |
 | WASM provider feature | Conformance | The opt-in `provider` feature is built and executed in Node CI over materialize/view/typed feature/collation/release. The published default npm artifact remains JSON-contract-only. |
 | Arrow IPC feature-buffer reader | Conformance | Optional crate/feature path for IPC-backed numeric buffers. |
 | `branch_view` modes `by_source`, `by_metadata`, `by_tag` | Supported | Executed natively by the in-memory provider. |

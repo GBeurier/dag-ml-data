@@ -7,9 +7,24 @@ only hands JSON payloads and host buffers to Rust and decodes the results.
 
 from __future__ import annotations
 
-from ._library import find_capi_library, load_library
-from ._provider import InMemoryProvider
+from ._library import (
+    NativeLibraryError,
+    NativeLibraryIntegrityError,
+    NativeLibraryNotFoundError,
+    find_capi_library,
+    load_library,
+)
+from ._provider import InMemoryProvider, PackageProvider
 
-__all__ = ["InMemoryProvider", "find_capi_library", "load_library", "__version__"]
+__all__ = [
+    "InMemoryProvider",
+    "NativeLibraryError",
+    "NativeLibraryIntegrityError",
+    "NativeLibraryNotFoundError",
+    "PackageProvider",
+    "__version__",
+    "find_capi_library",
+    "load_library",
+]
 
 __version__ = "0.2.12"

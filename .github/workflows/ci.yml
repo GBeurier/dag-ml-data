@@ -259,6 +259,48 @@ jobs:
               --envelope examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json \
               --request examples/fixtures/oof_campaign/materialization_request_model_base_x.json
 
+  python-provider-wheel:
+    name: Autonomous provider wheel (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: linux-x86_64
+          - os: macos-14
+            label: macos-aarch64
+          - os: windows-2022
+            label: windows-x64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Provider source contract tests
+        shell: bash
+        run: |
+          python -m pip install pytest
+          cargo build -p dag-ml-data-capi --lib
+          PYTHONPATH=crates/dag-ml-data-capi/bindings/python \
+            python -m pytest -q crates/dag-ml-data-capi/bindings/python/tests
+      - name: Build autonomous provider wheel
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip build
+          python scripts/test_provider_wheel_dirty_refusal.py
+          python -m build --wheel --outdir target/provider-wheels \
+            crates/dag-ml-data-capi/bindings/python
+      - name: Verify wheel and run from a fresh isolated venv
+        shell: bash
+        run: python scripts/smoke_python_provider_wheel.py target/provider-wheels/*.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: provider-wheel-${{ matrix.label }}
+          path: target/provider-wheels/*.whl
+          if-no-files-found: error
+
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
