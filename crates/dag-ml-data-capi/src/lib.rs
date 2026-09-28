@@ -6295,6 +6295,43 @@ mod tests {
         );
         assert_eq!(view_handle, 0);
 
+        // A valid native predicate plus an unknown sibling selector key must
+        // fail during JSON decoding, before the provider can select rows. This
+        // prevents a misspelled constraint from silently widening a branch.
+        let unknown_selector_key_json = serde_json::to_vec(&serde_json::json!({
+            "branch_view": {
+                "view_id": "branch_view:unknown-selector-key",
+                "branch_id": "branch:unknown-selector-key",
+                "mode": "by_filter",
+                "selector": {
+                    "filter": {"metadata_equals": {"io.partition": "train"}},
+                    "tags_al": ["clean"]
+                }
+            }
+        }))
+        .unwrap();
+        assert!(
+            serde_json::from_slice::<DataView>(&unknown_selector_key_json).is_err(),
+            "unknown selector keys must not be silently ignored"
+        );
+        let status = unsafe {
+            make_view(
+                vtable.user_data,
+                data_handle,
+                DagMlDataBytesView {
+                    ptr: unknown_selector_key_json.as_ptr(),
+                    len: unknown_selector_key_json.len(),
+                },
+                &mut view_handle,
+            )
+        };
+        assert_eq!(
+            status,
+            DagMlDataStatusCode::ValidationError,
+            "C ABI make_view must refuse an unknown selector key before projection"
+        );
+        assert_eq!(view_handle, 0);
+
         unsafe {
             vtable.release.unwrap()(vtable.user_data, data_handle);
             dagmldata_inmemory_provider_destroy(&mut vtable);

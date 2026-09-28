@@ -69,9 +69,10 @@ pub struct CoordinatorBranchViewSelector {
 /// Closed native predicate accepted by a `by_filter` coordinator branch view.
 ///
 /// This deliberately describes only relation properties that are already
-/// present in a coordinator envelope. It is not a general JSON query language:
-/// accepting an unrecognised predicate would let a host believe a scientific
-/// partition was applied when the provider cannot prove that it was.
+/// present in a coordinator envelope.  It is not a general JSON query
+/// language: accepting an unrecognised predicate would let a host believe a
+/// scientific partition was applied when the provider cannot prove that it
+/// was.  The provider preserves the matched relation records verbatim.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NativeBranchViewFilter {
@@ -688,5 +689,30 @@ mod tests {
         };
         let error = selector.validate(label).unwrap_err();
         assert!(format!("{error}").contains("filter must not be null"));
+    }
+
+    #[test]
+    fn coordinator_branch_view_wire_refuses_unknown_outer_and_selector_fields() {
+        let selector_error =
+            serde_json::from_value::<CoordinatorBranchViewSelector>(serde_json::json!({
+                "filter": {"metadata_equals": {"io.partition": "train"}},
+                "tags_al": ["clean"]
+            }))
+            .expect_err("unknown selector fields must not be ignored");
+        assert!(selector_error
+            .to_string()
+            .contains("unknown field `tags_al`"));
+
+        let view_error = serde_json::from_value::<CoordinatorBranchView>(serde_json::json!({
+            "view_id": "branch_view:strict",
+            "branch_id": "branch:strict",
+            "mode": "by_filter",
+            "selector": {"filter": {"metadata_equals": {"io.partition": "train"}}},
+            "allow_overlap_typo": false
+        }))
+        .expect_err("unknown branch-view fields must not be ignored");
+        assert!(view_error
+            .to_string()
+            .contains("unknown field `allow_overlap_typo`"));
     }
 }
