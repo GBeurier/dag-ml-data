@@ -376,8 +376,9 @@ def smoke_installed_wheel(wheel_path: Path, repo: Path) -> dict[str, Any]:
                 env=clean_env,
             )
         )
+        # macOS exposes /var through /private/var; compare canonical paths.
         require(
-            environment in package_root.parents,
+            environment.resolve() in package_root.resolve().parents,
             "provider import did not come from the fresh venv",
         )
         library_name = json.loads((package_root / "native-library.json").read_text())[
