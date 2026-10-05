@@ -57,6 +57,17 @@ jobs:
       - name: Validate publish plan
         run: python scripts/release/check_publish_plan.py
 
+      - name: Checkout release tooling at the workflow commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: target/release-tools
+
+      - name: Validate repaired release tooling
+        run: |
+          python -m unittest discover -s target/release-tools/scripts/release -p 'test_publish_crates.py'
+          python target/release-tools/scripts/release/publish_crates.py --repo "$PWD" --plan-only
+
       - name: Publish workspace crates to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -65,7 +76,7 @@ jobs:
           INDEX_DELAY: ${{ github.event_name == 'workflow_dispatch' && inputs.runner == 'macos-15-intel' && '30' || '120' }}
         run: |
           set -euo pipefail
-          args=(--sleep-seconds "$INDEX_DELAY")
+          args=(--repo "$PWD" --sleep-seconds "$INDEX_DELAY")
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             args+=(--tag "$GITHUB_REF_NAME")
           elif [[ -n "${RELEASE_TAG}" ]]; then
@@ -77,4 +88,4 @@ jobs:
             echo "::error::non-dry-run publishing must run from a release tag"
             exit 1
           fi
-          python scripts/release/publish_crates.py "${args[@]}"
+          python target/release-tools/scripts/release/publish_crates.py "${args[@]}"

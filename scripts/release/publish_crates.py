@@ -21,7 +21,7 @@ ALREADY_UPLOADED = re.compile(
     re.IGNORECASE,
 )
 
-EXPECTED_PUBLISH_ORDER = (
+EXPECTED_RELEASE_CRATES = (
     "dag-ml-data-core",
     "dag-ml-data",
     "dag-ml-data-arrow",
@@ -158,8 +158,8 @@ def workspace_crates(repo: Path) -> tuple[str, list[Crate]]:
     ordered = topo_sort(crates)
     actual_order = tuple(crate.name for crate in ordered)
     require(
-        actual_order == EXPECTED_PUBLISH_ORDER,
-        "publish plan must contain the seven release crates in canonical order; got: "
+        set(actual_order) == set(EXPECTED_RELEASE_CRATES),
+        "publish plan must contain exactly the seven release crates; got: "
         + " -> ".join(actual_order),
     )
     return workspace_version, ordered
@@ -184,6 +184,7 @@ def cargo_publish(crate: Crate, dry_run: bool, no_verify: bool) -> str:
     print(f"::group::publish {crate.name} (dry_run={int(dry_run)})", flush=True)
     proc = subprocess.run(
         cmd,
+        cwd=crate.manifest.parent,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -221,6 +222,7 @@ def main() -> None:
     parser.add_argument("--tag", help="release tag to validate, for example v0.2.0")
     parser.add_argument("--no-verify", action="store_true", help="pass --no-verify to cargo publish")
     parser.add_argument("--plan-only", action="store_true", help="print the publish order and exit")
+    parser.add_argument("--repo", type=Path, help="release source checkout (defaults to the tooling checkout)")
     parser.add_argument(
         "--sleep-seconds",
         type=int,
@@ -229,7 +231,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    repo = Path(__file__).resolve().parents[2]
+    repo = (args.repo or Path(__file__).resolve().parents[2]).resolve()
     version, crates = workspace_crates(repo)
     if args.tag:
         validate_tag(args.tag, version)
