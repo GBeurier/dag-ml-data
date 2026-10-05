@@ -595,6 +595,7 @@ mod tests {
         let envelope =
             CoordinatorDataPlanEnvelope::from_parts(&schema, plan, Some(&relations)).unwrap();
         let request = CoordinatorDataMaterializationRequest {
+            predict_cohort: None,
             run_id: "run:test".to_string(),
             node_id: "node:model".to_string(),
             input_name: "X".to_string(),

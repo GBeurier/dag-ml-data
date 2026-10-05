@@ -285,7 +285,7 @@ pub trait RuntimeFittedAdapterStore {
     fn materialize(&self, request: &FittedAdapterMaterializationRequest) -> Result<u64>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InMemoryFittedAdapterStore {
     state: Mutex<FittedAdapterStoreState>,
 }
@@ -294,6 +294,12 @@ pub struct InMemoryFittedAdapterStore {
 struct FittedAdapterStoreState {
     next_handle: u64,
     records: BTreeMap<String, FittedAdapterHandleRecord>,
+}
+
+impl Default for InMemoryFittedAdapterStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryFittedAdapterStore {

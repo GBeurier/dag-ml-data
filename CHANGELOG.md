@@ -10,6 +10,23 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-10-05
+
+### Fixed
+
+- Complete V2 envelope validation and cohort-scoped provider reads, preserving
+  scientific relation identity through Rust, JSON and Arrow/Python transport.
+- Reject V2 cohort members in V1 envelopes and validate schema references when
+  constructing envelopes from source parts.
+- Include adapter versions and parameters in new plan fingerprints; preserve
+  existing serialized plans and replay identities.
+- Respect hop budgets, check adapter cost arithmetic and negotiate a common
+  representation for multi-source planning.
+- Revalidate mutable buffer descriptors before storage/projection, align Rust
+  and JSON view defaults, and prevent zero fitted-adapter handles.
+- Concatenate Arrow IPC batches with their masks, enforce alignment presence
+  semantics, refuse overflowing collation sizes and correct Arrow nullable flags.
+
 ## [0.2.12] - 2026-09-24
 
 ### Changed
@@ -178,7 +195,8 @@ Foundation scaffold. Executable Rust crates with:
 - Object-level Python APIs above the JSON-contract PyO3 bindings and ctypes
   provider smoke (roadmap workstream D).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.12...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.13...HEAD
+[0.2.13]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.9...v0.2.10

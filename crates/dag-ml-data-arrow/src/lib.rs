@@ -46,12 +46,7 @@ pub const OBSERVATION_ID_COLUMN: &str = "observation_id";
 /// their `metadata` map and expose an `observation_id` UTF-8 column.
 pub fn read_buffers_from_ipc_stream<R: Read>(reader: R) -> Result<NumericFeatureBufferStore> {
     let stream = StreamReader::try_new(reader, None).map_err(arrow_error)?;
-    let mut matrices = Vec::new();
-    for batch in stream {
-        let batch = batch.map_err(arrow_error)?;
-        matrices.push(record_batch_to_matrix(&batch)?);
-    }
-    NumericFeatureBufferStore::from_f64_column_matrices(matrices)
+    read_batches(stream)
 }
 
 /// Parse an Arrow IPC file (with footer + magic) from any `Read + Seek`
@@ -61,12 +56,49 @@ pub fn read_buffers_from_ipc_file<R: Read + std::io::Seek>(
     reader: R,
 ) -> Result<NumericFeatureBufferStore> {
     let file = FileReader::try_new(reader, None).map_err(arrow_error)?;
-    let mut matrices = Vec::new();
-    for batch in file {
-        let batch = batch.map_err(arrow_error)?;
-        matrices.push(record_batch_to_matrix(&batch)?);
+    read_batches(file)
+}
+
+fn read_batches(
+    batches: impl Iterator<Item = std::result::Result<RecordBatch, arrow_schema::ArrowError>>,
+) -> Result<NumericFeatureBufferStore> {
+    let mut matrices = std::collections::BTreeMap::<String, NumericFeatureMatrixF64Columnar>::new();
+    for batch in batches {
+        let next = record_batch_to_matrix(&batch.map_err(arrow_error)?)?;
+        if next.observation_ids.is_empty() {
+            continue;
+        }
+        let Some(matrix) = matrices.get_mut(&next.feature_set_id) else {
+            matrices.insert(next.feature_set_id.clone(), next);
+            continue;
+        };
+        if matrix.representation_id != next.representation_id
+            || matrix.feature_names != next.feature_names
+        {
+            return Err(DataError::Validation(
+                "arrow IPC batches use incompatible feature schemas".into(),
+            ));
+        }
+        let prior_rows = matrix.observation_ids.len();
+        let next_rows = next.observation_ids.len();
+        if matrix.validity_masks.is_none() && next.validity_masks.is_some() {
+            matrix.validity_masks = Some(vec![vec![true; prior_rows]; matrix.columns.len()]);
+        }
+        if let Some(masks) = &mut matrix.validity_masks {
+            for (idx, mask) in masks.iter_mut().enumerate() {
+                if let Some(next_masks) = &next.validity_masks {
+                    mask.extend_from_slice(&next_masks[idx]);
+                } else {
+                    mask.extend(std::iter::repeat_n(true, next_rows));
+                }
+            }
+        }
+        matrix.observation_ids.extend(next.observation_ids);
+        for (column, next_column) in matrix.columns.iter_mut().zip(next.columns) {
+            column.extend(next_column);
+        }
     }
-    NumericFeatureBufferStore::from_f64_column_matrices(matrices)
+    NumericFeatureBufferStore::from_f64_column_matrices(matrices.into_values().collect())
 }
 
 /// Convenience: read an Arrow IPC file from disk.

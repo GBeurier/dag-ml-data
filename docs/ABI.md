@@ -115,8 +115,8 @@ usually branch on `DagMlDataStatusCode` before parsing a payload.
   included together by bindings.
 
 The coordinator envelope wire shape is versioned as
-`CoordinatorDataPlanEnvelope` v1 and published at
-`docs/contracts/coordinator_data_plan_envelope.schema.json`. Runtime validation
+`CoordinatorDataPlanEnvelope` v1/v2, published in the corresponding schemas
+under `docs/contracts/`. V1 writers retain their existing wire shape. Runtime validation
 continues to check the stronger semantic contract: schema/data-plan/relation
 fingerprints, identity consistency and materialization-request compatibility.
 
@@ -144,6 +144,13 @@ exports one Arrow struct row per coordinator relation with:
 
 - `observation_id`, `sample_id`, `target_id`, `group_id`;
 - `origin_sample_id`, `source_id`, `is_augmented`.
+
+Rich relations append a non-nullable UTF-8 `relation_json` column containing
+the complete typed relation, including scientific unit fields, exclusion,
+metadata and tags. Simple relations retain the seven-column shape. Consumers
+can discover the additional column by name; the Python provider merges its
+decoded fields into each identity row. Nullable fields use Arrow's nullable
+flag (bit 1, value 2), independently of whether that particular batch has nulls.
 
 This is enough for ABI consumers to verify sample/repetition/group/augmentation
 identity transfer before full buffer-backed provider lifecycles exist.

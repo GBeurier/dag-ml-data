@@ -78,6 +78,48 @@ pub struct NumericFeatureBufferArena {
 }
 
 impl NumericFeatureBuffer {
+    /// Check the public descriptors against the immutable storage and index.
+    /// Callers may have edited a descriptor after construction.
+    pub fn validate(&self) -> Result<()> {
+        if self.feature_set_id.trim().is_empty()
+            || self.feature_names.is_empty()
+            || self.feature_names.len() != self.columns.len()
+            || self.observation_ids.is_empty()
+            || self.observation_ids.len() != self.row_index_by_observation.len()
+        {
+            return Err(DataError::Validation(
+                "feature buffer descriptors do not match storage".into(),
+            ));
+        }
+        let mut names = BTreeSet::new();
+        if self
+            .feature_names
+            .iter()
+            .any(|name| name.trim().is_empty() || !names.insert(name))
+        {
+            return Err(DataError::Validation(
+                "feature buffer contains empty or duplicate feature names".into(),
+            ));
+        }
+        for (idx, observation) in self.observation_ids.iter().enumerate() {
+            if self.row_index_by_observation.get(observation) != Some(&idx) {
+                return Err(DataError::Validation(
+                    "feature buffer observation descriptors do not match row index".into(),
+                ));
+            }
+        }
+        if self
+            .columns
+            .iter()
+            .any(|column| column.len() != self.observation_ids.len())
+        {
+            return Err(DataError::Validation(
+                "feature buffer column length differs from observation count".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn from_feature_table(table: CoordinatorFeatureTable) -> Result<Self> {
         table.validate()?;
         let row_count = table.rows.len();
@@ -247,6 +289,7 @@ impl NumericFeatureBuffer {
     ///   `Some(0.0)` (whose value bytes are also all zero), so a mask flip is
     ///   never indistinguishable from a real value.
     pub fn fingerprint(&self) -> Result<String> {
+        self.validate()?;
         let mut hasher = StreamingHasher::new(b"dag-ml-data.numeric-feature-buffer.v2\0");
         hasher.absorb_str(&self.feature_set_id);
         hasher.absorb_str(self.representation_id.as_str());
@@ -319,6 +362,7 @@ impl NumericFeatureBuffer {
     }
 
     pub fn selected_indices(&self, columns: Option<&[String]>) -> Result<Vec<usize>> {
+        self.validate()?;
         let index_by_name = self
             .feature_names
             .iter()
@@ -594,6 +638,7 @@ impl NumericFeatureMatrixF64Columnar {
 impl NumericFeatureBufferStore {
     pub fn new(buffers: BTreeMap<String, NumericFeatureBuffer>) -> Result<Self> {
         for (feature_set_id, buffer) in &buffers {
+            buffer.validate()?;
             if feature_set_id != &buffer.feature_set_id {
                 return Err(DataError::Validation(format!(
                     "feature buffer store key `{feature_set_id}` does not match buffer feature_set_id `{}`",
@@ -1002,6 +1047,13 @@ mod tests {
 
     fn relation(observation_id: &str, sample_id: &str, source_id: &str) -> CoordinatorRelation {
         CoordinatorRelation {
+            unit_level: crate::CoordinatorEntityUnitLevel::Observation,
+            unit_id: None,
+            rep_id: None,
+            derived_unit_id: None,
+            component_observation_ids: Vec::new(),
+            sample_influence_weight: None,
+            quality_flag: None,
             observation_id: oid(observation_id),
             sample_id: sid(sample_id),
             target_id: Some(TargetId::new("y").unwrap()),

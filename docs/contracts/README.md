@@ -47,6 +47,33 @@ is disjoint from the CV physical/origin closure; `inference` has no target
 content. V1 writers remain V1 and a V1 document containing the V2 member is
 refused by the runtime contract.
 
+`PredictCohort` and `CoordinatorRelationSet::fingerprint` implement the shared
+cohort and relation-set identities; the latter differs from the source
+`SampleRelationTable` replay key carried at the envelope root. The V2 runtime
+checks exact relation membership, content identities and the cohort digest.
+The envelope parser preserves V1 extension compatibility, reserves
+`predict_cohort` exclusively for V2, and rejects unknown V2 root fields.
+
+PREDICT and EXPLAIN materializations use the cohort relation authority. An
+optional `predict_cohort` on `CoordinatorDataMaterializationRequest` identifies
+an external-test companion read requested by DAG during FIT_CV or REFIT; it
+must equal the envelope authority. Reads without this member keep their
+training authority. DAG owns scheduling and whether such a read is allowed to
+contribute to fitting or scoring.
+
+Coordinator relations preserve unit level/ID, repetition ID, derived unit ID,
+component observation IDs, influence weight and quality flag. C Arrow identity
+exports preserve rich records in an additive UTF-8 `relation_json` column; the
+Python provider decodes it into the same relation fields. Legacy simple
+identity arrays retain the original seven columns.
+
+The planner adds `metadata.adapter_version` and `metadata.adapter_params` to
+new adapt steps. The current planner golden is
+`examples/fixtures/oof_campaign/expected_data_plan_nir_to_tabular_resolved.json`;
+the historical plan and envelope fixtures remain unchanged to qualify replay
+compatibility. Inner alignment requires presence in every source; left
+alignment uses the first presence-mask source as its reference.
+
 ## Parity Oracle v1
 
 Manifest: `parity_oracle.v1.json`

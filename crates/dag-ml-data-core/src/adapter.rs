@@ -291,8 +291,11 @@ impl AdapterRegistry {
             adapter_ids: Vec::new(),
         });
 
-        let mut best_seen: BTreeMap<RepresentationNode, (u64, usize)> = BTreeMap::new();
-        best_seen.insert(start.clone(), (0, 0));
+        // Cost dominance is valid only at the same hop budget. A cheaper
+        // arrival with more hops may have no remaining budget to reach the goal.
+        let mut best_seen: BTreeMap<(RepresentationNode, usize), u64> = BTreeMap::new();
+        best_seen.insert((start.clone(), 0), 0);
+        let mut cost_overflow = false;
         let mut best_goal: Option<(u64, usize, u64)> = None;
         let mut goal_paths = Vec::new();
 
@@ -321,15 +324,25 @@ impl AdapterRegistry {
                     continue;
                 }
                 let next = adapter.target();
-                let score = state.score + adapter_score(adapter, policy);
-                let raw_cost = state.raw_cost + adapter.cost;
                 let hops = state.hops + 1;
-                if best_seen.get(&next).is_some_and(|(best_score, best_hops)| {
-                    (score, hops) > (*best_score, *best_hops)
-                }) {
+                let Some(score) =
+                    adapter_score(adapter, policy).and_then(|score| state.score.checked_add(score))
+                else {
+                    cost_overflow = true;
+                    continue;
+                };
+                let Some(raw_cost) = state.raw_cost.checked_add(adapter.cost) else {
+                    cost_overflow = true;
+                    continue;
+                };
+                let key = (next.clone(), hops);
+                if best_seen
+                    .get(&key)
+                    .is_some_and(|best_score| score > *best_score)
+                {
                     continue;
                 }
-                best_seen.insert(next.clone(), (score, hops));
+                best_seen.insert(key, score);
                 let mut adapter_ids = state.adapter_ids.clone();
                 adapter_ids.push(adapter.id.clone());
                 heap.push(SearchState {
@@ -344,7 +357,11 @@ impl AdapterRegistry {
 
         if goal_paths.is_empty() {
             return PathResolution::unresolved(
-                "no_path",
+                if cost_overflow {
+                    "cost_overflow"
+                } else {
+                    "no_path"
+                },
                 format!(
                     "no adapter path from `{}/{}` to `{}/{}`",
                     source_type, source_representation, target_type, target_representation
@@ -372,11 +389,21 @@ impl AdapterRegistry {
             .iter()
             .map(|id| self.adapters.get(id).expect("path adapter exists").clone())
             .collect::<Vec<_>>();
-        let total_cost = adapters.iter().map(|adapter| adapter.cost).sum();
-        let effective_score = adapters
+        // Every queued state was checked; use the checked totals of the
+        // selected path as well, without repeating unchecked arithmetic.
+        let total_cost = adapters
             .iter()
-            .map(|adapter| adapter_score(adapter, policy))
-            .sum();
+            .try_fold(0u64, |sum, adapter| sum.checked_add(adapter.cost));
+        let effective_score = adapters.iter().try_fold(0u64, |sum, adapter| {
+            sum.checked_add(adapter_score(adapter, policy)?)
+        });
+        let (Some(total_cost), Some(effective_score)) = (total_cost, effective_score) else {
+            return PathResolution::unresolved(
+                "cost_overflow",
+                "adapter path cost exceeds u64".into(),
+                Vec::new(),
+            );
+        };
         PathResolution::resolved(AdapterPath {
             adapters,
             total_cost,
@@ -412,8 +439,8 @@ impl PartialOrd for SearchState {
     }
 }
 
-fn adapter_score(adapter: &AdapterSpec, policy: &PlanningPolicy) -> u64 {
-    let mut score = adapter.cost.max(1);
+fn adapter_score(adapter: &AdapterSpec, policy: &PlanningPolicy) -> Option<u64> {
+    let mut score = u128::from(adapter.cost.max(1));
     if adapter.lossy {
         score += 1_000_000;
     }
@@ -426,7 +453,7 @@ fn adapter_score(adapter: &AdapterSpec, policy: &PlanningPolicy) -> u64 {
     if policy.preferred_adapters.contains(&adapter.id) {
         score = score.saturating_sub(1);
     }
-    score
+    u64::try_from(score).ok()
 }
 
 fn validate_name(kind: &str, value: &str) -> Result<()> {
