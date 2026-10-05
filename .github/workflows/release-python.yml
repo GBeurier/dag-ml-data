@@ -7,6 +7,15 @@ on:
         description: "Publish to PyPI (true) or build only (false)"
         type: boolean
         default: false
+      release_tag:
+        description: "Immutable stable release tag to retry"
+        required: false
+        default: ""
+      macos_arm_runner:
+        description: "Runner for the aarch64 macOS wheel (Intel supports cross compilation)"
+        type: choice
+        options: [macos-14, macos-15-intel]
+        default: macos-14
   push:
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
@@ -25,7 +34,7 @@ env:
 jobs:
   build-wheels:
     name: Build ${{ matrix.target }} wheel
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.label == 'macos-aarch64' && (inputs.macos_arm_runner || matrix.os) || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +61,17 @@ jobs:
             smoke: true
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+      - name: Verify immutable manual release source
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Expected a stable vX.Y.Z tag"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
@@ -83,6 +103,17 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+      - name: Verify immutable manual release source
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Expected a stable vX.Y.Z tag"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
@@ -112,6 +143,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
@@ -120,6 +153,8 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           package_version=$(python - <<'PY'
@@ -128,10 +163,11 @@ jobs:
               print(tomllib.load(handle)["project"]["version"])
           PY
           )
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" || -n "${RELEASE_TAG}" ]]; then
+            source_tag="${RELEASE_TAG:-$GITHUB_REF_NAME}"
+            tag_version="${source_tag#v}"
             if [[ "${tag_version}" != "${package_version}" ]]; then
-              echo "::error::Tag ${GITHUB_REF_NAME} does not match ${PACKAGE_NAME} ${package_version}."
+              echo "::error::Tag ${source_tag} does not match ${PACKAGE_NAME} ${package_version}."
               exit 1
             fi
           fi
@@ -165,7 +201,7 @@ jobs:
       - build-wheels
       - build-sdist
     runs-on: ubuntu-22.04
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.event_name != 'workflow_dispatch' }}
+    if: ${{ (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.event_name != 'workflow_dispatch') || (github.event_name == 'workflow_dispatch' && inputs.publish && inputs.release_tag != '') }}
     permissions:
       contents: write
     steps:
@@ -175,4 +211,5 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: dist/*
