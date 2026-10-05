@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from publish_crates import workspace_crates as ordered_publish_crates
+
 
 @dataclass(frozen=True)
 class Crate:
@@ -109,6 +111,7 @@ def main() -> None:
 
     repo = Path(__file__).resolve().parents[2]
     version, crates = workspace_crates(repo)
+    _, ordered = ordered_publish_crates(repo)
     roots = [crate.name for crate in crates if not crate.internal_deps]
     dependents = [crate for crate in crates if crate.internal_deps]
     require(roots, "publish plan must include at least one root crate")
@@ -118,6 +121,7 @@ def main() -> None:
         f"validated publish plan for {len(crates)} crate(s) at {version}; "
         f"dry-run roots={','.join(roots)}; "
         f"internal-dependent={','.join(crate.name for crate in dependents) or 'none'}"
+        f"; publish-order={' -> '.join(crate.name for crate in ordered)}"
     )
 
 
