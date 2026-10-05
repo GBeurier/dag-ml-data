@@ -66,6 +66,7 @@ jobs:
           fetch-depth: 0
       - name: Verify immutable manual release source
         if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: bash
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
