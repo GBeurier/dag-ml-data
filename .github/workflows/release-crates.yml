@@ -14,7 +14,7 @@ on:
       runner:
         description: "Hosted runner for a manual retry"
         type: choice
-        options: [ubuntu-latest, ubuntu-22.04]
+        options: [ubuntu-latest, ubuntu-22.04, macos-15-intel]
         default: ubuntu-latest
   push:
     tags:
@@ -62,9 +62,10 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != 'false' && '1' || '' }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          INDEX_DELAY: ${{ github.event_name == 'workflow_dispatch' && inputs.runner == 'macos-15-intel' && '30' || '120' }}
         run: |
           set -euo pipefail
-          args=()
+          args=(--sleep-seconds "$INDEX_DELAY")
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             args+=(--tag "$GITHUB_REF_NAME")
           elif [[ -n "${RELEASE_TAG}" ]]; then
