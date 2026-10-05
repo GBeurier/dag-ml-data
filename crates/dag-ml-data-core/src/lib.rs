@@ -26,6 +26,7 @@ pub mod model;
 pub mod nd_tensor;
 pub mod plan;
 pub mod planner;
+pub mod predict_cohort;
 pub mod relation;
 pub mod representation_registry;
 
@@ -47,5 +48,6 @@ pub use model::*;
 pub use nd_tensor::*;
 pub use plan::*;
 pub use planner::*;
+pub use predict_cohort::*;
 pub use relation::*;
 pub use representation_registry::*;

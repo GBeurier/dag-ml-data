@@ -136,9 +136,12 @@ pub fn collate_numeric_block(
     validate_feature_names_for_collation(block, policy, target_len)?;
 
     let batch = block.rows.len();
-    let mut values = Vec::with_capacity(batch * target_len);
-    let mut presence = Vec::with_capacity(batch * target_len);
-    let mut validity = Vec::with_capacity(batch * target_len);
+    let cells = batch.checked_mul(target_len).ok_or_else(|| {
+        DataError::Validation("collation dimensions exceed addressable capacity".into())
+    })?;
+    let mut values = reserve_collation::<f64>(cells)?;
+    let mut presence = reserve_collation::<bool>(cells)?;
+    let mut validity = reserve_collation::<bool>(cells)?;
     let mut has_invalid = false;
     for row in &block.rows {
         let projected = project_row(row, target_len, policy)?;
@@ -176,6 +179,14 @@ pub fn collate_numeric_block(
 struct ProjectedRow {
     values: Vec<Option<f64>>,
     presence: Vec<bool>,
+}
+
+fn reserve_collation<T>(len: usize) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|error| DataError::Validation(format!("collation allocation failed: {error}")))?;
+    Ok(values)
 }
 
 fn validate_collation_policy(policy: &CollationPolicy) -> Result<()> {
@@ -393,8 +404,8 @@ fn project_row(
         CollationPadding::Left => (missing, 0),
         CollationPadding::Center => (missing / 2, missing - (missing / 2)),
     };
-    let mut values = Vec::with_capacity(target_len);
-    let mut presence = Vec::with_capacity(target_len);
+    let mut values = reserve_collation::<Option<f64>>(target_len)?;
+    let mut presence = reserve_collation::<bool>(target_len)?;
     values.extend(std::iter::repeat_n(None, left_pad));
     presence.extend(std::iter::repeat_n(false, left_pad));
     values.extend(truncated);

@@ -239,7 +239,7 @@ class InMemoryProvider:
                 _utf8_values(children[5]),
                 _bool_values(children[6]),
             ]
-            return [
+            rows = [
                 {
                     "observation_id": columns[0][idx],
                     "sample_id": columns[1][idx],
@@ -251,6 +251,11 @@ class InMemoryProvider:
                 }
                 for idx in range(array.contents.length)
             ]
+            for idx in range(7, schema.contents.n_children):
+                if schema.contents.children[idx].contents.name == b"relation_json":
+                    for row, document in zip(rows, _utf8_values(children[idx])):
+                        row.update(json.loads(document))
+            return rows
         finally:
             self._lib.dagmldata_arrow_array_free(array)
             self._lib.dagmldata_arrow_schema_free(schema)

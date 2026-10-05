@@ -844,7 +844,7 @@ impl DatasetSchema {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataView {
     pub sample_ids: Option<Vec<SampleId>>,
@@ -860,6 +860,22 @@ pub struct DataView {
     pub branch_view: Option<crate::coordinator::CoordinatorBranchView>,
     #[serde(default)]
     pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl Default for DataView {
+    fn default() -> Self {
+        Self {
+            sample_ids: None,
+            partition: None,
+            fold_id: None,
+            source_ids: None,
+            columns: None,
+            include_augmented: true,
+            include_excluded: false,
+            branch_view: None,
+            extra: BTreeMap::new(),
+        }
+    }
 }
 
 fn default_true() -> bool {

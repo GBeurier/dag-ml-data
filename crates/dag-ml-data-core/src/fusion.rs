@@ -542,6 +542,13 @@ fn validate_alignment_presence<'a>(
     row_maps: &BTreeMap<&'a SourceId, BTreeMap<&'a SampleId, Vec<usize>>>,
 ) -> Result<()> {
     for (idx, sample_id) in alignment.sample_ids.iter().enumerate() {
+        if alignment.mode == crate::alignment::AlignmentMode::Left
+            && !row_maps[&blocks[0].source_id].contains_key(sample_id)
+        {
+            return Err(DataError::Validation(format!(
+                "left alignment sample `{sample_id}` is absent from the reference source"
+            )));
+        }
         if !alignment.masks.iter().any(|mask| mask.present[idx]) {
             return Err(DataError::Validation(format!(
                 "alignment sample `{sample_id}` is absent from every fused source"

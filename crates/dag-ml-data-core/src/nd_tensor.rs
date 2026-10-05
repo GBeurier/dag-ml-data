@@ -631,6 +631,13 @@ mod tests {
 
     fn relation(observation: &str, sample: &str, source: &str) -> CoordinatorRelation {
         CoordinatorRelation {
+            unit_level: crate::CoordinatorEntityUnitLevel::Observation,
+            unit_id: None,
+            rep_id: None,
+            derived_unit_id: None,
+            component_observation_ids: Vec::new(),
+            sample_influence_weight: None,
+            quality_flag: None,
             observation_id: ObservationId::new(observation).unwrap(),
             sample_id: SampleId::new(sample).unwrap(),
             target_id: None,

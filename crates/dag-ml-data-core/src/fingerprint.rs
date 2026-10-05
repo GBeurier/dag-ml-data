@@ -80,6 +80,12 @@ fn canonical_typed_json<T: serde::Serialize + serde::de::DeserializeOwned>(
     Ok(serde_json::to_vec(&canonical)?)
 }
 
+pub(crate) fn typed_fingerprint<T: serde::Serialize + serde::de::DeserializeOwned>(
+    value: &T,
+) -> Result<String> {
+    Ok(to_hex(&Sha256::digest(canonical_typed_json(value)?)))
+}
+
 fn remove_empty_fold_set_maps(value: &mut serde_json::Value) {
     let Some(object) = value.as_object_mut() else {
         return;

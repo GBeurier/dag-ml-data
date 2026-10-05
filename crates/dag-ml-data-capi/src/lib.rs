@@ -4265,7 +4265,30 @@ fn build_identity_relations_arrow(
 ) -> dag_ml_data_core::Result<(ArrowArray, ArrowSchema)> {
     relations.validate()?;
     let records = &relations.records;
-    let child_arrays = vec![
+    // Preserve the seven-column legacy prefix. Rich relation identities use
+    // an additive JSON column so arbitrary metadata and component IDs survive
+    // Arrow transport without flattening scientific identity into positions.
+    let rich = records.iter().any(|row| {
+        row.unit_level != dag_ml_data_core::CoordinatorEntityUnitLevel::Observation
+            || row.unit_id.is_some()
+            || row.rep_id.is_some()
+            || row.derived_unit_id.is_some()
+            || !row.component_observation_ids.is_empty()
+            || row.sample_influence_weight.is_some()
+            || row.quality_flag.is_some()
+            || row.excluded
+            || !row.metadata.is_empty()
+            || !row.tags.is_empty()
+    });
+    let relation_json = if rich {
+        records
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+    let mut child_arrays = vec![
         Box::into_raw(Box::new(string_array(
             records
                 .iter()
@@ -4292,7 +4315,7 @@ fn build_identity_relations_arrow(
             records.iter().map(|record| record.is_augmented),
         ))),
     ];
-    let child_schemas = vec![
+    let mut child_schemas = vec![
         Box::into_raw(Box::new(field_schema("observation_id", "u", false)?)),
         Box::into_raw(Box::new(field_schema("sample_id", "u", false)?)),
         Box::into_raw(Box::new(field_schema("target_id", "u", true)?)),
@@ -4301,6 +4324,16 @@ fn build_identity_relations_arrow(
         Box::into_raw(Box::new(field_schema("source_id", "u", true)?)),
         Box::into_raw(Box::new(field_schema("is_augmented", "b", false)?)),
     ];
+    if rich {
+        child_arrays.push(Box::into_raw(Box::new(string_array(
+            relation_json.iter().map(|row| Some(row.as_str())),
+        )?)));
+        child_schemas.push(Box::into_raw(Box::new(field_schema(
+            "relation_json",
+            "u",
+            false,
+        )?)));
+    }
     Ok((
         struct_array(records.len(), child_arrays),
         struct_schema("coordinator_identity", child_schemas)?,
@@ -4685,7 +4718,8 @@ fn schema(
         format: private.format.as_ptr(),
         name: private.name.as_ptr(),
         metadata: std::ptr::null(),
-        flags: if nullable { 1 } else { 0 },
+        // Arrow C Data: bit 0 is dictionary ordering, bit 1 is nullable.
+        flags: if nullable { 2 } else { 0 },
         n_children: child_count,
         children: private.children.as_ptr() as *mut *mut ArrowSchema,
         dictionary: std::ptr::null_mut(),
@@ -4794,6 +4828,34 @@ unsafe extern "C" fn release_schema(schema: *mut ArrowSchema) {
 mod tests {
     use super::*;
     use std::ffi::CStr;
+
+    #[test]
+    fn arrow_consumer_imports_nullable_identity_fields() {
+        let envelope: CoordinatorDataPlanEnvelope = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        let (_array, schema) = build_identity_arrow(&envelope).unwrap();
+        let imported = arrow_schema::Schema::try_from(unsafe {
+            &*((&schema as *const ArrowSchema).cast::<arrow_schema::ffi::FFI_ArrowSchema>())
+        })
+        .unwrap();
+        assert!(imported.field_with_name("group_id").unwrap().is_nullable());
+        assert!(imported.field_with_name("target_id").unwrap().is_nullable());
+        assert!(!imported
+            .field_with_name("observation_id")
+            .unwrap()
+            .is_nullable());
+        // Drop through our owning types, not the borrowed consumer layout.
+        let mut schema = schema;
+        unsafe {
+            schema.release.unwrap()(&mut schema);
+        }
+        let mut array = _array;
+        unsafe {
+            array.release.unwrap()(&mut array);
+        }
+    }
 
     #[test]
     fn fingerprints_schema_json_over_abi() {
@@ -9358,6 +9420,7 @@ mod tests {
         let envelope =
             CoordinatorDataPlanEnvelope::from_parts(schema, plan, Some(&relations)).unwrap();
         let request = CoordinatorDataMaterializationRequest {
+            predict_cohort: None,
             run_id: "run:test".to_string(),
             node_id: "node:model".to_string(),
             input_name: "X".to_string(),
@@ -9439,6 +9502,7 @@ mod tests {
         let plan_fingerprint = data_plan_fingerprint(&plan).unwrap();
         let schema_fingerprint = "a".repeat(64);
         let envelope = CoordinatorDataPlanEnvelope {
+            predict_cohort: None,
             schema_version: dag_ml_data_core::COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
             schema_fingerprint: schema_fingerprint.clone(),
             plan_fingerprint: plan_fingerprint.clone(),
@@ -9449,6 +9513,13 @@ mod tests {
             coordinator_relations: Some(CoordinatorRelationSet {
                 records: vec![
                     CoordinatorRelation {
+                        unit_level: dag_ml_data_core::CoordinatorEntityUnitLevel::Observation,
+                        unit_id: None,
+                        rep_id: None,
+                        derived_unit_id: None,
+                        component_observation_ids: Vec::new(),
+                        sample_influence_weight: None,
+                        quality_flag: None,
                         observation_id: ObservationId::new("obs.S001.r1").unwrap(),
                         sample_id: SampleId::new("S001").unwrap(),
                         target_id: None,
@@ -9461,6 +9532,13 @@ mod tests {
                         tags: Vec::new(),
                     },
                     CoordinatorRelation {
+                        unit_level: dag_ml_data_core::CoordinatorEntityUnitLevel::Observation,
+                        unit_id: None,
+                        rep_id: None,
+                        derived_unit_id: None,
+                        component_observation_ids: Vec::new(),
+                        sample_influence_weight: None,
+                        quality_flag: None,
                         observation_id: ObservationId::new("obs.S001.r2").unwrap(),
                         sample_id: SampleId::new("S001").unwrap(),
                         target_id: None,
@@ -9473,6 +9551,13 @@ mod tests {
                         tags: Vec::new(),
                     },
                     CoordinatorRelation {
+                        unit_level: dag_ml_data_core::CoordinatorEntityUnitLevel::Observation,
+                        unit_id: None,
+                        rep_id: None,
+                        derived_unit_id: None,
+                        component_observation_ids: Vec::new(),
+                        sample_influence_weight: None,
+                        quality_flag: None,
                         observation_id: ObservationId::new("obs.S002.r1").unwrap(),
                         sample_id: SampleId::new("S002").unwrap(),
                         target_id: None,
@@ -9485,6 +9570,13 @@ mod tests {
                         tags: Vec::new(),
                     },
                     CoordinatorRelation {
+                        unit_level: dag_ml_data_core::CoordinatorEntityUnitLevel::Observation,
+                        unit_id: None,
+                        rep_id: None,
+                        derived_unit_id: None,
+                        component_observation_ids: Vec::new(),
+                        sample_influence_weight: None,
+                        quality_flag: None,
                         observation_id: ObservationId::new("chem.S001").unwrap(),
                         sample_id: SampleId::new("S001").unwrap(),
                         target_id: None,
@@ -9497,6 +9589,13 @@ mod tests {
                         tags: Vec::new(),
                     },
                     CoordinatorRelation {
+                        unit_level: dag_ml_data_core::CoordinatorEntityUnitLevel::Observation,
+                        unit_id: None,
+                        rep_id: None,
+                        derived_unit_id: None,
+                        component_observation_ids: Vec::new(),
+                        sample_influence_weight: None,
+                        quality_flag: None,
                         observation_id: ObservationId::new("chem.S002").unwrap(),
                         sample_id: SampleId::new("S002").unwrap(),
                         target_id: None,
@@ -9514,6 +9613,7 @@ mod tests {
         };
         envelope.validate().unwrap();
         let request = CoordinatorDataMaterializationRequest {
+            predict_cohort: None,
             run_id: "run:test".to_string(),
             node_id: "node:model".to_string(),
             input_name: "X".to_string(),

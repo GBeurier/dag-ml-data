@@ -25,3 +25,6 @@ dag-ml-data-core.workspace = true
 dag-ml-data-provider.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+arrow-schema = { version = "53", features = ["ffi"] }

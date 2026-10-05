@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from dag_ml_data_provider import (
+    __version__,
     InMemoryProvider,
     NativeLibraryIntegrityError,
     NativeLibraryNotFoundError,
@@ -227,7 +228,7 @@ def _write_bundle(root: Path, payload: bytes = b"native-test-library") -> Path:
     manifest = {
         "schema_version": 1,
         "package": "dag-ml-data-provider",
-        "package_version": "0.2.12",
+        "package_version": __version__,
         "cargo_package": "dag-ml-data-capi",
         "library": library.name,
         "sha256": hashlib.sha256(payload).hexdigest(),
@@ -316,3 +317,18 @@ def test_package_provider_releases_buffers_and_rejects_use_after_close(
         provider.materialize_file(_REQUEST)
     with pytest.raises(RuntimeError, match="provider is closed"):
         provider.release(1)
+
+
+def test_scientific_relations_survive_c_arrow_transport():
+    envelope = json.loads(_ENVELOPE.read_text())
+    row = envelope["coordinator_relations"]["records"][0]
+    row.update(unit_level="combo", unit_id="S001.combo", rep_id="rep.0",
+               derived_unit_id="derived.S001", component_observation_ids=["obs.S001.base"],
+               sample_influence_weight=0.25, quality_flag="ok", metadata={"z": {"b": 2, "a": 1}}, tags=["rich"])
+    with InMemoryProvider(json.dumps(envelope).encode()) as provider:
+        data = provider.materialize(json.loads(_REQUEST.read_text()))
+        view = provider.make_view(data, {"sample_ids": ["S001"]})
+        exported = next(item for item in provider.view_identity(view) if item["observation_id"] == row["observation_id"])
+        for key in ("unit_level", "unit_id", "rep_id", "derived_unit_id", "component_observation_ids",
+                    "sample_influence_weight", "quality_flag", "metadata", "tags"):
+            assert exported[key] == row[key]

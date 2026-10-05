@@ -25,7 +25,7 @@ pub struct CoordinatorHandleRef {
     pub owner_controller: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CoordinatorDataMaterializationRequest {
     pub run_id: String,
     pub node_id: String,
@@ -45,6 +45,9 @@ pub struct CoordinatorDataMaterializationRequest {
     pub source_ids: Vec<SourceId>,
     #[serde(default)]
     pub require_relations: bool,
+    /// Explicit cohort authority for a companion read, supplied by DAG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predict_cohort: Option<crate::PredictCohort>,
 }
 
 impl CoordinatorDataMaterializationRequest {
@@ -278,9 +281,7 @@ impl CoordinatorHandleArena {
         envelope.validate()?;
         request.validate()?;
         validate_request_against_envelope(envelope, request)?;
-        let scoped_relations = envelope
-            .coordinator_relations
-            .as_ref()
+        let scoped_relations = materialization_relations(envelope, request)?
             .map(|relations| scoped_relations_for_materialization(relations, request))
             .transpose()?;
 
@@ -693,7 +694,7 @@ fn validate_request_against_envelope(
             actual: request.relation_fingerprint.clone().unwrap_or_else(none),
         });
     }
-    if request.require_relations && envelope.coordinator_relations.is_none() {
+    if request.require_relations && materialization_relations(envelope, request)?.is_none() {
         return Err(DataError::Validation(format!(
             "materialization request `{}` on `{}` requires coordinator relations",
             request.input_name, request.node_id
@@ -725,6 +726,42 @@ fn validate_request_against_envelope(
         }
     }
     Ok(())
+}
+
+fn materialization_relations<'a>(
+    envelope: &'a CoordinatorDataPlanEnvelope,
+    request: &CoordinatorDataMaterializationRequest,
+) -> Result<Option<&'a CoordinatorRelationSet>> {
+    let prediction = request.phase.eq_ignore_ascii_case("predict")
+        || request.phase.eq_ignore_ascii_case("explain");
+    if let Some(cohort) = &request.predict_cohort {
+        cohort.validate()?;
+        if envelope.predict_cohort.as_ref() != Some(cohort) {
+            return Err(DataError::Validation(
+                "request predict_cohort does not match envelope authority".into(),
+            ));
+        }
+        let companion = request.phase.eq_ignore_ascii_case("fit_cv")
+            || request.phase.eq_ignore_ascii_case("refit");
+        if !(prediction || companion && cohort.role == crate::PredictCohortRole::ExternalTest) {
+            return Err(DataError::Validation(
+                "request phase cannot read this predict cohort".into(),
+            ));
+        }
+        return Ok(Some(
+            &envelope
+                .predict_cohort
+                .as_ref()
+                .expect("authority checked")
+                .relations,
+        ));
+    }
+    if prediction {
+        if let Some(cohort) = &envelope.predict_cohort {
+            return Ok(Some(&cohort.relations));
+        }
+    }
+    Ok(envelope.coordinator_relations.as_ref())
 }
 
 fn scoped_relations_for_materialization(
@@ -1177,6 +1214,13 @@ mod tests {
             .unwrap()
             .records
             .push(CoordinatorRelation {
+                unit_level: crate::CoordinatorEntityUnitLevel::Observation,
+                unit_id: None,
+                rep_id: None,
+                derived_unit_id: None,
+                component_observation_ids: Vec::new(),
+                sample_influence_weight: None,
+                quality_flag: None,
                 observation_id: ObservationId::new("chem.S001").unwrap(),
                 sample_id: SampleId::new("S001").unwrap(),
                 target_id: Some(TargetId::new("y").unwrap()),
@@ -1324,6 +1368,13 @@ mod tests {
             .unwrap()
             .records
             .push(CoordinatorRelation {
+                unit_level: crate::CoordinatorEntityUnitLevel::Observation,
+                unit_id: None,
+                rep_id: None,
+                derived_unit_id: None,
+                component_observation_ids: Vec::new(),
+                sample_influence_weight: None,
+                quality_flag: None,
                 observation_id: ObservationId::new("chem.S001").unwrap(),
                 sample_id: SampleId::new("S001").unwrap(),
                 target_id: Some(TargetId::new("y").unwrap()),

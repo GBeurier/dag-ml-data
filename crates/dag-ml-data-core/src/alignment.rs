@@ -77,6 +77,24 @@ impl SampleAlignmentPlan {
                 )));
             }
         }
+        for (idx, sample_id) in self.sample_ids.iter().enumerate() {
+            if !self.masks.iter().any(|mask| mask.present[idx]) {
+                return Err(DataError::Validation(format!(
+                    "alignment sample `{sample_id}` is absent from every fused source"
+                )));
+            }
+            let valid = match self.mode {
+                AlignmentMode::Inner => self.masks.iter().all(|mask| mask.present[idx]),
+                AlignmentMode::Left => self.masks[0].present[idx],
+                AlignmentMode::Outer => self.masks.iter().any(|mask| mask.present[idx]),
+            };
+            if !valid {
+                return Err(DataError::Validation(format!(
+                    "alignment presence for sample `{sample_id}` violates {:?} mode",
+                    self.mode
+                )));
+            }
+        }
         Ok(())
     }
 }

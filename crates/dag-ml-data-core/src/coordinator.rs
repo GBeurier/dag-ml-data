@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +10,7 @@ use crate::plan::DataPlan;
 use crate::relation::SampleRelationTable;
 
 pub const COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION: u32 = 1;
+pub const COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2: u32 = 2;
 pub const COORDINATOR_BRANCH_VIEW_SCHEMA_VERSION: u32 = 1;
 pub const COORDINATOR_BRANCH_VIEW_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml-data/schemas/coordinator_branch_view.v1.schema.json";
@@ -18,10 +19,28 @@ fn default_coordinator_data_plan_envelope_schema_version() -> u32 {
     COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorEntityUnitLevel {
+    PhysicalSample,
+    SourceSample,
+    #[default]
+    Observation,
+    Combo,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CoordinatorRelation {
+    #[serde(default)]
+    pub unit_level: CoordinatorEntityUnitLevel,
+    #[serde(default)]
+    pub unit_id: Option<String>,
     pub observation_id: ObservationId,
     pub sample_id: SampleId,
+    #[serde(default)]
+    pub source_id: Option<SourceId>,
+    #[serde(default)]
+    pub rep_id: Option<String>,
     #[serde(default)]
     pub target_id: Option<TargetId>,
     #[serde(default)]
@@ -29,10 +48,16 @@ pub struct CoordinatorRelation {
     #[serde(default)]
     pub origin_sample_id: Option<SampleId>,
     #[serde(default)]
-    pub source_id: Option<SourceId>,
+    pub derived_unit_id: Option<String>,
+    #[serde(default)]
+    pub component_observation_ids: Vec<ObservationId>,
+    #[serde(default)]
+    pub sample_influence_weight: Option<f64>,
+    #[serde(default)]
+    pub quality_flag: Option<String>,
     #[serde(default)]
     pub is_augmented: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub excluded: bool,
     // Metadata + tags carried from the source `SampleRelation` so `by_metadata`
     // and `by_tag` branch views filter natively in the in-memory provider.
@@ -41,6 +66,70 @@ pub struct CoordinatorRelation {
     pub metadata: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl CoordinatorRelation {
+    pub fn new(observation_id: ObservationId, sample_id: SampleId) -> Self {
+        Self {
+            observation_id,
+            sample_id,
+            unit_level: CoordinatorEntityUnitLevel::Observation,
+            unit_id: None,
+            source_id: None,
+            rep_id: None,
+            target_id: None,
+            group_id: None,
+            origin_sample_id: None,
+            derived_unit_id: None,
+            component_observation_ids: Vec::new(),
+            sample_influence_weight: None,
+            quality_flag: None,
+            is_augmented: false,
+            excluded: false,
+            metadata: BTreeMap::new(),
+            tags: Vec::new(),
+        }
+    }
+
+    pub fn effective_unit_id(&self) -> Result<String> {
+        for (label, value) in [
+            ("unit_id", &self.unit_id),
+            ("rep_id", &self.rep_id),
+            ("derived_unit_id", &self.derived_unit_id),
+            ("quality_flag", &self.quality_flag),
+        ] {
+            if value
+                .as_ref()
+                .is_some_and(|text| text.trim().is_empty() || text.chars().any(char::is_control))
+            {
+                return Err(DataError::Validation(format!(
+                    "relation `{}` has invalid {label}",
+                    self.observation_id
+                )));
+            }
+        }
+        if let Some(unit_id) = &self.unit_id {
+            return Ok(unit_id.clone());
+        }
+        match self.unit_level {
+            CoordinatorEntityUnitLevel::PhysicalSample => Ok(self.sample_id.to_string()),
+            CoordinatorEntityUnitLevel::Observation => Ok(self.observation_id.to_string()),
+            CoordinatorEntityUnitLevel::SourceSample => self
+                .source_id
+                .as_ref()
+                .map(|source| format!("{}::{source}", self.sample_id))
+                .ok_or_else(|| {
+                    DataError::Validation("source_sample relation requires source_id".into())
+                }),
+            CoordinatorEntityUnitLevel::Combo => self.derived_unit_id.clone().ok_or_else(|| {
+                DataError::Validation("combo relation requires derived_unit_id".into())
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -241,7 +330,7 @@ impl CoordinatorBranchView {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CoordinatorRelationSet {
     #[serde(default)]
     pub records: Vec<CoordinatorRelation>,
@@ -254,7 +343,8 @@ impl CoordinatorRelationSet {
                 "coordinator relation set contains no records".to_string(),
             ));
         }
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let mut units = BTreeSet::new();
         for record in &self.records {
             if !seen.insert(&record.observation_id) {
                 return Err(DataError::Validation(format!(
@@ -262,12 +352,93 @@ impl CoordinatorRelationSet {
                     record.observation_id
                 )));
             }
+            if !units.insert(record.effective_unit_id()?) {
+                return Err(DataError::Validation(
+                    "coordinator relations contain duplicate unit IDs".into(),
+                ));
+            }
+            if record
+                .sample_influence_weight
+                .is_some_and(|weight| !weight.is_finite() || weight <= 0.0)
+            {
+                return Err(DataError::Validation(
+                    "relation sample_influence_weight must be finite and positive".into(),
+                ));
+            }
+            if record.unit_level != CoordinatorEntityUnitLevel::Combo
+                && !record.component_observation_ids.is_empty()
+            {
+                return Err(DataError::Validation(
+                    "component observations require a combo relation".into(),
+                ));
+            }
+            if record.unit_level == CoordinatorEntityUnitLevel::Combo {
+                if record.derived_unit_id.is_none()
+                    || record.component_observation_ids.is_empty()
+                    || record
+                        .origin_sample_id
+                        .as_ref()
+                        .is_some_and(|origin| origin != &record.sample_id)
+                {
+                    return Err(DataError::Validation(
+                        "combo relation has invalid identity or components".into(),
+                    ));
+                }
+                let mut components = BTreeSet::new();
+                for component in &record.component_observation_ids {
+                    if component == &record.observation_id
+                        || !components.insert(component)
+                        || !self.records.iter().any(|row| {
+                            &row.observation_id == component && row.sample_id == record.sample_id
+                        })
+                    {
+                        return Err(DataError::Validation(
+                            "combo component is missing, repeated or belongs to another sample"
+                                .into(),
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
     }
+
+    /// The shared DAG relation-set identity, distinct from the source-table key.
+    pub fn fingerprint(&self) -> Result<String> {
+        self.validate()?;
+        #[derive(Serialize, Deserialize)]
+        struct CanonicalRecord {
+            effective_unit_id: String,
+            #[serde(flatten)]
+            relation: CoordinatorRelation,
+        }
+        let mut records = self
+            .records
+            .iter()
+            .map(|relation| {
+                Ok(CanonicalRecord {
+                    effective_unit_id: relation.effective_unit_id()?,
+                    relation: relation.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        records.sort_by(|a, b| {
+            (
+                &a.effective_unit_id,
+                &a.relation.observation_id,
+                &a.relation.sample_id,
+            )
+                .cmp(&(
+                    &b.effective_unit_id,
+                    &b.relation.observation_id,
+                    &b.relation.sample_id,
+                ))
+        });
+        crate::fingerprint::typed_fingerprint(&records)
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CoordinatorDataPlanEnvelope {
     #[serde(default = "default_coordinator_data_plan_envelope_schema_version")]
     pub schema_version: u32,
@@ -284,8 +455,85 @@ pub struct CoordinatorDataPlanEnvelope {
     pub plan: DataPlan,
     #[serde(default)]
     pub coordinator_relations: Option<CoordinatorRelationSet>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predict_cohort: Option<crate::PredictCohort>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct CoordinatorEnvelopeWire {
+    #[serde(default = "default_coordinator_data_plan_envelope_schema_version")]
+    schema_version: u32,
+    schema_fingerprint: String,
+    plan_fingerprint: String,
+    #[serde(default)]
+    relation_fingerprint: Option<String>,
+    /// Optional additive identity of the concrete feature/input content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data_content_fingerprint: Option<String>,
+    /// Optional additive identity of the concrete target content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_content_fingerprint: Option<String>,
+    plan: DataPlan,
+    #[serde(default)]
+    coordinator_relations: Option<CoordinatorRelationSet>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    predict_cohort: Option<crate::PredictCohort>,
+    #[serde(default)]
+    metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for CoordinatorDataPlanEnvelope {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let version = value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1);
+        if version == 1 && value.get("predict_cohort").is_some() {
+            return Err(D::Error::custom("envelope V1 cannot carry predict_cohort"));
+        }
+        if version == 2 {
+            let allowed = [
+                "schema_version",
+                "schema_fingerprint",
+                "plan_fingerprint",
+                "relation_fingerprint",
+                "data_content_fingerprint",
+                "target_content_fingerprint",
+                "plan",
+                "coordinator_relations",
+                "predict_cohort",
+                "metadata",
+            ];
+            if value
+                .as_object()
+                .is_some_and(|object| object.keys().any(|key| !allowed.contains(&key.as_str())))
+            {
+                return Err(D::Error::custom(
+                    "envelope V2 contains an unknown root field",
+                ));
+            }
+        }
+        let wire: CoordinatorEnvelopeWire =
+            serde_json::from_value(value).map_err(D::Error::custom)?;
+        Ok(Self {
+            schema_version: wire.schema_version,
+            schema_fingerprint: wire.schema_fingerprint,
+            plan_fingerprint: wire.plan_fingerprint,
+            relation_fingerprint: wire.relation_fingerprint,
+            data_content_fingerprint: wire.data_content_fingerprint,
+            target_content_fingerprint: wire.target_content_fingerprint,
+            plan: wire.plan,
+            coordinator_relations: wire.coordinator_relations,
+            predict_cohort: wire.predict_cohort,
+            metadata: wire.metadata,
+        })
+    }
 }
 
 impl CoordinatorDataPlanEnvelope {
@@ -294,6 +542,51 @@ impl CoordinatorDataPlanEnvelope {
         plan: DataPlan,
         relations: Option<&SampleRelationTable>,
     ) -> Result<Self> {
+        schema.validate()?;
+        for step in &plan.steps {
+            if let Some(source) = &step.source_id {
+                if !schema.sources.iter().any(|declared| &declared.id == source) {
+                    return Err(DataError::Validation(format!(
+                        "plan references undeclared source `{source}`"
+                    )));
+                }
+            }
+        }
+        if let Some(relations) = relations {
+            relations.validate()?;
+            for row in &relations.rows {
+                if !schema.sample_ids.contains(&row.sample_id) && !row.augmented {
+                    return Err(DataError::Validation(format!(
+                        "relation references undeclared sample `{}`",
+                        row.sample_id
+                    )));
+                }
+                if row.source_id.as_ref().is_some_and(|source| {
+                    !schema.sources.iter().any(|declared| &declared.id == source)
+                }) || row
+                    .target_id
+                    .as_ref()
+                    .is_some_and(|target| !schema.targets.contains_key(target))
+                {
+                    return Err(DataError::Validation(
+                        "relation references undeclared source or target".into(),
+                    ));
+                }
+                if row.augmented {
+                    let origin = row.origin_id.as_ref().and_then(|id| {
+                        relations
+                            .rows
+                            .iter()
+                            .find(|base| base.observation_id.as_str() == id.as_str())
+                    });
+                    if !origin.is_some_and(|base| schema.sample_ids.contains(&base.sample_id)) {
+                        return Err(DataError::Validation(
+                            "augmented relation origin is outside the schema".into(),
+                        ));
+                    }
+                }
+            }
+        }
         let schema_fingerprint = schema_fingerprint(schema)?;
         let plan_fingerprint = data_plan_fingerprint(&plan)?;
         let relation_fingerprint = relations.map(sample_relation_fingerprint).transpose()?;
@@ -309,6 +602,7 @@ impl CoordinatorDataPlanEnvelope {
             target_content_fingerprint: None,
             plan,
             coordinator_relations,
+            predict_cohort: None,
             metadata: BTreeMap::new(),
         };
         envelope.validate()?;
@@ -326,11 +620,33 @@ impl CoordinatorDataPlanEnvelope {
     /// `coordinator_relations` is a derived view validated structurally, not
     /// against the fingerprint.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION {
+        if !matches!(self.schema_version, 1 | 2) {
             return Err(DataError::Validation(format!(
                 "coordinator data-plan envelope uses unsupported schema_version {}, expected {}",
                 self.schema_version, COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION
             )));
+        }
+        match (self.schema_version, &self.predict_cohort) {
+            (1, Some(_)) => {
+                return Err(DataError::Validation(
+                    "envelope V1 cannot carry predict_cohort".into(),
+                ))
+            }
+            (2, None) => {
+                return Err(DataError::Validation(
+                    "envelope V2 requires predict_cohort".into(),
+                ))
+            }
+            (_, Some(cohort)) => {
+                cohort.validate()?;
+                if cohort.role == crate::PredictCohortRole::ExternalTest {
+                    let cv = self.coordinator_relations.as_ref().ok_or_else(|| {
+                        DataError::Validation("external_test requires coordinator_relations".into())
+                    })?;
+                    cohort.validate_disjoint(cv)?;
+                }
+            }
+            _ => {}
         }
         validate_fingerprint("schema", &self.schema_fingerprint)?;
         validate_fingerprint("plan", &self.plan_fingerprint)?;
@@ -395,6 +711,13 @@ pub fn coordinator_relations_from_sample_table(
                 })
                 .transpose()?;
             Ok(CoordinatorRelation {
+                unit_level: CoordinatorEntityUnitLevel::Observation,
+                unit_id: None,
+                rep_id: row.repetition_id.as_ref().map(ToString::to_string),
+                derived_unit_id: None,
+                component_observation_ids: Vec::new(),
+                sample_influence_weight: None,
+                quality_flag: None,
                 observation_id: row.observation_id.clone(),
                 sample_id: row.sample_id.clone(),
                 target_id: row.target_id.clone(),
@@ -526,7 +849,7 @@ mod tests {
     fn envelope_refuses_unsupported_schema_version() {
         let mut envelope =
             CoordinatorDataPlanEnvelope::from_parts(&load_schema(), load_plan(), None).unwrap();
-        envelope.schema_version = COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION + 1;
+        envelope.schema_version = COORDINATOR_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2 + 1;
 
         assert!(envelope.validate().is_err());
     }

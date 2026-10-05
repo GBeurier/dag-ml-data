@@ -1,7 +1,7 @@
 # Supported Surface
 
 This page is the 0.2.x RC support contract for `dag-ml-data` (current package
-version: 0.2.12). It separates
+version: 0.2.13). It separates
 production-facing data contracts from conformance providers and backlog work.
 The 0.2.x surface includes the built-in scientific data-model catalogue helpers
 (`builtin_data_models`, `builtin_representations`, `builtin_adapter_registry`,
@@ -56,6 +56,20 @@ The public vtable ABI version shared with `dag-ml` must remain guarded so
 `dag_ml_data.h` and `dag_ml.h` compile in both include orders.
 
 ## Public-Signature Policy
+
+The October 2026 corrective release completes the published V2 envelope and
+scientific relation fields. Rust callers constructing `CoordinatorRelation` or
+`CoordinatorDataMaterializationRequest` literals must supply the additive fields;
+`CoordinatorRelation::new` supplies defaults. `CoordinatorRelation` and its set
+implement `PartialEq`, because influence weights are floating point values.
+The C header, provider vtable version 2 and layout are unchanged. Rich identity
+exports append a `relation_json` Arrow string column; the seven legacy columns
+retain their order, and simple identities retain their original shape.
+
+New planner outputs attest `adapter_version` and `adapter_params` in each adapt
+step's metadata. This intentionally changes new plan fingerprints. Existing
+serialized plans and their fingerprints remain valid; replay must retain its
+stored plan instead of substituting a newly planned conversion.
 
 For the 0.2.x RC release window:
 

@@ -11,3 +11,11 @@ homepage.workspace = true
 
 [dependencies]
 dag-ml-data-core.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+dag-ml-data-provider.workspace = true
+dag-ml-data-arrow.workspace = true
+arrow-array = "53"
+arrow-schema = "53"
+arrow-ipc = "53"

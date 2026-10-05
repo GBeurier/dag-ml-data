@@ -54,10 +54,40 @@ pub fn plan_model_input(
     let mut align_idx = 0usize;
 
     for port in &model_input.ports {
-        let resolved = candidate_sources
+        let mut resolved = candidate_sources
             .iter()
             .filter_map(|source| resolve_source(source, port, adapters, &request.planning_policy))
             .collect::<Vec<_>>();
+
+        if port.multi_source && resolved.len() > 1 {
+            // Negotiate one accepted type/representation for every source
+            // eligible for this port, rather than resolving each independently.
+            let eligible = resolved.iter().map(|item| item.source).collect::<Vec<_>>();
+            let mut common = None;
+            'targets: for target_type in &port.accepted_types {
+                for representation in &port.accepted_representations {
+                    let mut target_port = port.clone();
+                    target_port.accepted_types = vec![target_type.clone()];
+                    target_port.accepted_representations = vec![representation.clone()];
+                    let plans = eligible
+                        .iter()
+                        .map(|source| {
+                            resolve_source(source, &target_port, adapters, &request.planning_policy)
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    if let Some(plans) = plans {
+                        common = Some(plans);
+                        break 'targets;
+                    }
+                }
+            }
+            resolved = common.ok_or_else(|| {
+                DataError::Validation(format!(
+                    "model input port `{}` has no common accepted representation for its sources",
+                    port.name
+                ))
+            })?;
+        }
 
         if resolved.is_empty() {
             if port.optional {
@@ -108,6 +138,14 @@ pub fn plan_model_input(
                     fit_scope: adapter.fit_scope,
                     requires_user_choice: false,
                     metadata: BTreeMap::from([
+                        (
+                            "adapter_version".to_string(),
+                            serde_json::Value::String(adapter.version),
+                        ),
+                        (
+                            "adapter_params".to_string(),
+                            serde_json::to_value(&adapter.params)?,
+                        ),
                         (
                             "input".to_string(),
                             serde_json::Value::String(current_output),
@@ -342,7 +380,7 @@ mod tests {
         )
         .unwrap();
         let expected: DataPlan = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/oof_campaign/expected_data_plan_nir_to_tabular.json"
+            "../../../examples/fixtures/oof_campaign/expected_data_plan_nir_to_tabular_resolved.json"
         ))
         .unwrap();
 
