@@ -7,6 +7,15 @@ on:
         description: "Run cargo publish --dry-run only"
         required: false
         default: "true"
+      release_tag:
+        description: "Immutable release tag to retry (required for a real manual publication)"
+        required: false
+        default: ""
+      runner:
+        description: "Hosted runner for a manual retry"
+        type: choice
+        options: [ubuntu-latest, ubuntu-22.04]
+        default: ubuntu-latest
   push:
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
@@ -23,9 +32,20 @@ concurrency:
 
 jobs:
   publish-crates:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+      - name: Verify immutable manual release source
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Expected a stable vX.Y.Z tag"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v7
         with:
@@ -41,15 +61,18 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != 'false' && '1' || '' }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           args=()
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             args+=(--tag "$GITHUB_REF_NAME")
+          elif [[ -n "${RELEASE_TAG}" ]]; then
+            args+=(--tag "$RELEASE_TAG")
           fi
           if [[ -n "${DRY_RUN}" ]]; then
             args+=(--dry-run)
-          elif [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then
+          elif [[ "${GITHUB_REF_TYPE:-}" != "tag" && -z "${RELEASE_TAG}" ]]; then
             echo "::error::non-dry-run publishing must run from a release tag"
             exit 1
           fi
