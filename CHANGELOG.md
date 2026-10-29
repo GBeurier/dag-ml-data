@@ -10,6 +10,16 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-10-29
+
+### Fixed
+
+- Pin SHA-2 to 0.11.0 so fresh dependency resolution retains the declared Rust
+  1.85 support. The published 0.2.13 artifacts are unchanged; this patch ships
+  the corrected dependency metadata as a new version.
+- Synchronize Rust, Python/provider and R binding package versions. No schema,
+  serialization, C ABI or fingerprint algorithm changes are introduced.
+
 ## [0.2.13] - 2026-10-05
 
 ### Fixed
@@ -195,7 +205,8 @@ Foundation scaffold. Executable Rust crates with:
 - Object-level Python APIs above the JSON-contract PyO3 bindings and ctypes
   provider smoke (roadmap workstream D).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.13...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.14...HEAD
+[0.2.14]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.10...v0.2.11
