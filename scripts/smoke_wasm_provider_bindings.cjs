@@ -87,22 +87,29 @@ const featureMatrices = [
   },
 ];
 
-// A missing target must be refused, never served back as a number: the browser
-// host serialises NaN as `null` (JSON.stringify(NaN)), and "NaN" is the string
-// spelling. Both constructors (JSON and typed Float64Array values) must refuse.
-for (const [label, missing, fragment] of [
-  ["null", JSON.parse(JSON.stringify(NaN)), "a missing (null) value"],
-  ["string NaN", "NaN", "a non-numeric string value"],
-]) {
-  const badTargets = JSON.stringify([
+const { values: typedValues, ...typedMeta } = featureMatrices[0];
+const targetTablesWith = (s001, s002) =>
+  JSON.stringify([
     {
       target_id: "y",
       values: [
-        { sample_id: "S001", value: 42.0 },
-        { sample_id: "S002", value: missing },
+        { sample_id: "S001", value: s001 },
+        { sample_id: "S002", value: s002 },
       ],
     },
   ]);
+
+// A missing or malformed target must be refused, never served back as data: the
+// browser host serialises NaN as `null` (JSON.stringify(NaN)), and "NaN" is the
+// string spelling. Nested and ragged vectors are refused too. Both constructors
+// (JSON and typed Float64Array values) must refuse.
+for (const [label, s001, s002, fragment] of [
+  ["null", 42.0, JSON.parse(JSON.stringify(NaN)), "a missing (null) value"],
+  ["string NaN", 42.0, "NaN", "a non-numeric string value"],
+  ["nested vector", [[1.0], [2.0]], [1.0, 2.0], "a nested array"],
+  ["ragged vector", [1.0, 2.0], [1.0, 2.0, 3.0], "a vector of 3 values"],
+]) {
+  const badTargets = targetTablesWith(s001, s002);
   requireContractRefusal(
     () =>
       new dagMlData.WasmInMemoryProvider(
@@ -114,7 +121,6 @@ for (const [label, missing, fragment] of [
     fragment,
     `provider-feature JSON constructor accepted a ${label} target`,
   );
-  const { values: typedValues, ...typedMeta } = featureMatrices[0];
   requireContractRefusal(
     () =>
       dagMlData.WasmInMemoryProvider.withF64Features(
@@ -126,6 +132,37 @@ for (const [label, missing, fragment] of [
     fragment,
     `provider-feature withF64Features accepted a ${label} target`,
   );
+}
+
+// Categorical labels are served unchanged by both constructors.
+for (const [label, categoricalProvider] of [
+  [
+    "JSON constructor",
+    new dagMlData.WasmInMemoryProvider(
+      readFixture("coordinator_data_plan_envelope_nir.json"),
+      targetTablesWith("class_A", "class_B"),
+      undefined,
+      JSON.stringify(featureMatrices),
+    ),
+  ],
+  [
+    "withF64Features",
+    dagMlData.WasmInMemoryProvider.withF64Features(
+      readFixture("coordinator_data_plan_envelope_nir.json"),
+      targetTablesWith("class_A", "class_B"),
+      JSON.stringify(typedMeta),
+      new Float64Array(typedValues),
+    ),
+  ],
+]) {
+  const categoricalView = categoricalProvider.make_view(
+    categoricalProvider.materialize(readFixture("materialization_request_model_base_x.json")),
+    JSON.stringify({ sample_ids: ["S002", "S001"], include_augmented: false }),
+  );
+  const labels = JSON.parse(categoricalProvider.target_block(categoricalView, "y")).values;
+  if (labels.join(",") !== "class_B,class_A") {
+    throw new Error(`provider-feature ${label} drifted categorical target labels: ${labels}`);
+  }
 }
 
 const provider = new dagMlData.WasmInMemoryProvider(
