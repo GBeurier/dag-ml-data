@@ -27,6 +27,12 @@ Coordinator-envelope and other wire-shape changes follow
 - Shared fixture `examples/fixtures/shared/fold_set_target_missing_resampled.json`
   pins the fingerprint parity with dag-ml in Rust and in `validate_contracts.py`.
 
+### Fixed
+
+- `FoldSet::validate` refuses a non-empty `sample_groups` map that leaves a
+  fold set sample without a group, matching dag-ml and both
+  `validate_contracts.py` scripts.
+
 ## [0.2.15] - 2026-11-02
 
 ### Fixed
