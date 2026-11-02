@@ -144,6 +144,43 @@ impl CoordinatorTargetTable {
         }
         Ok(())
     }
+
+    /// [`Self::validate`] plus the numeric-value contract of the single-target
+    /// projection, whose [`CoordinatorTargetBlock`] carries no validity mask:
+    /// every value must be a finite number, or a non-empty array of finite
+    /// numbers for a vector target. A missing target (`null`, which is what
+    /// `JSON.stringify` makes of `NaN` and `Infinity`) or any non-numeric value
+    /// is refused instead of being served back as if it were data. Multi-target
+    /// projection keeps using [`Self::validate`]: its block carries per-target
+    /// validity masks that represent missing values explicitly.
+    pub fn validate_numeric(&self) -> Result<()> {
+        self.validate()?;
+        for entry in &self.values {
+            if let Some(reason) = non_finite_numeric_reason(&entry.value) {
+                return Err(DataError::Validation(format!(
+                    "target table `{}` has {reason} for sample `{}`; target values must be finite \
+                     numbers (drop samples with missing targets before building the provider)",
+                    self.target_id, entry.sample_id
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why `value` is not a finite number (or a non-empty array of them), if so.
+/// A `serde_json::Number` is finite by construction: `NaN` and `Infinity` can
+/// only reach this layer as `null` (or as a string), which are refused below.
+fn non_finite_numeric_reason(value: &serde_json::Value) -> Option<&'static str> {
+    match value {
+        serde_json::Value::Number(_) => None,
+        serde_json::Value::Array(items) if items.is_empty() => Some("an empty array"),
+        serde_json::Value::Array(items) => items.iter().find_map(non_finite_numeric_reason),
+        serde_json::Value::Null => Some("a missing (null) value"),
+        serde_json::Value::Bool(_) => Some("a boolean value"),
+        serde_json::Value::String(_) => Some("a non-numeric string value"),
+        serde_json::Value::Object(_) => Some("a non-numeric object value"),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -457,7 +494,7 @@ impl CoordinatorHandleArena {
         view_handle: u64,
         target_table: &CoordinatorTargetTable,
     ) -> Result<CoordinatorTargetBlock> {
-        target_table.validate()?;
+        target_table.validate_numeric()?;
         let relations = self.view_identity(view_handle)?;
         let values_by_sample = target_table
             .values
@@ -1747,6 +1784,95 @@ mod tests {
         assert_eq!(target.target_id.as_str(), "y");
         assert_eq!(target.sample_ids, vec![SampleId::new("S001").unwrap()]);
         assert_eq!(target.values, vec![json!(42.0)]);
+    }
+
+    fn target_table_with(s001: serde_json::Value) -> CoordinatorTargetTable {
+        CoordinatorTargetTable {
+            target_id: TargetId::new("y").unwrap(),
+            values: vec![
+                CoordinatorTargetValue {
+                    sample_id: SampleId::new("S001").unwrap(),
+                    value: s001,
+                },
+                CoordinatorTargetValue {
+                    sample_id: SampleId::new("S002").unwrap(),
+                    value: json!(7.0),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn target_table_refuses_missing_and_non_numeric_values() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view_record = arena
+            .make_view(data.handle.handle, &DataView::default())
+            .unwrap();
+        // `null` is what `JSON.stringify` makes of NaN/Infinity; strings such as
+        // "NaN" are the other common non-finite spelling.
+        for (value, reason) in [
+            (json!(null), "a missing (null) value"),
+            (json!("NaN"), "a non-numeric string value"),
+            (json!("Infinity"), "a non-numeric string value"),
+            (json!(true), "a boolean value"),
+            (json!({"v": 1.0}), "a non-numeric object value"),
+            (json!([]), "an empty array"),
+            (json!([1.0, null]), "a missing (null) value"),
+        ] {
+            let table = target_table_with(value.clone());
+            for error in [
+                table.validate_numeric().unwrap_err(),
+                arena
+                    .target_values(view_record.handle.handle, &table)
+                    .unwrap_err(),
+            ] {
+                assert_eq!(error.code(), "data_contract_validation", "{value}");
+                let message = format!("{error}");
+                assert!(message.contains(reason), "{value}: {message}");
+                assert!(message.contains("sample `S001`"), "{value}: {message}");
+            }
+        }
+    }
+
+    #[test]
+    fn target_table_serves_finite_scalar_and_vector_values_unchanged() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view = DataView {
+            sample_ids: Some(vec![SampleId::new("S001").unwrap()]),
+            include_augmented: false,
+            ..Default::default()
+        };
+        let view_record = arena.make_view(data.handle.handle, &view).unwrap();
+        for value in [json!(42.0), json!(0), json!(-3), json!([1.0, 2.5])] {
+            let table = target_table_with(value.clone());
+            table.validate_numeric().unwrap();
+            let block = arena
+                .target_values(view_record.handle.handle, &table)
+                .unwrap();
+            assert_eq!(block.values, vec![value]);
+        }
+    }
+
+    #[test]
+    fn multi_target_keeps_explicit_null_as_missing_with_validity_mask() {
+        let arena = CoordinatorHandleArena::new("controller:data.provider").unwrap();
+        let data = arena.materialize(&envelope(), &request()).unwrap();
+        let view = DataView {
+            sample_ids: Some(vec![
+                SampleId::new("S001").unwrap(),
+                SampleId::new("S002").unwrap(),
+            ]),
+            include_augmented: false,
+            ..Default::default()
+        };
+        let view_record = arena.make_view(data.handle.handle, &view).unwrap();
+        let block = arena
+            .multi_target_values(view_record.handle.handle, &[target_table_with(json!(null))])
+            .unwrap();
+        assert_eq!(block.values[0], vec![json!(null), json!(7.0)]);
+        assert_eq!(block.validity_masks[0], vec![false, true]);
     }
 
     #[test]

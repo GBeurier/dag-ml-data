@@ -10,6 +10,17 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+### Fixed
+
+- Refuse missing and non-finite single-target values at provider construction
+  and at `target_block`/`target_arrow` projection with a structured
+  `data_contract_validation` error. A target value must be a finite number (or
+  a non-empty array of finite numbers for a vector target); `null` (what
+  `JSON.stringify` makes of `NaN`/`Infinity`), strings such as `"NaN"`,
+  booleans, objects and empty arrays are refused instead of being served back
+  and coerced to `0` by the host. Multi-target projection is unchanged: its
+  per-target validity masks keep representing missing values explicitly.
+
 ## [0.2.14] - 2026-10-29
 
 ### Fixed

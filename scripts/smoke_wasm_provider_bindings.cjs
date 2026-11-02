@@ -24,6 +24,25 @@ function requireThrows(action, message) {
   throw new Error(message);
 }
 
+function requireContractRefusal(action, expectedFragment, message) {
+  let thrown;
+  try {
+    action();
+  } catch (error) {
+    thrown = error;
+  }
+  if (thrown === undefined) {
+    throw new Error(message);
+  }
+  const descriptor = JSON.parse(thrown);
+  if (
+    descriptor.code !== "data_contract_validation" ||
+    !JSON.stringify(descriptor).includes(expectedFragment)
+  ) {
+    throw new Error(`${message}: unexpected error ${thrown}`);
+  }
+}
+
 if (typeof dagMlData.WasmInMemoryProvider !== "function") {
   throw new Error("provider-feature package is missing WasmInMemoryProvider");
 }
@@ -67,6 +86,47 @@ const featureMatrices = [
     values: [1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0],
   },
 ];
+
+// A missing target must be refused, never served back as a number: the browser
+// host serialises NaN as `null` (JSON.stringify(NaN)), and "NaN" is the string
+// spelling. Both constructors (JSON and typed Float64Array values) must refuse.
+for (const [label, missing, fragment] of [
+  ["null", JSON.parse(JSON.stringify(NaN)), "a missing (null) value"],
+  ["string NaN", "NaN", "a non-numeric string value"],
+]) {
+  const badTargets = JSON.stringify([
+    {
+      target_id: "y",
+      values: [
+        { sample_id: "S001", value: 42.0 },
+        { sample_id: "S002", value: missing },
+      ],
+    },
+  ]);
+  requireContractRefusal(
+    () =>
+      new dagMlData.WasmInMemoryProvider(
+        readFixture("coordinator_data_plan_envelope_nir.json"),
+        badTargets,
+        undefined,
+        JSON.stringify(featureMatrices),
+      ),
+    fragment,
+    `provider-feature JSON constructor accepted a ${label} target`,
+  );
+  const { values: typedValues, ...typedMeta } = featureMatrices[0];
+  requireContractRefusal(
+    () =>
+      dagMlData.WasmInMemoryProvider.withF64Features(
+        readFixture("coordinator_data_plan_envelope_nir.json"),
+        badTargets,
+        JSON.stringify(typedMeta),
+        new Float64Array(typedValues),
+      ),
+    fragment,
+    `provider-feature withF64Features accepted a ${label} target`,
+  );
+}
 
 const provider = new dagMlData.WasmInMemoryProvider(
   readFixture("coordinator_data_plan_envelope_nir.json"),

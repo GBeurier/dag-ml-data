@@ -159,7 +159,16 @@ identity transfer before full buffer-backed provider lifecycles exist.
 sample-level targets. It materializes the envelope, creates a `DataView`, aligns
 target values to the selected samples and emits `sample_id`, `target_id` and
 numeric `value` columns. Repeated observations are intentionally de-duplicated
-to one target value per sample.
+to one target value per sample. A single-target block carries no validity
+mask, so every value must be a finite number (a vector target may use a
+non-empty array of finite numbers over the JSON transport). A missing or
+non-finite value (`null`, which is what `JSON.stringify` makes of `NaN`, a
+string such as `"NaN"`, a boolean or an object) is refused as
+`data_contract_validation`: at provider construction for the in-memory provider
+(every Rust, JSON, WASM and C ABI constructor) and again when
+the target is projected. Hosts drop samples with a missing target before
+handing them over, or use the multi-target helper below, which represents
+missing values explicitly.
 
 `dagmldata_coordinator_multi_target_arrow_json` uses the same materialization
 path for multi-output regression/classification targets. Its request carries
