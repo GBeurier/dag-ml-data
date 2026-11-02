@@ -33,10 +33,12 @@ pub struct JsonInMemoryProvider {
 
 impl JsonInMemoryProvider {
     /// Builds the provider from JSON. At most one of `feature_tables_json` or
-    /// `f64_feature_matrices_json` may be a non-empty array. Target values must
-    /// be finite numbers: a missing target (`null`, which `JSON.stringify`
-    /// makes of `NaN`) or any non-numeric value is refused as
-    /// `data_contract_validation` rather than served back by `target_block`.
+    /// `f64_feature_matrices_json` may be a non-empty array. Each target table
+    /// must hold only finite numbers or only non-empty string labels (scalars
+    /// or equal-length vectors): a missing target (`null`, which
+    /// `JSON.stringify` makes of `NaN`) or a string among numbers is refused as
+    /// `data_contract_validation` rather than served back by `target_block`
+    /// (see `CoordinatorTargetTable::validate_values`).
     pub fn from_json(
         envelope_json: &str,
         target_tables_json: Option<&str>,
@@ -65,7 +67,7 @@ impl JsonInMemoryProvider {
     /// value must be finite. Masked/missing data must come through the JSON
     /// matrix path (`from_json` with `f64_feature_matrices_json`), which the
     /// boxed [`Self::feature_block`] projection can serve as `null` cells.
-    /// Target tables follow the same finite-number rule as [`Self::from_json`].
+    /// Target tables follow the same value rule as [`Self::from_json`].
     pub fn from_json_with_f64_values(
         envelope_json: &str,
         target_tables_json: Option<&str>,
@@ -452,6 +454,28 @@ mod tests {
             assert_eq!(target["sample_ids"], serde_json::json!(["S002", "S001"]));
             assert_eq!(target["values"], serde_json::json!([7.0, 42.0]));
         }
+    }
+
+    #[test]
+    fn categorical_target_labels_are_served_unchanged() {
+        let targets = serde_json::json!([{
+            "target_id": "y",
+            "values": [
+                {"sample_id": "S001", "value": "class_A"},
+                {"sample_id": "S002", "value": "class_B"}
+            ]
+        }])
+        .to_string();
+        let provider =
+            JsonInMemoryProvider::from_json(ENVELOPE, Some(&targets), None, Some(F64_MATRICES))
+                .unwrap();
+        let data_handle = provider.materialize(REQUEST).unwrap();
+        let view = serde_json::json!({"sample_ids": ["S002", "S001"], "include_augmented": false})
+            .to_string();
+        let view_handle = provider.make_view(&data_handle, &view).unwrap();
+        let target: serde_json::Value =
+            serde_json::from_str(&provider.target_block(&view_handle, "y").unwrap()).unwrap();
+        assert_eq!(target["values"], serde_json::json!(["class_B", "class_A"]));
     }
 
     #[test]
