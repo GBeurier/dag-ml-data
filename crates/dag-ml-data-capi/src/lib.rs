@@ -4375,7 +4375,6 @@ fn build_target_arrow(
         .values
         .iter()
         .map(|value| match value {
-            serde_json::Value::Null => Ok(None),
             serde_json::Value::Number(number) => number.as_f64().map(Some).ok_or_else(|| {
                 dag_ml_data_core::DataError::Validation(format!(
                     "target `{}` contains a non-f64 numeric value",
@@ -4383,7 +4382,7 @@ fn build_target_arrow(
                 ))
             }),
             _ => Err(dag_ml_data_core::DataError::Validation(format!(
-                "target `{}` Arrow smoke only supports numeric or null values",
+                "target `{}` Arrow smoke only supports numeric values",
                 target.target_id
             ))),
         })
@@ -9329,6 +9328,9 @@ mod tests {
         assert!(array.is_null() && schema.is_null());
         let descriptor = unsafe { take_error_descriptor(error) };
         assert_eq!(descriptor["code"], "data_contract_validation");
+        let detail = descriptor["context"]["detail"].as_str().unwrap();
+        assert!(detail.contains("a missing (null) value"), "{detail}");
+        assert!(detail.contains("sample `S001`"), "{detail}");
     }
 
     unsafe fn utf8_values(array: *const ArrowArray) -> Vec<Option<String>> {
