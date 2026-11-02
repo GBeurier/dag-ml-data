@@ -175,6 +175,9 @@ impl InMemoryProvider {
         nd_tensor_store: NdTensorStore,
     ) -> Result<Self> {
         envelope.validate()?;
+        for table in target_tables.values() {
+            table.validate_numeric()?;
+        }
         Ok(Self {
             arenas: Mutex::new(ProviderArenas {
                 handles: CoordinatorHandleArena::new(default_owner_controller())?,
@@ -485,10 +488,10 @@ mod tests {
 
     use dag_ml_data_core::{
         AxisKind, AxisSpec, CoordinatorDataMaterializationRequest, CoordinatorDataPlanEnvelope,
-        DataPlan, DataPlanStep, DataPlanStepKind, DataView, DatasetSchema, FitScope,
-        NumericFeatureBufferStore, NumericFeatureMatrixF64, ObservationId, RepresentationId,
-        RepresentationSpec, SampleId, SampleRelation, SampleRelationTable, SourceDescriptor,
-        SourceGranularity, SourceId, TypeId,
+        CoordinatorTargetTable, CoordinatorTargetValue, DataPlan, DataPlanStep, DataPlanStepKind,
+        DataView, DatasetSchema, FitScope, NumericFeatureBufferStore, NumericFeatureMatrixF64,
+        ObservationId, RepresentationId, RepresentationSpec, SampleId, SampleRelation,
+        SampleRelationTable, SourceDescriptor, SourceGranularity, SourceId, TargetId, TypeId,
     };
 
     use super::{DagMlDataProvider, InMemoryProvider, ProviderFeatureCollationRequest};
@@ -714,6 +717,54 @@ mod tests {
         assert!(provider
             .data_nd_tensor_bindings(data.handle.handle)
             .is_err());
+    }
+
+    #[test]
+    fn typed_constructor_refuses_missing_target_values_and_serves_valid_ones() {
+        let table = |s2: serde_json::Value| {
+            BTreeMap::from([(
+                TargetId::new("y").unwrap(),
+                CoordinatorTargetTable {
+                    target_id: TargetId::new("y").unwrap(),
+                    values: vec![
+                        CoordinatorTargetValue {
+                            sample_id: SampleId::new("s1").unwrap(),
+                            value: serde_json::json!(1.5),
+                        },
+                        CoordinatorTargetValue {
+                            sample_id: SampleId::new("s2").unwrap(),
+                            value: s2,
+                        },
+                    ],
+                },
+            )])
+        };
+        let (envelope, request, store) = fixture_parts();
+        let error = InMemoryProvider::new(envelope.clone(), table(serde_json::json!(null)), store)
+            .err()
+            .expect("a null target value must be refused at construction");
+        assert_eq!(error.code(), "data_contract_validation");
+        assert!(format!("{error}").contains("a missing (null) value"));
+
+        let (_, _, store) = fixture_parts();
+        let provider = InMemoryProvider::new(envelope, table(serde_json::json!(2.5)), store)
+            .expect("finite target values are accepted");
+        let data = provider.materialize(&request).unwrap();
+        let view = DataView {
+            sample_ids: Some(vec![
+                SampleId::new("s1").unwrap(),
+                SampleId::new("s2").unwrap(),
+            ]),
+            ..full_view()
+        };
+        let view = provider.make_view(data.handle.handle, &view).unwrap();
+        let block = provider
+            .target_block(view.handle.handle, &TargetId::new("y").unwrap())
+            .unwrap();
+        assert_eq!(
+            block.values,
+            vec![serde_json::json!(1.5), serde_json::json!(2.5)]
+        );
     }
 
     #[test]
