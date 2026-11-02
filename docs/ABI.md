@@ -160,13 +160,16 @@ sample-level targets. It materializes the envelope, creates a `DataView`, aligns
 target values to the selected samples and emits `sample_id`, `target_id` and
 numeric `value` columns. Repeated observations are intentionally de-duplicated
 to one target value per sample. A single-target block carries no validity
-mask, so every value must be a finite number (a vector target may use a
-non-empty array of finite numbers over the JSON transport). A missing or
-non-finite value (`null`, which is what `JSON.stringify` makes of `NaN`, a
-string such as `"NaN"`, a boolean or an object) is refused as
-`data_contract_validation`: at provider construction for the in-memory provider
-(every Rust, JSON, WASM and C ABI constructor) and again when
-the target is projected. Hosts drop samples with a missing target before
+mask, so a target table must be complete and homogeneous: every value a finite
+number (numeric target) or every value a non-empty string label (categorical
+target), either all scalars or all flat vectors of the same non-zero length
+(matrix target, JSON transport only). A missing value (`null`, which is what
+`JSON.stringify` makes of `NaN`, an empty label or an empty array), a boolean,
+an object, a nested array, a string among numbers (such as `"NaN"` or `"NA"`)
+and a ragged table are refused as `data_contract_validation`: at provider
+construction for the in-memory provider (every Rust, JSON, WASM and C ABI
+constructor) and again when the target is projected. The Arrow export only
+emits numeric scalar targets. Hosts drop samples with a missing target before
 handing them over, or use the multi-target helper below, which represents
 missing values explicitly.
 

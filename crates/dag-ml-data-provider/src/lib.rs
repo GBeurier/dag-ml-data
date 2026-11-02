@@ -176,7 +176,7 @@ impl InMemoryProvider {
     ) -> Result<Self> {
         envelope.validate()?;
         for table in target_tables.values() {
-            table.validate_numeric()?;
+            table.validate_values()?;
         }
         Ok(Self {
             arenas: Mutex::new(ProviderArenas {
