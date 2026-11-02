@@ -19,7 +19,7 @@ data identities it owns.
 | Metadata | `MetadataSchema` declares typed metadata fields and categorical vocabularies | bridge maps nirs4all metadata columns and refuses missing/invalid required fields |
 | Multi-targets | `CoordinatorMultiTargetBlock` aligns multiple target tables on one sample axis and the C ABI exports nullable per-target Arrow columns | `dag-ml` decides target use per phase; providers preserve missing-target validity masks |
 | Processings | representation adapters, fit scope, fitted adapter refs | `dag-ml` chooses fold/full-train scope |
-| Splits | identity/group/origin inputs, JSON `FoldSet` validators and canonical fold fingerprints in Rust/Python/WASM/C ABI for exhaustive partition-style folds | `dag-ml` builds folds; `dag-ml-data` validates and fingerprints supplied folds |
+| Splits | identity/group/origin inputs, JSON `FoldSet` validators and canonical fold fingerprints in Rust/Python/WASM/C ABI for partition and resampled folds, with target-missing samples declared outside the CV universe | `dag-ml` builds folds; `dag-ml-data` validates and fingerprints supplied folds |
 | Models | `ModelInputSpec`, accepted representations/types, aux inputs | controller and `dag-ml` execute model phases |
 | Refit | serialized `DataPlan`, schema fingerprints, fitted refs | `dag-ml` controls replay/refit phase |
 | Branching | immutable views plus native `by_source`/`by_metadata`/`by_tag` and the closed `by_filter` predicate (`metadata_equals`, `tags_all`) over supplied relation metadata/tags | `dag-ml` owns branch graph semantics; provider refuses unknown or empty predicates before selecting rows |
@@ -39,8 +39,9 @@ data identities it owns.
    multi-source joins.
 6. Schema fingerprints are stable under irrelevant ordering changes.
 7. No fold, OOF or prediction partition decision is made in this repo; supplied
-   partition-style fold sets can be validated against relation group/origin
-   boundaries.
+   fold sets can be validated against relation group/origin boundaries.
+   Relations may list samples a fold set declares in
+   `target_missing_sample_ids`; those stay outside every fold.
 8. A native `by_filter` view only exposes supplied partition/fold provenance as
    relation metadata. It neither converts provenance into an effective fold nor
    synthesizes a missing assignment; consumers requiring a concrete fold must
