@@ -10,6 +10,29 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-11-02
+
+### Added
+
+- Mirror dag-ml's optional `FoldSet` fields so the shared fold-set JSON and its
+  fingerprint stay identical across the two repositories: `partition_mode`
+  (`partition` | `resampled`), `train_exclusion` (`relations` | `fold_local`)
+  and `target_missing_sample_ids`. Each field is omitted at its default, so
+  existing fold sets keep their bytes and fingerprints.
+- `FoldSet::validate` relaxes only the exactly-once validation check in
+  `resampled` mode, and refuses duplicate target-missing ids or ids inside the
+  CV universe. `SampleRelationTable::validate_fold_set` accepts relation
+  samples declared target-missing: they stay in the relations (and remain
+  predictable) but never enter a fold.
+- Shared fixture `examples/fixtures/shared/fold_set_target_missing_resampled.json`
+  pins the fingerprint parity with dag-ml in Rust and in `validate_contracts.py`.
+
+### Fixed
+
+- `FoldSet::validate` refuses a non-empty `sample_groups` map that leaves a
+  fold set sample without a group, matching dag-ml and both
+  `validate_contracts.py` scripts.
+
 ## [0.2.15] - 2026-11-02
 
 ### Fixed
