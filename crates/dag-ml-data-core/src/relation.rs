@@ -175,6 +175,15 @@ impl FoldSet {
                     )));
                 }
             }
+            if let Some(sample_id) = self
+                .sample_ids
+                .iter()
+                .find(|sample_id| !self.sample_groups.contains_key(*sample_id))
+            {
+                return Err(DataError::Validation(format!(
+                    "sample `{sample_id}` is missing from non-empty group map"
+                )));
+            }
         }
 
         let mut fold_ids = BTreeSet::new();
@@ -688,6 +697,20 @@ mod tests {
         let mut duplicated = fold_set();
         duplicated.target_missing_sample_ids = vec![sample("s3"), sample("s3")];
         assert!(duplicated.validate().is_err());
+    }
+
+    #[test]
+    fn non_empty_group_map_must_cover_every_sample() {
+        let mut partial = fold_set();
+        partial.sample_groups = BTreeMap::from([(sample("s1"), GroupId::new("g1").unwrap())]);
+        let error = partial.validate().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("missing from non-empty group map"));
+        partial
+            .sample_groups
+            .insert(sample("s2"), GroupId::new("g2").unwrap());
+        partial.validate().unwrap();
     }
 
     #[test]
