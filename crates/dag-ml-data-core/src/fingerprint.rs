@@ -50,6 +50,7 @@ pub fn fold_set_fingerprint(fold_set: &FoldSet) -> Result<String> {
     let mut canonical = fold_set.clone();
     canonical.validate()?;
     canonical.sample_ids.sort();
+    canonical.target_missing_sample_ids.sort();
     canonical
         .folds
         .sort_by(|left, right| left.fold_id.cmp(&right.fold_id));
@@ -136,13 +137,15 @@ mod tests {
         FoldSpec, GroupKind, GroupSpec, RepresentationSpec, SourceDescriptor, SourceGranularity,
     };
     use crate::plan::DataPlan;
-    use crate::relation::{FoldAssignment, FoldSet};
+    use crate::relation::{FoldAssignment, FoldPartitionMode, FoldSet, FoldTrainExclusion};
 
     use super::{
         data_plan_fingerprint, fold_set_fingerprint, sample_relation_fingerprint,
         schema_fingerprint,
     };
 
+    const SHARED_TARGET_MISSING_FOLD_SET_FINGERPRINT: &str =
+        "316839e75f30271a949f07ccd9068f3152d9c60c3334318d05a4faf7256153ef";
     const SHARED_FOLD_SET_FINGERPRINT: &str =
         "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c";
 
@@ -389,6 +392,9 @@ mod tests {
                 },
             ],
             sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         let mut right = left.clone();
         right.sample_ids.reverse();
@@ -470,5 +476,23 @@ mod tests {
             fold_set_fingerprint(&fold_set).unwrap(),
             SHARED_FOLD_SET_FINGERPRINT
         );
+    }
+
+    #[test]
+    fn shared_target_missing_fold_set_fixture_fingerprint_is_locked() {
+        let fixture = include_str!(
+            "../../../examples/fixtures/shared/fold_set_target_missing_resampled.json"
+        );
+        let fold_set = serde_json::from_str::<FoldSet>(fixture).unwrap();
+        let fingerprint = fold_set_fingerprint(&fold_set).unwrap();
+        assert_eq!(fingerprint, SHARED_TARGET_MISSING_FOLD_SET_FINGERPRINT);
+
+        // Declaration order does not matter; the declared set does.
+        let mut reordered = fold_set.clone();
+        reordered.target_missing_sample_ids.reverse();
+        assert_eq!(fold_set_fingerprint(&reordered).unwrap(), fingerprint);
+        let mut narrowed = fold_set;
+        narrowed.target_missing_sample_ids.pop();
+        assert_ne!(fold_set_fingerprint(&narrowed).unwrap(), fingerprint);
     }
 }

@@ -1,7 +1,7 @@
 # Supported Surface
 
 This page is the 0.2.x RC support contract for `dag-ml-data` (current package
-version: 0.2.15). It separates
+version: 0.2.16). It separates
 production-facing data contracts from conformance providers and backlog work.
 The 0.2.x surface includes the built-in scientific data-model catalogue helpers
 (`builtin_data_models`, `builtin_representations`, `builtin_adapter_registry`,
@@ -50,7 +50,8 @@ The 0.2.x RC release train must keep these artifacts JSON-identical with `dag-ml
 - `fitted_adapter_ref.schema.json`;
 - `conformance_pack.v1.json`;
 - `parity_oracle.v1.json`;
-- shared `FoldSet` fixture.
+- shared `FoldSet` fixtures (`fold_set_cv_partition.json`,
+  `fold_set_target_missing_resampled.json`).
 
 The public vtable ABI version shared with `dag-ml` must remain guarded so
 `dag_ml_data.h` and `dag_ml.h` compile in both include orders.
