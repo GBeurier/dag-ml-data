@@ -4375,7 +4375,6 @@ fn build_target_arrow(
         .values
         .iter()
         .map(|value| match value {
-            serde_json::Value::Null => Ok(None),
             serde_json::Value::Number(number) => number.as_f64().map(Some).ok_or_else(|| {
                 dag_ml_data_core::DataError::Validation(format!(
                     "target `{}` contains a non-f64 numeric value",
@@ -4383,7 +4382,7 @@ fn build_target_arrow(
                 ))
             }),
             _ => Err(dag_ml_data_core::DataError::Validation(format!(
-                "target `{}` Arrow smoke only supports numeric or null values",
+                "target `{}` Arrow smoke only supports numeric values",
                 target.target_id
             ))),
         })
@@ -9207,6 +9206,131 @@ mod tests {
         unsafe {
             dagmldata_string_free(error);
         }
+    }
+
+    unsafe fn take_error_descriptor(error: DagMlDataString) -> serde_json::Value {
+        assert!(!error.ptr.is_null());
+        let descriptor = serde_json::from_str(CStr::from_ptr(error.ptr.cast()).to_str().unwrap())
+            .expect("error descriptor json");
+        dagmldata_string_free(error);
+        descriptor
+    }
+
+    #[test]
+    fn inmemory_provider_refuses_missing_target_values_on_creation() {
+        let envelope = include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        );
+        let feature_matrices = serde_json::to_vec(&serde_json::json!([
+            {
+                "feature_set_id": "x",
+                "representation_id": "tabular_numeric",
+                "feature_names": ["f0"],
+                "observation_ids": ["obs.S001.base", "obs.S002.base"],
+                "values": [1.0, 2.0]
+            }
+        ]))
+        .unwrap();
+        // `null` is what `JSON.stringify(NaN)` produces; "NaN" is the string
+        // spelling. Neither may be accepted as a target value.
+        for missing in [serde_json::json!(null), serde_json::json!("NaN")] {
+            let target_tables = serde_json::to_vec(&serde_json::json!([
+                {
+                    "target_id": "y",
+                    "values": [
+                        {"sample_id": "S001", "value": 42.0},
+                        {"sample_id": "S002", "value": missing}
+                    ]
+                }
+            ]))
+            .unwrap();
+            let mut plain = empty_vtable();
+            let mut plain_error = DagMlDataString::default();
+            let plain_status = unsafe {
+                dagmldata_inmemory_provider_new_json(
+                    envelope.as_ptr(),
+                    envelope.len(),
+                    target_tables.as_ptr(),
+                    target_tables.len(),
+                    &mut plain,
+                    &mut plain_error,
+                )
+            };
+            let mut typed = empty_vtable();
+            let mut typed_error = DagMlDataString::default();
+            let typed_status = unsafe {
+                dagmldata_inmemory_provider_new_with_f64_features_json(
+                    envelope.as_ptr(),
+                    envelope.len(),
+                    target_tables.as_ptr(),
+                    target_tables.len(),
+                    feature_matrices.as_ptr(),
+                    feature_matrices.len(),
+                    &mut typed,
+                    &mut typed_error,
+                )
+            };
+
+            for (status, vtable, error) in [
+                (plain_status, &plain, plain_error),
+                (typed_status, &typed, typed_error),
+            ] {
+                assert_eq!(status, DagMlDataStatusCode::ValidationError);
+                assert!(vtable.user_data.is_null());
+                let descriptor = unsafe { take_error_descriptor(error) };
+                assert_eq!(descriptor["code"], "data_contract_validation");
+                assert!(descriptor["context"]["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("sample `S002`"));
+            }
+        }
+    }
+
+    #[test]
+    fn coordinator_target_arrow_refuses_missing_target_value() {
+        let envelope: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../examples/fixtures/oof_campaign/coordinator_data_plan_envelope_nir.json"
+        ))
+        .unwrap();
+        let materialization_request: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../examples/fixtures/oof_campaign/materialization_request_model_base_x.json"
+        ))
+        .unwrap();
+        let request = serde_json::to_vec(&serde_json::json!({
+            "envelope": envelope,
+            "materialization_request": materialization_request,
+            "view": {"sample_ids": ["S001"], "include_augmented": false},
+            "target_table": {
+                "target_id": "y",
+                "values": [
+                    {"sample_id": "S001", "value": null},
+                    {"sample_id": "S002", "value": 7.0}
+                ]
+            }
+        }))
+        .unwrap();
+        let mut array = std::ptr::null_mut();
+        let mut schema = std::ptr::null_mut();
+        let mut error = DagMlDataString::default();
+
+        let status = unsafe {
+            dagmldata_coordinator_target_arrow_json(
+                request.as_ptr(),
+                request.len(),
+                &mut array,
+                &mut schema,
+                &mut error,
+            )
+        };
+
+        assert_eq!(status, DagMlDataStatusCode::ValidationError);
+        assert!(array.is_null() && schema.is_null());
+        let descriptor = unsafe { take_error_descriptor(error) };
+        assert_eq!(descriptor["code"], "data_contract_validation");
+        let detail = descriptor["context"]["detail"].as_str().unwrap();
+        assert!(detail.contains("a missing (null) value"), "{detail}");
+        assert!(detail.contains("sample `S001`"), "{detail}");
     }
 
     unsafe fn utf8_values(array: *const ArrowArray) -> Vec<Option<String>> {

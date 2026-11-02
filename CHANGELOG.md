@@ -10,6 +10,22 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-11-02
+
+### Fixed
+
+- Refuse missing and malformed single-target values at provider construction
+  and at `target_block`/`target_arrow` projection with a structured
+  `data_contract_validation` error (`CoordinatorTargetTable::validate_values`).
+  A target table must hold only finite numbers or only non-empty string labels,
+  as scalars or as equal-length vectors. `null` (what `JSON.stringify` makes of
+  `NaN`/`Infinity`), strings such as `"NaN"` or `"NA"` among numbers, empty
+  labels and arrays, booleans, objects, nested arrays and ragged tables are
+  refused instead of being served back and coerced to `0` by the host.
+  Categorical labels are still served unchanged. Multi-target projection is
+  unchanged: its per-target validity masks keep representing missing values
+  explicitly.
+
 ## [0.2.14] - 2026-10-29
 
 ### Fixed
@@ -205,7 +221,8 @@ Foundation scaffold. Executable Rust crates with:
 - Object-level Python APIs above the JSON-contract PyO3 bindings and ctypes
   provider smoke (roadmap workstream D).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.14...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.15...HEAD
+[0.2.15]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.14...v0.2.15
 [0.2.14]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.11...v0.2.12
