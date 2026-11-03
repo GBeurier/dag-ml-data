@@ -19,6 +19,8 @@ EXPECTED_PYO3_VERSION = "=0.29.2"
 # uses the CeCILL project's own casing of the identifier.
 EXPECTED_CARGO_LICENSE = "CECILL-2.1 OR AGPL-3.0-or-later"
 EXPECTED_PYPROJECT_LICENSE = "CeCILL-2.1 OR AGPL-3.0-or-later"
+# R spells the same dual license with its own license-database specifications.
+EXPECTED_R_LICENSE = "CeCILL-2.1 | AGPL (>= 3)"
 
 
 def load_toml(path: Path) -> dict[str, Any]:
@@ -269,6 +271,10 @@ def validate_r(repo: Path, repo_name: str, version: str) -> None:
     require(
         description.get("Version") == version,
         f"{description_path}: Version must match workspace version {version}",
+    )
+    require(
+        description.get("License") == EXPECTED_R_LICENSE,
+        f"{description_path}: License must be {EXPECTED_R_LICENSE}",
     )
 
     cargo_path = r_crate / "src" / "rust" / "Cargo.toml"

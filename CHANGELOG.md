@@ -10,6 +10,14 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+### Changed
+
+- The R package `dagmldata` declares the ecosystem dual license
+  `CeCILL-2.1 | AGPL (>= 3)` (SPDX `CECILL-2.1 OR AGPL-3.0-or-later`) instead of
+  `AGPL-3 + file LICENSE`; both license texts ship under `inst/`, and
+  `scripts/validate_release_metadata.py` fails on drift. Cargo, PyPI and npm metadata
+  already declared the dual license.
+
 ## [0.2.16] - 2026-11-02
 
 ### Added
