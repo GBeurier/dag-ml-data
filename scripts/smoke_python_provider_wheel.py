@@ -153,6 +153,65 @@ def validate_wheel(wheel_path: Path) -> dict[str, Any]:
     return manifest
 
 
+def validate_release_wheel(
+    wheel_path: Path,
+    manifest: dict[str, Any],
+    *,
+    source: str,
+    version: str,
+    target: str,
+    platform: str,
+    repo: Path,
+) -> None:
+    """Bind the checked wheel to this workflow's exact source and native target."""
+    require(manifest["source_commit"] == source, f"{wheel_path}: wrong source commit")
+    require(manifest["package_version"] == version, f"{wheel_path}: wrong release version")
+    require(manifest["rust_target"] == target, f"{wheel_path}: wrong compiled target")
+    fields = wheel_path.name.removesuffix(".whl").split("-")
+    require(
+        len(fields) == 5 and fields[:4] == ["dag_ml_data_provider", version, "py3", "none"],
+        f"{wheel_path}: unexpected wheel filename",
+    )
+    platforms = set(fields[4].split("."))
+    if platform.startswith("manylinux_"):
+        require(
+            platform in platforms
+            and all(re.fullmatch(r"manylinux(?:_2_[0-9]+|2014)_x86_64", p) for p in platforms),
+            f"{wheel_path}: expected repaired {platform} tags",
+        )
+    else:
+        require(platforms == {platform}, f"{wheel_path}: wrong platform tags")
+    with zipfile.ZipFile(wheel_path) as wheel:
+        wheel_name = next(name for name in wheel.namelist() if name.endswith(".dist-info/WHEEL"))
+        tags = Parser().parsestr(wheel.read(wheel_name).decode()).get_all("Tag") or []
+        require(
+            set(tags) == {f"py3-none-{p}" for p in platforms},
+            f"{wheel_path}: filename and WHEEL tags disagree",
+        )
+        resources = {
+            "include/dag_ml_data.h": repo / "crates/dag-ml-data-capi/include/dag_ml_data.h",
+            "licenses/CeCILL-2.1.txt": repo / "LICENSES/CeCILL-2.1.txt",
+            "licenses/AGPL-3.0-or-later.txt": repo / "LICENSES/AGPL-3.0-or-later.txt",
+            "licenses/MIT.txt": repo / "LICENSES/MIT.txt",
+            "licenses/Apache-2.0.txt": repo / "LICENSES/Apache-2.0.txt",
+            "licenses/BSD-3-Clause.txt": repo / "LICENSES/BSD-3-Clause.txt",
+            "licenses/THIRD_PARTY_NOTICES.md": repo / "THIRD_PARTY_NOTICES.md",
+            "__init__.py": repo / "crates/dag-ml-data-capi/bindings/python/dag_ml_data_provider/__init__.py",
+        }
+        for destination, original in resources.items():
+            name = f"dag_ml_data_provider/{destination}"
+            require(name in wheel.namelist(), f"{wheel_path}: missing {name}")
+            require(wheel.read(name) == original.read_bytes(), f"{wheel_path}: source mismatch for {name}")
+        native_members = {
+            name for name in wheel.namelist()
+            if re.search(r"\.so(?:\.|$)|\.(?:dylib|dll)$", name)
+        }
+        require(
+            native_members == {f"dag_ml_data_provider/.libs/{manifest['library']}"},
+            f"{wheel_path}: unexpected additional native libraries need explicit packaging/licensing",
+        )
+
+
 def venv_python(root: Path) -> Path:
     return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
@@ -437,10 +496,22 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("wheel", type=Path)
     parser.add_argument("--metadata-only", action="store_true")
+    parser.add_argument("--expected-source")
+    parser.add_argument("--expected-version")
+    parser.add_argument("--expected-target")
+    parser.add_argument("--expected-platform")
     args = parser.parse_args()
     wheel = args.wheel.resolve()
     repo = Path(__file__).resolve().parents[1]
     manifest = validate_wheel(wheel)
+    expectations = (args.expected_source, args.expected_version, args.expected_target, args.expected_platform)
+    if any(expectations):
+        require(all(expectations), "all four release expectations must be supplied together")
+        validate_release_wheel(
+            wheel, manifest,
+            source=args.expected_source, version=args.expected_version,
+            target=args.expected_target, platform=args.expected_platform, repo=repo,
+        )
     report = None if args.metadata_only else smoke_installed_wheel(wheel, repo)
     print(
         json.dumps(

@@ -40,6 +40,17 @@ exports; no existing public ABI, JSON schema, or function signature changed.
 | Production provider arenas beyond in-memory | Backlog | Host providers must implement native storage/filtering semantics. |
 | nirs4all `SpectroDataset` connector | Backlog | Descoped to `nirs4all-io`; `dag-ml-data` remains NIRS-agnostic. |
 
+## Provider publication targets
+
+The separate `dag-ml-data-provider` publisher targets Linux x86_64
+(manylinux 2.28), macOS arm64 (11.0 minimum) and Windows x86_64 (MSVC),
+using native builds and an installed-package smoke on each platform.
+Successful release jobs qualify those exact wheels; the workflow definition
+alone does not establish platform qualification. The first publication is
+wheels only: source builds require a complete Git checkout. Provider tags use
+`provider-vX.Y.Z`, independently of the existing `vX.Y.Z` PyO3, npm and Rust
+release triggers. No other provider architectures are claimed here.
+
 ## Cross-Repo Contract With dag-ml
 
 The 0.2.x RC release train must keep these artifacts JSON-identical with `dag-ml`:
