@@ -185,6 +185,16 @@ class CustomBuildHook(BuildHookInterface):
             encoding="utf-8",
         )
 
+        build_data["force_include"][str(workspace_root / "crates/dag-ml-data-capi/include/dag_ml_data.h")] = (
+            "dag_ml_data_provider/include/dag_ml_data.h"
+        )
+        for license_name in ("CeCILL-2.1.txt", "AGPL-3.0-or-later.txt", "MIT.txt", "Apache-2.0.txt", "BSD-3-Clause.txt"):
+            build_data["force_include"][str(workspace_root / "LICENSES" / license_name)] = (
+                f"dag_ml_data_provider/licenses/{license_name}"
+            )
+        build_data["force_include"][str(workspace_root / "THIRD_PARTY_NOTICES.md")] = (
+            "dag_ml_data_provider/licenses/THIRD_PARTY_NOTICES.md"
+        )
         build_data["pure_python"] = False
         build_data["tag"] = f"py3-none-{platform_tag}"
         build_data["force_include"][str(staged_library)] = (

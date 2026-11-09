@@ -10,6 +10,17 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+### Added
+
+- A separate `dag-ml-data-provider` PyPI workflow with build-only manual
+  dispatch and `integration/release-20261109` pushes, provider-specific tags, repaired Linux wheels and native macOS
+  arm64/Windows x86_64 wheels. Publication checks the exact smoke-tested
+  artifacts against source/version/target provenance. This wheels-only lane
+  leaves the existing `dag-ml-data` PyO3 publisher unchanged.
+- Provider wheels include the existing C header, both declared project license
+  texts and the third-party notices and license-family texts alongside the
+  bundled native library.
+
 ### Changed
 
 - The R package `dagmldata` declares the ecosystem dual license

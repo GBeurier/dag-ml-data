@@ -1,0 +1,222 @@
+name: release-provider-python
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish provider wheels to PyPI (requires a provider-vX.Y.Z ref)"
+        type: boolean
+        default: false
+  push:
+    branches: [integration/release-20261109]
+    tags: ["provider-v[0-9]*.[0-9]*.[0-9]*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  source:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      publish: ${{ steps.source.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Validate source, version and publication intent
+        id: source
+        env:
+          PUBLISH: ${{ inputs.publish == true }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          python - <<'PY'
+          import ast
+          import os
+          import re
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          repo = "GBeurier/dag-ml-data"
+          require(os.environ["GITHUB_REPOSITORY"] == repo, "wrong publisher repository")
+          require(os.environ["GITHUB_WORKFLOW_REF"] == f"{repo}/.github/workflows/release-provider-python.yml@{os.environ['GITHUB_REF']}", "wrong publisher workflow/ref")
+          sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          require(sha == os.environ["GITHUB_SHA"] == os.environ["WORKFLOW_SHA"], "source and workflow commits differ")
+          package = Path("crates/dag-ml-data-capi/bindings/python")
+          project = tomllib.loads((package / "pyproject.toml").read_text())["project"]
+          version = project["version"]
+          require(project["name"] == "dag-ml-data-provider", "wrong Python project")
+          require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version), "expected a stable package version")
+          require(tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"] == version, "Cargo/provider versions differ")
+          tree = ast.parse((package / "dag_ml_data_provider/__init__.py").read_text())
+          package_versions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__version__" for t in node.targets)]
+          require(package_versions == [version], "Python facade/provider versions differ")
+          event = os.environ["GITHUB_EVENT_NAME"]
+          require(event in {"push", "workflow_dispatch"}, "unsupported release event")
+          publish = (event == "push" and os.environ["GITHUB_REF_TYPE"] == "tag") or os.environ["PUBLISH"] == "true"
+          if os.environ["GITHUB_REF_TYPE"] == "tag" or publish:
+              tag = os.environ["GITHUB_REF_NAME"]
+              require(os.environ["GITHUB_REF"] == f"refs/tags/provider-v{version}", "publication requires the matching provider-vX.Y.Z tag")
+              tagged = subprocess.check_output(["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"], text=True).strip()
+              require(tagged == sha, "provider tag differs from the checked source")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\npublish={str(publish).lower()}\n")
+          PY
+
+  linux:
+    needs: source
+    runs-on: ubuntu-22.04
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Select manylinux CPython
+        run: echo /opt/python/cp311-cp311/bin >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build, repair and smoke the final Linux wheel
+        env:
+          EXPECTED_SOURCE: ${{ github.sha }}
+          EXPECTED_VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python -m pip install build auditwheel wheel twine
+          python -m build --wheel --outdir target/provider-raw crates/dag-ml-data-capi/bindings/python
+          python scripts/smoke_python_provider_wheel.py target/provider-raw/*.whl --metadata-only \
+            --expected-source "$EXPECTED_SOURCE" --expected-version "$EXPECTED_VERSION" \
+            --expected-target x86_64-unknown-linux-gnu --expected-platform linux_x86_64
+          auditwheel repair --plat manylinux_2_28_x86_64 --wheel-dir target/provider-repaired target/provider-raw/*.whl
+          python scripts/refresh_python_provider_wheel.py target/provider-repaired/*.whl target/provider-artifacts/wheels
+          python scripts/smoke_python_provider_wheel.py target/provider-artifacts/wheels/*.whl \
+            --expected-source "$EXPECTED_SOURCE" --expected-version "$EXPECTED_VERSION" \
+            --expected-target x86_64-unknown-linux-gnu --expected-platform manylinux_2_28_x86_64
+          python -m twine check --strict target/provider-artifacts/wheels/*.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: provider-wheel-linux-x86_64
+          path: target/provider-artifacts/
+          if-no-files-found: error
+
+  native:
+    needs: source
+    name: Provider wheel (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            label: macos-aarch64
+            target: aarch64-apple-darwin
+            platform: macosx_11_0_arm64
+          - os: windows-2022
+            label: windows-x64
+            target: x86_64-pc-windows-msvc
+            platform: win_amd64
+    steps:
+      - name: Preserve source bytes on native runners
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Build and smoke the final native wheel
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          EXPECTED_SOURCE: ${{ github.sha }}
+          EXPECTED_VERSION: ${{ needs.source.outputs.version }}
+          EXPECTED_TARGET: ${{ matrix.target }}
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          python -m pip install build twine
+          python -m build --wheel --outdir target/provider-artifacts/wheels crates/dag-ml-data-capi/bindings/python
+          python scripts/smoke_python_provider_wheel.py target/provider-artifacts/wheels/*.whl \
+            --expected-source "$EXPECTED_SOURCE" --expected-version "$EXPECTED_VERSION" \
+            --expected-target "$EXPECTED_TARGET" --expected-platform "$EXPECTED_PLATFORM"
+          python -m twine check --strict target/provider-artifacts/wheels/*.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: provider-wheel-${{ matrix.label }}
+          path: target/provider-artifacts/
+          if-no-files-found: error
+
+  publish-pypi:
+    needs: [source, linux, native]
+    if: needs.source.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/dag-ml-data-provider
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: provider-wheel-*
+          path: dist
+          merge-multiple: true
+      - name: Verify the exact smoke-tested provider artifact set
+        env:
+          EXPECTED_SOURCE: ${{ github.sha }}
+          EXPECTED_VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from smoke_python_provider_wheel import require, validate_release_wheel, validate_wheel
+
+          expected = {
+              "manylinux_2_28_x86_64": "x86_64-unknown-linux-gnu",
+              "macosx_11_0_arm64": "aarch64-apple-darwin",
+              "win_amd64": "x86_64-pc-windows-msvc",
+          }
+          files = {p for p in Path("dist").rglob("*") if p.is_file()}
+          wheels = set(Path("dist/wheels").glob("*.whl"))
+          require(len(wheels) == 3 and files == wheels, "expected exactly three provider wheels and no extra files")
+          for wheel in sorted(wheels):
+              manifest = validate_wheel(wheel)
+              platforms = set(wheel.stem.rsplit("-", 1)[-1].split("."))
+              profiles = platforms & expected.keys()
+              require(len(profiles) == 1, "unexpected or duplicate release platform")
+              platform = profiles.pop()
+              target = expected.pop(platform)
+              validate_release_wheel(wheel, manifest, source=os.environ["EXPECTED_SOURCE"], version=os.environ["EXPECTED_VERSION"], target=target, platform=platform, repo=Path.cwd())
+          PY
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/wheels

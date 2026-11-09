@@ -39,6 +39,40 @@ unless `DAG_ML_DATA_PROVIDER_ALLOW_DIRTY_BUILD=1` is explicitly set for a local
 development artifact. `scripts/smoke_python_provider_wheel.py` verifies an
 installed wheel in an isolated environment.
 
+## Provider publication
+
+The dedicated `.github/workflows/release-provider-python.yml` builds this
+package independently of the `dag-ml-data` PyO3 publisher. Manual dispatch
+builds and tests only by default; pushes to `integration/release-20261109`
+also build and test without publishing. Publication requires either a push of the
+matching `provider-vX.Y.Z` tag or a dispatch on that provider tag with
+`publish: true`. The first provider version is `0.2.16`, with proposed tag
+`provider-v0.2.16`; this does not reissue the PyO3 distribution.
+
+The workflow builds native wheels for Linux x86_64 (manylinux 2.28), macOS
+arm64 (deployment target 11.0), and Windows x86_64 (MSVC). These are the
+release build targets, subject to each platform's installed-package smoke;
+there is no universal or cross-compiled provider wheel. Other targets are
+outside this first publication. Each wheel includes the native library,
+`include/dag_ml_data.h`, the project and third-party license texts plus
+`THIRD_PARTY_NOTICES.md` under `licenses/`, and the source/version/target
+manifest within `dag_ml_data_provider`.
+
+Linux checkout builds produce a local `linux_x86_64` wheel. The publisher
+builds inside manylinux, runs `auditwheel repair`, refreshes the bundled
+library digest and wheel RECORD, and then tests the final wheel. It uploads
+only the same wheel bytes that passed the isolated installed-package smoke.
+The final OIDC job checks exactly three same-run wheels, their native hashes
+and RECORD, source commit, versions, platforms and packaged resources. Its Trusted Publisher tuple is `GBeurier/dag-ml-data`, workflow
+`release-provider-python.yml`, environment `pypi`, PyPI project
+`dag-ml-data-provider`.
+
+This first publication is wheels only. The hook deliberately refuses an sdist:
+the nested Python package alone lacks the Rust workspace, path dependencies,
+lockfile, headers and license inputs, and the hook requires Git provenance.
+A future source distribution needs a complete standalone build contract;
+source builds currently require a full Git checkout and `--wheel`.
+
 ## Usage
 
 ```python
