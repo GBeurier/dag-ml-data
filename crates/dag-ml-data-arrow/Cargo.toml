@@ -10,7 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-arrow-array = "53"
-arrow-ipc = "53"
-arrow-schema = "53"
+arrow-array.workspace = true
+arrow-ipc.workspace = true
+arrow-schema.workspace = true
 dag-ml-data-core.workspace = true

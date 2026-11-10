@@ -10,6 +10,16 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+### Security
+
+- Replace the Arrow 53 IPC dependency family with Arrow 60.1.0 for
+  RUSTSEC-2026-0442 (RunEndEncoded validation). Rust source consumers of
+  `dag-ml-data-arrow` and C ABI builds with `arrow-ipc` must rebuild.
+  Previously published 0.2.16 source and binaries are immutable. Default
+  provider/PyO3/R/WASM profiles do not link this Arrow dependency.
+- Raise the workspace compiler floor to Rust 1.88 for Arrow 60.1.0 while
+  retaining Rust 2021 and the existing JSON, C ABI and fingerprint contracts.
+
 ### Added
 
 - A separate `dag-ml-data-provider` PyPI workflow with build-only manual

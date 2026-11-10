@@ -4513,13 +4513,11 @@ fn build_feature_arrow(
                 serde_json::Value::Null => Ok(None),
                 serde_json::Value::Number(number) => number.as_f64().map(Some).ok_or_else(|| {
                     dag_ml_data_core::DataError::Validation(format!(
-                        "feature `{}` contains a non-f64 numeric value",
-                        feature_name
+                        "feature `{feature_name}` contains a non-f64 numeric value"
                     ))
                 }),
                 _ => Err(dag_ml_data_core::DataError::Validation(format!(
-                    "feature `{}` Arrow smoke only supports numeric or null values",
-                    feature_name
+                    "feature `{feature_name}` Arrow smoke only supports numeric or null values"
                 ))),
             })
             .collect::<dag_ml_data_core::Result<Vec<_>>>()?;

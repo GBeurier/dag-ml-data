@@ -16,7 +16,7 @@ updates:
       - dependency-name: "clap"
       - dependency-name: "pyo3"
       - dependency-name: "indexmap"
-      # MSRV is held at 1.85. Minor/major bumps can raise the supported Rust
+      # MSRV is held at 1.88. Minor/major bumps can raise the supported Rust
       # floor, so take patch-level (security) updates only for everything else.
       - dependency-name: "*"
         update-types:
@@ -42,7 +42,7 @@ updates:
       - dependency-name: "clap"
       - dependency-name: "pyo3"
       - dependency-name: "indexmap"
-      # MSRV is held at 1.85. Minor/major bumps can raise the supported Rust
+      # MSRV is held at 1.88. Minor/major bumps can raise the supported Rust
       # floor, so take patch-level (security) updates only for everything else.
       - dependency-name: "*"
         update-types:
