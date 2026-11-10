@@ -67,8 +67,7 @@ pub fn deserialize_columnar_store(bytes: &[u8]) -> Result<NumericFeatureBufferSt
     let version = read_u32(bytes, 4)?;
     if version != NUMERIC_FEATURE_BUFFER_FILE_FORMAT_VERSION {
         return Err(DataError::Validation(format!(
-            "feature buffer file uses unsupported format version {version}, expected {}",
-            NUMERIC_FEATURE_BUFFER_FILE_FORMAT_VERSION
+            "feature buffer file uses unsupported format version {version}, expected {NUMERIC_FEATURE_BUFFER_FILE_FORMAT_VERSION}"
         )));
     }
     let buffer_count = read_u32(bytes, 8)? as usize;

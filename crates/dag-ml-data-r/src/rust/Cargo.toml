@@ -1,8 +1,8 @@
 [package]
 name = "dag-ml-data-r"
-version = "0.2.16"
+version = "0.2.17"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
 description = "R (extendr) provider bindings for dag-ml-data."
 publish = false

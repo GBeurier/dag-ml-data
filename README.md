@@ -15,7 +15,7 @@ sample relations, representation adapters, data plans, alignment/collation
 contracts and schema fingerprints. It does not own ML phases, CV orchestration,
 OOF joins or model execution; those belong to `dag-ml`.
 
-> Status: 0.2.16 V1 RC release train. The schema/planning contracts, coordinator envelope,
+> Status: 0.2.17 V1 RC release train. The schema/planning contracts, coordinator envelope,
 > handle/view lifecycle, in-memory provider vtable, Arrow/tensor exports,
 > Python `ctypes` conformance package and cross-repo `dag-ml` fixtures are
 > executable and gated. Production support is intentionally scoped; see
@@ -48,7 +48,7 @@ examples/
 
 ```bash
 cargo fmt --all --check
-cargo +1.85.0 check --workspace --all-targets
+cargo +1.88.0 check --workspace --all-targets
 cargo test --workspace
 cargo test -p dag-ml-data-wasm
 # dag-ml-data-py is excluded from the workspace (abi3-py311); test it standalone:

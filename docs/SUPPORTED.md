@@ -1,7 +1,7 @@
 # Supported Surface
 
 This page is the 0.2.x RC support contract for `dag-ml-data` (current package
-version: 0.2.16). It separates
+version: 0.2.17). It separates
 production-facing data contracts from conformance providers and backlog work.
 The 0.2.x surface includes the built-in scientific data-model catalogue helpers
 (`builtin_data_models`, `builtin_representations`, `builtin_adapter_registry`,
@@ -39,6 +39,18 @@ exports; no existing public ABI, JSON schema, or function signature changed.
 | DataView partition/fold labels | Supported | Explicit sample IDs carry host-resolved membership. Without IDs, labels filter supplied relation metadata; full_train and already-bound predict select the whole handle. Unknown JSON fields are rejected. See [Architecture](ARCHITECTURE.md). |
 | Production provider arenas beyond in-memory | Backlog | Host providers must implement native storage/filtering semantics. |
 | nirs4all `SpectroDataset` connector | Backlog | Descoped to `nirs4all-io`; `dag-ml-data` remains NIRS-agnostic. |
+
+## Arrow dependency and compiler support
+
+The IPC reader and the optional C ABI `arrow-ipc` feature require the patched
+Arrow 60.1.0 family. The workspace compiler floor is Rust 1.88; the project
+remains Rust 2021. This dependency repair does not change JSON schemas, C ABI
+versions, numeric-buffer fingerprints or scientific data semantics.
+
+The default provider wheel, JSON-only PyO3 binding, R provider and WASM
+bindings do not activate this Rust Arrow dependency. Previously published
+0.2.16 IPC-enabled Rust builds remain affected by RUSTSEC-2026-0442 and
+require a rebuild using corrected source; a new lock does not repair them.
 
 ## Provider publication targets
 

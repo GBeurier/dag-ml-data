@@ -17,9 +17,9 @@ default = []
 arrow-ipc = ["dep:dag-ml-data-arrow", "dep:arrow-array", "dep:arrow-ipc", "dep:arrow-schema"]
 
 [dependencies]
-arrow-array = { version = "53", optional = true }
-arrow-ipc = { version = "53", optional = true }
-arrow-schema = { version = "53", optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-ipc = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
 dag-ml-data-arrow = { workspace = true, optional = true }
 dag-ml-data-core.workspace = true
 dag-ml-data-provider.workspace = true
@@ -27,4 +27,4 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-arrow-schema = { version = "53", features = ["ffi"] }
+arrow-schema = { workspace = true, features = ["ffi"] }

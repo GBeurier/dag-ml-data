@@ -363,8 +363,7 @@ impl AdapterRegistry {
                     "no_path"
                 },
                 format!(
-                    "no adapter path from `{}/{}` to `{}/{}`",
-                    source_type, source_representation, target_type, target_representation
+                    "no adapter path from `{source_type}/{source_representation}` to `{target_type}/{target_representation}`"
                 ),
                 Vec::new(),
             );

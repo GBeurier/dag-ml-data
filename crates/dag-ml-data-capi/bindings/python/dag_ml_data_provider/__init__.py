@@ -27,4 +27,4 @@ __all__ = [
     "load_library",
 ]
 
-__version__ = "0.2.16"
+__version__ = "0.2.17"

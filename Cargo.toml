@@ -28,9 +28,9 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.2.16"
+version = "0.2.17"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
 authors = ["G. Beurier <beurier@cirad.fr>"]
 repository = "https://github.com/GBeurier/dag-ml-data"
@@ -39,14 +39,18 @@ readme = "README.md"
 
 [workspace.dependencies]
 anyhow = "1.0"
+# Keep the IPC reader, optional C ABI path and regression fixtures on one patched family.
+arrow-array = "=60.1.0"
+arrow-ipc = "=60.1.0"
+arrow-schema = "=60.1.0"
 clap = { version = "=4.5.53", features = ["derive"] }
-dag-ml-data = { path = "crates/dag-ml-data", version = "0.2.16" }
-dag-ml-data-arrow = { path = "crates/dag-ml-data-arrow", version = "0.2.16" }
-dag-ml-data-core = { path = "crates/dag-ml-data-core", version = "0.2.16" }
-dag-ml-data-provider = { path = "crates/dag-ml-data-provider", version = "0.2.16" }
+dag-ml-data = { path = "crates/dag-ml-data", version = "0.2.17" }
+dag-ml-data-arrow = { path = "crates/dag-ml-data-arrow", version = "0.2.17" }
+dag-ml-data-core = { path = "crates/dag-ml-data-core", version = "0.2.17" }
+dag-ml-data-provider = { path = "crates/dag-ml-data-provider", version = "0.2.17" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
-# sha2 0.11.1 raises its MSRV to 1.88; retain our supported Rust 1.85.
+# Retain the existing sha2 pin; this repair changes only the Arrow dependency family.
 sha2 = "=0.11.0"
 thiserror = "2.0"
 pyo3 = "=0.29.2"
