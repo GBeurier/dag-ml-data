@@ -12,9 +12,11 @@ Coordinator-envelope and other wire-shape changes follow
 
 ### Security
 
-- `cargo audit` accepts the informational RUSTSEC-2026-0543 ("chrono is
-  unmaintained", no patched release) in `.cargo/audit.toml`: chrono reaches
-  the lockfile only through `arrow-array`; every other advisory stays denied.
+- `cargo audit` runs with `--deny unsound` instead of `--deny warnings`:
+  vulnerabilities and unsound advisories still fail CI, while unmaintained,
+  notice and yanked advisories (for example RUSTSEC-2026-0543, chrono
+  unmaintained through `arrow-array`) are printed as warnings without failing.
+  No per-advisory ignore list is kept.
 
 ### Documentation
 
