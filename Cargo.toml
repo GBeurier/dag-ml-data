@@ -28,7 +28,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.2.17"
+version = "0.2.18"
 edition = "2021"
 rust-version = "1.88"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"
@@ -44,10 +44,10 @@ arrow-array = "=60.1.0"
 arrow-ipc = "=60.1.0"
 arrow-schema = "=60.1.0"
 clap = { version = "=4.5.53", features = ["derive"] }
-dag-ml-data = { path = "crates/dag-ml-data", version = "0.2.17" }
-dag-ml-data-arrow = { path = "crates/dag-ml-data-arrow", version = "0.2.17" }
-dag-ml-data-core = { path = "crates/dag-ml-data-core", version = "0.2.17" }
-dag-ml-data-provider = { path = "crates/dag-ml-data-provider", version = "0.2.17" }
+dag-ml-data = { path = "crates/dag-ml-data", version = "0.2.18" }
+dag-ml-data-arrow = { path = "crates/dag-ml-data-arrow", version = "0.2.18" }
+dag-ml-data-core = { path = "crates/dag-ml-data-core", version = "0.2.18" }
+dag-ml-data-provider = { path = "crates/dag-ml-data-provider", version = "0.2.18" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 # Retain the existing sha2 pin; this repair changes only the Arrow dependency family.

@@ -10,6 +10,8 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-11-17
+
 ### Fixed
 
 - The R package `dagmldata` installs again on Windows with Rust 1.100 and
@@ -18,6 +20,13 @@ Coordinator-envelope and other wire-shape changes follow
   WaitOnAddress` / `WakeByAddressSingle`, `no DLL was created`). The flag is
   inert with older Rust; Linux, macOS and WebR use `src/Makevars.in` and are
   unchanged.
+
+### Changed
+
+- Pin `sha2` to 0.11.1 (was 0.11.0) in the workspace and in the standalone
+  Python binding lock. Fingerprint bytes are unchanged.
+
+## [0.2.17] - 2026-11-10
 
 ### Security
 
@@ -282,7 +291,10 @@ Foundation scaffold. Executable Rust crates with:
 - Object-level Python APIs above the JSON-contract PyO3 bindings and ctypes
   provider smoke (roadmap workstream D).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.15...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.18...HEAD
+[0.2.18]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.17...v0.2.18
+[0.2.17]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.16...v0.2.17
+[0.2.16]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.15...v0.2.16
 [0.2.15]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.14...v0.2.15
 [0.2.14]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/GBeurier/dag-ml-data/compare/v0.2.12...v0.2.13
