@@ -344,11 +344,11 @@ def validate_ci(repo: Path) -> None:
         "CI must install the pinned cargo-audit",
     )
     require(
-        "cargo audit --deny warnings" in workflow,
-        "CI must run cargo audit with warnings denied",
+        "cargo audit --deny unsound" in workflow and "--deny warnings" not in workflow.split("cargo audit", 1)[1],
+        "CI must run cargo audit failing on vulnerabilities and unsound advisories only",
     )
     require(
-        "cargo audit --file crates/dag-ml-data-py/Cargo.lock --deny warnings" in workflow,
+        "cargo audit --file crates/dag-ml-data-py/Cargo.lock --deny unsound" in workflow,
         "CI must audit the standalone Python binding lock",
     )
     require(

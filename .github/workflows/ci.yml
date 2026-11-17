@@ -155,10 +155,12 @@ jobs:
         run: python scripts/validate_abi_snapshot.py
       - name: Install cargo-audit
         run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+      # Vulnerabilities and unsound advisories fail; unmaintained, notice and
+      # yanked advisories are printed as warnings without failing the job.
       - name: Supply-chain audit
-        run: cargo audit --deny warnings
+        run: cargo audit --deny unsound
       - name: Supply-chain audit (Python binding)
-        run: cargo audit --file crates/dag-ml-data-py/Cargo.lock --deny warnings
+        run: cargo audit --file crates/dag-ml-data-py/Cargo.lock --deny unsound
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

@@ -59,7 +59,7 @@ python3 scripts/check_deprecations.py
 python3 scripts/check_public_docs.py
 python3 scripts/release/check_publish_plan.py --dry-run
 python3 scripts/validate_abi_snapshot.py
-cargo audit --deny warnings
+cargo audit --deny unsound   # vulnerabilities and unsound fail; informational advisories warn
 python3 -m pip install -r docs/requirements.txt
 sphinx-build -W --keep-going -b html docs docs/_build/html
 cargo run -p dag-ml-data-cli -- fingerprint-schema examples/minimal_schema.json

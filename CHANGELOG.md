@@ -10,6 +10,21 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+### Security
+
+- `cargo audit` runs with `--deny unsound` instead of `--deny warnings`:
+  vulnerabilities and unsound advisories still fail CI, while unmaintained,
+  notice and yanked advisories (for example RUSTSEC-2026-0543, chrono
+  unmaintained through `arrow-array`) are printed as warnings without failing.
+  No per-advisory ignore list is kept.
+
+### Documentation
+
+- `CONTRIBUTING.md` records the ecosystem's minor-level cross-repository
+  version constraints and what a `dag-ml-data` patch release promises (no wire,
+  schema, ABI, shared-contract or fixture change); exact versions live in
+  lockfiles.
+
 ### Fixed
 
 - The R package `dagmldata` installs again on Windows with Rust 1.100 and
