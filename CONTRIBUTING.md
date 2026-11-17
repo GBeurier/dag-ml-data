@@ -106,4 +106,12 @@ If you changed `Cargo.toml`, also run `python3 scripts/release/check_publish_pla
 
 ## ADRs and releases
 
-Shared decisions are mirrored in [`docs/adr/`](docs/adr/README.md) byte-identical with `dag-ml`. Releases follow the [ADR-10](https://github.com/GBeurier/dag-ml/blob/main/docs/adr/ADR-10-release-train.md) train: this repo publishes **first**, then `dag-ml` bumps its pin and publishes.
+Shared decisions are mirrored in [`docs/adr/`](docs/adr/README.md) byte-identical with `dag-ml`. Releases follow the [ADR-10](https://github.com/GBeurier/dag-ml/blob/main/docs/adr/ADR-10-release-train.md) train: this repo publishes **first**; `dag-ml` raises its `dag-ml-data` range and publishes only when a new `dag-ml-data` **minor** is needed.
+
+### Cross-repository version constraints
+
+nirs4all packages from different repositories depend on each other at **minor** granularity, never more precisely: Rust `"0.2"` (`>=0.2.0, <0.3.0`; `"1.3"` for 1.x), Python `>=0.2,<0.3` (`>=1.3,<2` for 1.x), npm `^0.2.0` (`^1.3.0`), R `pkg (>= 0.2.0), pkg (< 0.3.0)`. Exact, reproducible versions live only in lockfiles (`Cargo.lock`, uv/pip locks, `package-lock.json`, hash-locked wheel locks) and in the release order. The crates and bindings of this repository are released together; their internal pins (including the R binding's exact pins on the published `dag-ml-data-core`/`dag-ml-data-provider` crates it vendors) are lockstep pins, not cross-repository constraints.
+
+In return, a **patch** release of `dag-ml-data` is backward compatible and changes no wire format, byte contract, persisted schema, `.n4a` payload semantics, C ABI/provider vtable, shared contract under `docs/contracts/` or conformance fixture; any such change needs at least a **minor** release (for 0.x, every minor is breaking). Consumers (`dag-ml`, IO, Core, the SDK, Web) therefore never release just to accept a `dag-ml-data` patch. A consumer needing a fix from a specific patch gets it from its lockfile and the release order, not from a patch floor. The full policy is `docs/contracts/release/VERSION_CONSTRAINTS.md` in `nirs4all-ecosystem`.
+
+Enforcement: [ADR-02](docs/adr/ADR-02-schema-evolution-sla.md) version bumps with explicit unsupported-version refusal, `docs/contracts/abi_snapshot.v1.json` and the both-owner drift validator (`dag-ml/scripts/validate_contracts.py`), and `scripts/validate_release_metadata.py`/`scripts/release/check_publish_plan.py`. A guard that fails when a contract file changes without a minor bump is not automated yet.

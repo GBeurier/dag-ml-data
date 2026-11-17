@@ -10,6 +10,13 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+### Documentation
+
+- `CONTRIBUTING.md` records the ecosystem's minor-level cross-repository
+  version constraints and what a `dag-ml-data` patch release promises (no wire,
+  schema, ABI, shared-contract or fixture change); exact versions live in
+  lockfiles.
+
 ### Fixed
 
 - The R package `dagmldata` installs again on Windows with Rust 1.100 and
