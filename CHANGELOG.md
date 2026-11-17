@@ -10,6 +10,15 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+### Fixed
+
+- The R package `dagmldata` installs again on Windows with Rust 1.100 and
+  later: `src/Makevars.win.in` links `-lsynchronization`, which the Rust
+  standard library now requires from the final linker (`undefined reference to
+  WaitOnAddress` / `WakeByAddressSingle`, `no DLL was created`). The flag is
+  inert with older Rust; Linux, macOS and WebR use `src/Makevars.in` and are
+  unchanged.
+
 ### Security
 
 - Replace the Arrow 53 IPC dependency family with Arrow 60.1.0 for
