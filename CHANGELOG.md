@@ -10,6 +10,12 @@ Coordinator-envelope and other wire-shape changes follow
 
 ## [Unreleased]
 
+### Security
+
+- `cargo audit` accepts the informational RUSTSEC-2026-0543 ("chrono is
+  unmaintained", no patched release) in `.cargo/audit.toml`: chrono reaches
+  the lockfile only through `arrow-array`; every other advisory stays denied.
+
 ### Documentation
 
 - `CONTRIBUTING.md` records the ecosystem's minor-level cross-repository
