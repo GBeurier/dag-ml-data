@@ -19,6 +19,7 @@
 - Extend the existing provider vtable for production; name conformance-only helpers `dagmldata_inmemory_provider_*`. Shared provider/tensor version macros and headers must match DAG and be includable in either order.
 - Keep shared JSON schemas/fixtures/conformance pack JSON-identical.
 - Wire changes need version updates and explicit unsupported-version refusal, both-owner drift checks, public SUPPORTED/CHANGELOG updates.
+- Versioning: versions are `X.Y.Z`. `Z` = fixes and purely additive, backward-compatible features (existing outputs, wire formats, schemas and ABI symbols unchanged); `Y` = any compatibility break (changed/removed API signature, C ABI/vtable break or ABI version change, wire/byte/schema/fixture change, renamed ids, changed numerical results of existing operations); `X` = product version. The bumping package classifies its change. Cross-repository dependencies accept one tested series, `>=X.Y[.Z],<X.(Y+1)` (patch floor only when a fix or feature from that patch is required); for 1.x packages never npm `^1.x` or Cargo `"1.x"`: use `~1.4.1`, `">=1.4.1, <1.5"`, `>=1.4.1,<1.5`. Exact pins only in lockfiles and wheel locks; intra-repository crates/bindings stay in lockstep. See [CONTRIBUTING](CONTRIBUTING.md#cross-repository-version-constraints) and the [ecosystem version constraints](https://github.com/GBeurier/nirs4all-ecosystem/blob/main/docs/contracts/release/VERSION_CONSTRAINTS.md).
 - Private historical notes are optional context, never required build inputs or force-added files.
 
 ## Gate and provider checks
